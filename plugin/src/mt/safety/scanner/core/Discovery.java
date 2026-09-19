@@ -37,9 +37,26 @@ public final class Discovery {
     }
 
     private int visits;
+    private String excluded = "";
 
     /** Searches every readable root and returns the plugin packages found, de-duplicated. */
     public List<Candidate> find(List<File> roots) {
+        return find(roots, null);
+    }
+
+    /**
+     * Searches every readable root, skipping {@code excludedArea} and everything under it.
+     *
+     * <p>The area is skipped during the walk rather than filtered out of the results, because the walk
+     * is bounded: a directory full of quarantined plugins would otherwise consume the result and visit
+     * limits and stop the search before it reached the plugins that are actually installed.
+     */
+    public List<Candidate> find(List<File> roots, File excludedArea) {
+        this.excluded = excludedArea == null ? "" : canonical(excludedArea);
+        return findInternal(roots);
+    }
+
+    private List<Candidate> findInternal(List<File> roots) {
         List<Candidate> found = new ArrayList<Candidate>();
         Set<String> seen = new HashSet<String>();
         visits = 0;
@@ -64,6 +81,9 @@ public final class Discovery {
 
     private void walk(File dir, int depth, List<Candidate> found, Set<String> seen) {
         if (depth > MAX_DEPTH || found.size() >= MAX_RESULTS || ++visits > MAX_VISITS) {
+            return;
+        }
+        if (isExcluded(dir)) {
             return;
         }
         if (isInstalledPlugin(dir)) {
@@ -93,6 +113,23 @@ public final class Discovery {
             }
         } catch (java.io.IOException e) {
             found.add(new Candidate(path, installed));
+        }
+    }
+
+    /** True when a directory is the excluded area or sits inside it. */
+    private boolean isExcluded(File dir) {
+        if (excluded.length() == 0) {
+            return false;
+        }
+        String path = canonical(dir);
+        return path.equals(excluded) || path.startsWith(excluded + File.separator);
+    }
+
+    private static String canonical(File file) {
+        try {
+            return file.getCanonicalPath();
+        } catch (java.io.IOException e) {
+            return file.getAbsolutePath();
         }
     }
 

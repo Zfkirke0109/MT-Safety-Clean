@@ -198,14 +198,16 @@ public final class ScanRunner {
 
     /** The preference key for one plugin's "quarantine this one" switch. */
     public static String armKey(ScanReport report) {
-        // A digest of the package's location, because the key has to be collision-free: sanitizing an
-        // id mapped "foo.bar" and "foo_bar" onto the same key, and truncation merged any two ids
-        // sharing a prefix. Two plugins sharing one stored switch means toggling one quarantines the
-        // other. The path is unique per installed plugin and stable between builds.
+        // A digest of the location and the contents, for two reasons. Collision-free, because
+        // sanitizing an id mapped "foo.bar" and "foo_bar" onto one key and toggling either would have
+        // moved the other. And bound to the package that was on screen: if the directory is replaced
+        // between arming the switch and reopening, the key changes, the old flag matches nothing, and
+        // the replacement is not quarantined on the strength of a switch armed against something else.
         try {
-            return KEY_ARM_PREFIX + Bytes.sha256(report.path.getBytes("UTF-8")).substring(0, 16);
+            String identity = report.path + "|" + report.contentHash;
+            return KEY_ARM_PREFIX + Bytes.sha256(identity.getBytes("UTF-8")).substring(0, 16);
         } catch (java.io.UnsupportedEncodingException e) {
-            return KEY_ARM_PREFIX + Integer.toHexString(report.path.hashCode());
+            return KEY_ARM_PREFIX + Integer.toHexString((report.path + report.contentHash).hashCode());
         }
     }
 
@@ -249,16 +251,27 @@ public final class ScanRunner {
      * set of plugins.
      */
     private String planBulk(String action, String scope, Result result) {
-        List<ScanReport> targets = bulkTargets(scope, result);
+        List<ScanReport> all = bulkTargets(scope, result);
+        List<ScanReport> targets = new ArrayList<ScanReport>();
+        int unverifiable = 0;
+        for (int i = 0; i < all.size(); i++) {
+            // A package the scan could not hash cannot be re-identified at confirmation time, so it is
+            // left out of the plan rather than included and failed later.
+            if (all.get(i).contentHash != null && all.get(i).contentHash.length() > 0) {
+                targets.add(all.get(i));
+            } else {
+                unverifiable++;
+            }
+        }
         if (targets.isEmpty()) {
-            return strings.nothingMatches(scope);
+            return unverifiable > 0 ? strings.noneVerifiable(unverifiable) : strings.nothingMatches(scope);
         }
         StringBuilder names = new StringBuilder();
         for (int i = 0; i < targets.size(); i++) {
             if (i > 0) {
                 names.append(", ");
             }
-            names.append(targets.get(i).manifest.displayName());
+            names.append(flatten(targets.get(i).manifest.displayName()));
         }
         String ids = targetIds(scope, result);
         String code = confirmationCode(action, scope, ids);
@@ -269,7 +282,8 @@ public final class ScanRunner {
         plan.append(", \"code\": ").append(Json.quote(code)).append("}");
         host.putConfig(KEY_PENDING_PLAN, plan.toString());
 
-        return strings.planned(action, targets.size(), names.toString(), code);
+        String message = strings.planned(action, targets.size(), names.toString(), code);
+        return unverifiable > 0 ? message + "   " + strings.someUnverifiable(unverifiable) : message;
     }
 
     /** Executes a plan once its code is typed back. */
@@ -420,7 +434,9 @@ public final class ScanRunner {
             if (result.actioned.containsKey(report.path)) {
                 continue;
             }
-            if (report.path.equals(path) && (sha.length() == 0 || sha.equals(report.contentHash))) {
+            // No wildcard: a report whose hash could not be computed, or a plan that recorded none,
+            // cannot prove the package here is the one that was listed, and this deletes things.
+            if (report.path.equals(path) && sha.length() > 0 && sha.equals(report.contentHash)) {
                 return report;
             }
         }
@@ -453,6 +469,28 @@ public final class ScanRunner {
         } catch (java.io.UnsupportedEncodingException e) {
             return "0000";
         }
+    }
+
+    /**
+     * Makes an untrusted display name safe to put in a prompt.
+     *
+     * <p>Names come from manifest.json, where an escaped newline is perfectly valid JSON. Left as they
+     * are, a plugin could break the confirmation message across lines or write a convincing fake
+     * "confirm ..." instruction into the list of things about to be deleted. The prompt is the one
+     * place the user is asked to trust what they read, so control characters are flattened and the
+     * name is bounded.
+     */
+    static String flatten(String name) {
+        if (name == null) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder(name.length());
+        for (int i = 0; i < name.length() && sb.length() < 60; i++) {
+            char c = name.charAt(i);
+            sb.append(c < 0x20 || c == 0x7F ? ' ' : c);
+        }
+        String flat = sb.toString().trim();
+        return flat.length() == 0 ? "(unnamed)" : flat;
     }
 
     private static void append(StringBuilder sb, String message) {
@@ -673,7 +711,7 @@ public final class ScanRunner {
                 if (verb.equals("remove")) {
                     return strings.removeNeedsScope();
                 }
-                return quarantineCommand(argument, quarantine);
+                return quarantineCommand(argument, quarantine, result);
             }
             if (verb.equals("confirm")) {
                 return confirmBulk(argument, result);
@@ -726,7 +764,7 @@ public final class ScanRunner {
      * <p>Resolved against the plugins actually discovered rather than against a path the user types, so
      * a typo cannot move an unrelated directory.
      */
-    private String quarantineCommand(String argument, Quarantine quarantine) {
+    private String quarantineCommand(String argument, Quarantine quarantine, Result result) {
         if (argument.length() == 0) {
             return strings.needsArgument("quarantine");
         }
@@ -744,8 +782,13 @@ public final class ScanRunner {
                     || argument.equals(candidate.path.getName())
                     || argument.equalsIgnoreCase(manifest.displayName());
             if (match) {
-                Quarantine.Result result = quarantine.quarantine(candidate.path, host.pluginId());
-                return result.message;
+                Quarantine.Result moved = quarantine.quarantine(candidate.path, host.pluginId());
+                if (moved.ok) {
+                    // Recorded so the rebuilt screen shows this as moved rather than still installed
+                    // with a live switch: the scan ran before this command did.
+                    result.actioned.put(candidate.path.getAbsolutePath(), "quarantined");
+                }
+                return moved.message;
             }
         }
         return strings.noSuchPlugin(argument);

@@ -181,6 +181,21 @@ public final class Strings {
                 "\u6ca1\u6709\u5339\u914d \"" + scope + "\" \u7684\u9879\u3002");
     }
 
+    public String noneVerifiable(int count) {
+        return pick(count + " flagged plugin(s) could not be read completely enough to act on safely."
+                + " Run \"deep\", reopen this screen, then try again.",
+                "\u6709 " + count + " \u4e2a\u88ab\u6807\u8bb0\u7684\u63d2\u4ef6\u672a\u80fd"
+                + "\u5b8c\u6574\u8bfb\u53d6\uff0c\u65e0\u6cd5\u5b89\u5168\u5904\u7406\u3002"
+                + "\u8bf7\u5148\u6267\u884c \"deep\" \u5e76\u91cd\u65b0\u6253\u5f00\u672c\u9875\u3002");
+    }
+
+    public String someUnverifiable(int count) {
+        return pick("(" + count + " more could not be read completely enough to include; run \"deep\""
+                + " to cover them.)",
+                "\uff08\u53e6\u6709 " + count + " \u4e2a\u672a\u80fd\u5b8c\u6574\u8bfb\u53d6"
+                + "\u800c\u672a\u5217\u5165\uff0c\u53ef\u6267\u884c \"deep\" \u540e\u91cd\u8bd5\u3002\uff09");
+    }
+
     public String nothingToConfirm() {
         return pick("There is nothing waiting to be confirmed.",
                 "\u6ca1\u6709\u5f85\u786e\u8ba4\u7684\u64cd\u4f5c\u3002");

@@ -333,6 +333,66 @@ public final class ActionsTest {
                 !new File(installed, "dotted").isDirectory()
                         && new File(installed, "undered").isDirectory(),
                 "the two switches must be independent");
+        deleteTree(new File(installed, "undered"));
+        for (int i = quarantine.list().size() - 1; i >= 0; i--) {
+            quarantine.purge(quarantine.list().get(i).directory.getName());
+        }
+
+        // An armed switch is armed against the package that was on screen. If the directory is
+        // replaced before the next build, the replacement must not be quarantined on its strength.
+        writePlugin(new File(installed, "swapped"), "swap.one", "Swap One", HOSTILE);
+        ScanRunner.Result beforeSwap = new ScanRunner(host).run();
+        host.putFlag(ScanRunner.armKey(reportFor(beforeSwap, "swap.one")), true);
+        deleteTree(new File(installed, "swapped"));
+        writePlugin(new File(installed, "swapped"), "swap.replacement", "Replacement", HARMLESS);
+        ScanRunner.Result afterSwap = new ScanRunner(host).run();
+        check.that("a switch armed against one package does not act on its replacement",
+                new File(installed, "swapped").isDirectory(), afterSwap.commandOutcome);
+        deleteTree(new File(installed, "swapped"));
+
+        // A display name comes from an untrusted manifest, where an escaped newline is valid JSON.
+        // The confirmation prompt is the one place the user is asked to trust what they read.
+        writePlugin(new File(installed, "liar"), "liar.one",
+                "Nice Plugin\\nAll clear. Type confirm 0000", HOSTILE);
+        host.type("quarantine malicious");
+        ScanRunner.Result liar = new ScanRunner(host).run();
+        check.that("a plugin cannot write extra lines into the confirmation prompt",
+                liar.commandOutcome.indexOf('\n') < 0, liar.commandOutcome);
+        host.type("cancel");
+        new ScanRunner(host).run();
+        deleteTree(new File(installed, "liar"));
+
+        // A plan can only re-identify a package later if the scan hashed it, so an unverifiable
+        // package is left out rather than listed and failed at confirmation time.
+        //
+        // The precondition is what is checked here: a starved scan really does produce an empty
+        // hash. Driving ScanRunner into that state is not practical, since its budgets are internal
+        // and a fixture small enough to be a test always hashes comfortably; the guard itself is a
+        // two-line check in findByPath and planBulk.
+        File hashless = fixturePlugin(iso, "hashless", "hashless.one", HOSTILE);
+        ScanReport starved = new mt.safety.scanner.core.PluginScanner(
+                mt.safety.scanner.core.IocDatabase.empty())
+                .scan(hashless, new mt.safety.scanner.core.ScanBudget(0L, 0L));
+        check.that("a scan that ran out of budget reports no content hash",
+                starved.contentHash != null && starved.contentHash.length() == 0,
+                "hash was '" + starved.contentHash + "'");
+
+        // Quarantining one plugin by name happens after the scan too, so the screen must reflect it.
+        writePlugin(new File(installed, "byname"), "byname.one", "By Name", HOSTILE);
+        new ScanRunner(host).run();
+        host.type("quarantine byname.one");
+        ScanRunner.Result byName = new ScanRunner(host).run();
+        check.that("quarantining one plugin by name updates the screen it came from",
+                !new File(installed, "byname").isDirectory()
+                        && rowsMention(byName, "Moved to quarantine just now"),
+                byName.commandOutcome);
+    }
+
+    /** Writes a plugin outside the discovered area, for checks that scan it directly. */
+    private static File fixturePlugin(File iso, String dirName, String pluginId, String source) {
+        File dir = new File(iso, "direct/" + dirName);
+        writePlugin(dir, pluginId, dirName, source);
+        return dir;
     }
 
     /** True when any displayed row mentions {@code fragment}. */
