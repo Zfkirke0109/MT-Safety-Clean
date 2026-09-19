@@ -743,6 +743,40 @@ public final class ScannerTest {
         check("an ordinary bundled library stays clean",
                 quietJarReport.verdict() == Verdict.CLEAN, summarise(quietJarReport));
 
+        // A member is only skipped once its magic bytes confirm its name, so every extension in the
+        // skip list must be a format the detector actually knows. Listing one it does not know would
+        // describe an exclusion that never happens, which is how that list drifted before.
+        Map<String, byte[]> magicSamples = new LinkedHashMap<String, byte[]>();
+        magicSamples.put("png", Fixtures.fakePng(64));
+        magicSamples.put("jpg", new byte[] {(byte) 0xFF, (byte) 0xD8, (byte) 0xFF, (byte) 0xE0, 0, 0, 0, 0});
+        magicSamples.put("jpeg", new byte[] {(byte) 0xFF, (byte) 0xD8, (byte) 0xFF, (byte) 0xE0, 0, 0, 0, 0});
+        magicSamples.put("gif", Fixtures.bytes("GIF89a________"));
+        magicSamples.put("bmp", Fixtures.bytes("BM____________"));
+        magicSamples.put("webp", Fixtures.bytes("RIFF____WEBPVP8 "));
+        magicSamples.put("wav", Fixtures.bytes("RIFF____WAVEfmt "));
+        magicSamples.put("mp3", Fixtures.bytes("ID3____________"));
+        magicSamples.put("ogg", Fixtures.bytes("OggS___________"));
+        magicSamples.put("mp4", Fixtures.bytes("____ftypisom____"));
+        magicSamples.put("woff", Fixtures.bytes("wOFF___________"));
+        magicSamples.put("woff2", Fixtures.bytes("wOF2___________"));
+        magicSamples.put("otf", Fixtures.bytes("OTTO___________"));
+        magicSamples.put("ttf", new byte[] {0x00, 0x01, 0x00, 0x00, 0, 0, 0, 0});
+
+        StringBuilder undetectable = new StringBuilder();
+        for (String ext : mt.safety.scanner.core.CodeRules.skippableExtensions()) {
+            byte[] sample = magicSamples.get(ext);
+            if (sample == null) {
+                undetectable.append(ext).append(" (no sample in this test) ");
+                continue;
+            }
+            if (Bytes.detectKind(sample) == null
+                    || !Bytes.contentMatchesExtension(ext, sample)) {
+                undetectable.append(ext).append(" (not detected) ");
+            }
+        }
+        check("every skippable extension is one the detector can confirm",
+                undetectable.length() == 0, undetectable.toString());
+
         // Stopping the archive walk early must not invent findings: every member not yet streamed
         // would otherwise look absent from the archive's own data.
         Map<String, byte[]> wide = new LinkedHashMap<String, byte[]>();

@@ -45,6 +45,13 @@ public final class CodeRules {
     private static final int MAX_NESTED_ENTRIES = 400;
     private static final int MAX_NESTED_DEPTH = 2;
 
+    /**
+     * Extensions a member may be skipped under.
+     *
+     * <p>Every entry must be a format {@link Bytes#detectKind} can positively identify, because a
+     * member is only skipped once its magic bytes confirm the name. Listing a format the detector does
+     * not know would describe an exclusion that never actually happens.
+     */
     private static final Set<String> SKIP_EXTENSIONS = new HashSet<String>();
     private static final Set<String> SOURCE_EXTENSIONS = new HashSet<String>();
     private static final Set<String> TEXT_EXTENSIONS = new HashSet<String>();
@@ -86,6 +93,17 @@ public final class CodeRules {
     }
 
     private CodeRules() {
+    }
+
+    /**
+     * The extensions a member may be skipped under.
+     *
+     * <p>Exposed so a test can assert the invariant this list depends on: every entry must be a
+     * format {@link Bytes#detectKind} can positively identify, or it describes an exclusion that never
+     * happens.
+     */
+    public static java.util.Set<String> skippableExtensions() {
+        return java.util.Collections.unmodifiableSet(SKIP_EXTENSIONS);
     }
 
     /** Scans members and records findings; returns the number of members actually read. */

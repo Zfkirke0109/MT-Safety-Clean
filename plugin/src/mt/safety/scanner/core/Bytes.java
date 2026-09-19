@@ -250,6 +250,30 @@ public final class Bytes {
         if (head.length >= 3 && head[0] == 'I' && head[1] == 'D' && head[2] == '3') {
             return "mp3";
         }
+        if (head.length >= 2 && head[0] == 'B' && head[1] == 'M') {
+            return "bmp";
+        }
+        if (head.length >= 12 && head[0] == 'R' && head[1] == 'I' && head[2] == 'F' && head[3] == 'F'
+                && head[8] == 'W' && head[9] == 'A' && head[10] == 'V' && head[11] == 'E') {
+            return "wav";
+        }
+        if (head.length >= 12 && head[4] == 'f' && head[5] == 't' && head[6] == 'y' && head[7] == 'p') {
+            return "mp4";
+        }
+        if (head.length >= 4 && head[0] == 'w' && head[1] == 'O' && head[2] == 'F' && head[3] == 'F') {
+            return "woff";
+        }
+        if (head.length >= 4 && head[0] == 'w' && head[1] == 'O' && head[2] == 'F' && head[3] == '2') {
+            return "woff2";
+        }
+        if (head.length >= 4 && head[0] == 'O' && head[1] == 'T' && head[2] == 'T' && head[3] == 'O') {
+            return "otf";
+        }
+        if (head.length >= 4 && ((head[0] == 0x00 && head[1] == 0x01 && head[2] == 0x00 && head[3] == 0x00)
+                || (head[0] == 't' && head[1] == 'r' && head[2] == 'u' && head[3] == 'e')
+                || (head[0] == 't' && head[1] == 't' && head[2] == 'c' && head[3] == 'f'))) {
+            return "ttf";
+        }
         return null;
     }
 
@@ -281,6 +305,13 @@ public final class Bytes {
         }
         if (kind.equals("ogg")) {
             return ext.equals("ogg") || ext.equals("oga");
+        }
+        if (kind.equals("mp4")) {
+            return ext.equals("mp4") || ext.equals("m4a") || ext.equals("m4v") || ext.equals("mov");
+        }
+        if (kind.equals("ttf")) {
+            // A TrueType collection and a bare TrueType font share this signature.
+            return ext.equals("ttf") || ext.equals("ttc") || ext.equals("otf");
         }
         return kind.equals(ext);
     }
