@@ -97,8 +97,14 @@ public final class ScanRunner {
         public final List<ScanReport> reports = new ArrayList<ScanReport>();
         /** Plugins found but not reached before the scan's overall deadline. */
         public int unscanned;
-        /** Absolute paths acted on during this build, so the report can say so. */
-        public final java.util.Set<String> actioned = new java.util.HashSet<String>();
+        /**
+         * What happened to each package acted on during this build, keyed by path.
+         *
+         * <p>Values are {@code quarantined} or {@code removed}. Kept apart because a row that says
+         * "moved to quarantine" after a permanent delete promises a copy the user could restore, and
+         * there is none.
+         */
+        public final java.util.Map<String, String> actioned = new java.util.HashMap<String, String>();
         public String commandOutcome = "";
     }
 
@@ -114,7 +120,13 @@ public final class ScanRunner {
         return strings;
     }
 
-    /** Runs any pending command, then scans, then builds the rows to display. */
+    /**
+     * Scans, then acts, then builds the rows to display.
+     *
+     * <p>The order is part of the safety contract rather than an implementation detail. Acting comes
+     * after scanning because a bulk action has to know what the scan found, and every action is judged
+     * against what is installed once the earlier actions in the same build have run.
+     */
     public Result run() {
         Result result = new Result();
         File configFile = new File(host.filesDir(), "indicators.json");
@@ -186,16 +198,15 @@ public final class ScanRunner {
 
     /** The preference key for one plugin's "quarantine this one" switch. */
     public static String armKey(ScanReport report) {
-        String id = report.manifest.pluginId;
-        if (id == null || id.length() == 0) {
-            id = report.label;
+        // A digest of the package's location, because the key has to be collision-free: sanitizing an
+        // id mapped "foo.bar" and "foo_bar" onto the same key, and truncation merged any two ids
+        // sharing a prefix. Two plugins sharing one stored switch means toggling one quarantines the
+        // other. The path is unique per installed plugin and stable between builds.
+        try {
+            return KEY_ARM_PREFIX + Bytes.sha256(report.path.getBytes("UTF-8")).substring(0, 16);
+        } catch (java.io.UnsupportedEncodingException e) {
+            return KEY_ARM_PREFIX + Integer.toHexString(report.path.hashCode());
         }
-        StringBuilder sb = new StringBuilder(KEY_ARM_PREFIX);
-        for (int i = 0; i < id.length() && i < 64; i++) {
-            char c = id.charAt(i);
-            sb.append(Character.isLetterOrDigit(c) ? c : '_');
-        }
-        return sb.toString();
     }
 
     /**
@@ -222,7 +233,7 @@ public final class ScanRunner {
             }
             Quarantine.Result moved = quarantine.quarantine(new File(report.path), host.pluginId());
             if (moved.ok) {
-                result.actioned.add(report.path);
+                result.actioned.put(report.path, "quarantined");
             }
             append(done, moved.message);
         }
@@ -254,7 +265,7 @@ public final class ScanRunner {
         StringBuilder plan = new StringBuilder();
         plan.append("{\"action\": ").append(Json.quote(action));
         plan.append(", \"scope\": ").append(Json.quote(scope));
-        plan.append(", \"ids\": ").append(Json.quote(ids));
+        plan.append(", \"targets\": ").append(ids);
         plan.append(", \"code\": ").append(Json.quote(code)).append("}");
         host.putConfig(KEY_PENDING_PLAN, plan.toString());
 
@@ -271,12 +282,14 @@ public final class ScanRunner {
         String scope;
         String ids;
         String expected;
+        List<java.util.Map<String, Object>> targets;
         try {
             java.util.Map<String, Object> plan = Json.parseObject(stored);
             action = Json.str(plan, "action", "");
             scope = Json.str(plan, "scope", "");
-            ids = Json.str(plan, "ids", "");
             expected = Json.str(plan, "code", "");
+            targets = Json.objectList(plan, "targets");
+            ids = rebuildTargetList(targets);
         } catch (Json.JsonException e) {
             host.putConfig(KEY_PENDING_PLAN, "");
             return strings.nothingToConfirm();
@@ -295,17 +308,20 @@ public final class ScanRunner {
 
         Quarantine quarantine = new Quarantine(new File(host.filesDir(), "quarantine"));
         boolean permanent = action.equals("remove");
-        String[] wanted = ids.split("\n");
         int done = 0;
         StringBuilder problems = new StringBuilder();
-        for (int i = 0; i < wanted.length; i++) {
-            String id = wanted[i].trim();
-            if (id.length() == 0) {
+        for (int i = 0; i < targets.size(); i++) {
+            String path = Json.str(targets.get(i), "path", "");
+            String sha = Json.str(targets.get(i), "sha", "");
+            if (path.length() == 0) {
                 continue;
             }
-            ScanReport match = findByIdentity(id, result);
+            // Matched on the package's location, not its declared id. Two installed plugins can carry
+            // the same pluginID, which the scanner itself reports as impersonation, and matching by id
+            // could act on the copy the plan never listed.
+            ScanReport match = findByPath(path, sha, result);
             if (match == null || match.archive) {
-                append(problems, strings.noSuchPlugin(id));
+                append(problems, strings.noSuchPlugin(path));
                 continue;
             }
             Quarantine.Result moved = quarantine.quarantine(new File(match.path), host.pluginId());
@@ -313,11 +329,14 @@ public final class ScanRunner {
                 append(problems, moved.message);
                 continue;
             }
-            result.actioned.add(match.path);
+            result.actioned.put(match.path, permanent ? "removed" : "quarantined");
             done++;
             if (permanent) {
                 Quarantine.Result purged = purgeByOriginalPath(quarantine, match.path);
                 if (!purged.ok) {
+                    // The move succeeded but the copy survives, so the plugin is quarantined rather
+                    // than gone. Say that, instead of reporting a deletion that did not happen.
+                    result.actioned.put(match.path, "quarantined");
                     append(problems, purged.message);
                 }
             }
@@ -345,19 +364,25 @@ public final class ScanRunner {
      */
     private String targetIds(String scope, Result result) {
         List<ScanReport> targets = bulkTargets(scope, result);
-        List<String> ids = new ArrayList<String>();
+        List<String> entries = new ArrayList<String>();
         for (int i = 0; i < targets.size(); i++) {
-            ids.add(identityOf(targets.get(i)));
+            ScanReport report = targets.get(i);
+            entries.add("{\"path\": " + Json.quote(report.path)
+                    + ", \"sha\": " + Json.quote(report.contentHash) + "}");
         }
-        java.util.Collections.sort(ids);
-        StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < ids.size(); i++) {
+        // Sorted so a plan and its confirmation compare equal whenever the same plugins are present,
+        // and written as JSON rather than joined with a delimiter: plugin ids come from an untrusted
+        // manifest, and one containing a newline used to split into several identities, which could
+        // match packages the plan never listed.
+        java.util.Collections.sort(entries);
+        StringBuilder sb = new StringBuilder("[");
+        for (int i = 0; i < entries.size(); i++) {
             if (i > 0) {
-                sb.append('\n');
+                sb.append(", ");
             }
-            sb.append(ids.get(i));
+            sb.append(entries.get(i));
         }
-        return sb.toString();
+        return sb.append("]").toString();
     }
 
     /** The installed plugins a scope covers, never including this scanner. */
@@ -372,7 +397,7 @@ public final class ScanRunner {
             // switch has just moved is no longer installed, and counting it here would let a pending
             // confirmation validate against a set that no longer exists: the check would pass, then
             // the action would fail on the moved plugin while still processing the rest.
-            if (result.actioned.contains(report.path)) {
+            if (result.actioned.containsKey(report.path)) {
                 continue;
             }
             if (host.pluginId().equals(report.manifest.pluginId)) {
@@ -388,22 +413,36 @@ public final class ScanRunner {
         return out;
     }
 
-    private static String identityOf(ScanReport report) {
-        String id = report.manifest.pluginId;
-        return id != null && id.length() > 0 ? id : new File(report.path).getName();
-    }
-
-    private static ScanReport findByIdentity(String id, Result result) {
+    /** Finds the report for an exact package location whose contents still match the plan. */
+    private static ScanReport findByPath(String path, String sha, Result result) {
         for (int i = 0; i < result.reports.size(); i++) {
             ScanReport report = result.reports.get(i);
-            if (result.actioned.contains(report.path)) {
+            if (result.actioned.containsKey(report.path)) {
                 continue;
             }
-            if (identityOf(report).equals(id)) {
+            if (report.path.equals(path) && (sha.length() == 0 || sha.equals(report.contentHash))) {
                 return report;
             }
         }
         return null;
+    }
+
+    /** Rebuilds the canonical target list from a stored plan, for comparison with the current one. */
+    private static String rebuildTargetList(List<java.util.Map<String, Object>> targets) {
+        List<String> entries = new ArrayList<String>();
+        for (int i = 0; i < targets.size(); i++) {
+            entries.add("{\"path\": " + Json.quote(Json.str(targets.get(i), "path", ""))
+                    + ", \"sha\": " + Json.quote(Json.str(targets.get(i), "sha", "")) + "}");
+        }
+        java.util.Collections.sort(entries);
+        StringBuilder sb = new StringBuilder("[");
+        for (int i = 0; i < entries.size(); i++) {
+            if (i > 0) {
+                sb.append(", ");
+            }
+            sb.append(entries.get(i));
+        }
+        return sb.append("]").toString();
     }
 
     /** Short code binding a confirmation to one action over one exact set of plugins. */
@@ -456,15 +495,18 @@ public final class ScanRunner {
         for (int i = 0; i < ordered.size(); i++) {
             ScanReport report = ordered.get(i);
             rows.add(Row.header(verdictMarker(report) + " " + report.manifest.displayName()));
-            if (result.actioned.contains(report.path)) {
-                rows.add(Row.text(strings.actedOn(), strings.actedOnHelp()));
+            String happened = result.actioned.get(report.path);
+            if (happened != null) {
+                boolean removed = "removed".equals(happened);
+                rows.add(Row.text(removed ? strings.actedOnRemoved() : strings.actedOn(),
+                        removed ? strings.actedOnRemovedHelp() : strings.actedOnHelp()));
             }
             rows.add(Row.text(strings.verdictLabel() + ": " + report.verdict().label()
                     + "  (" + report.score() + ")", report.verdict().advice()));
             // One tap beats typing an id, and only for the installed plugins this can actually move.
             if (!report.archive && report.verdict().actionable()
                     && !host.pluginId().equals(report.manifest.pluginId)
-                    && !result.actioned.contains(report.path)) {
+                    && !result.actioned.containsKey(report.path)) {
                 rows.add(Row.toggle(strings.quarantineThis(), strings.quarantineThisHelp(),
                         armKey(report)));
             }

@@ -249,6 +249,102 @@ public final class ActionsTest {
                 new File(installed, "evil").isDirectory(), overlap.commandOutcome);
         check.that("the armed switch still did its own job",
                 !new File(installed, "shady").isDirectory(), overlap.commandOutcome);
+        quarantine.restore("shady.two");
+        deleteTree(new File(installed, "evil"));
+
+        // Two installed plugins can declare the same pluginID: the scanner reports that as
+        // impersonation, so it is a case this feature has to expect rather than an edge case.
+        // Matching by id would act on whichever copy was scanned first.
+        writePlugin(new File(installed, "twinA"), "twin.same", "Twin A", HOSTILE);
+        writePlugin(new File(installed, "twinB"), "twin.same", "Twin B", HARMLESS);
+        host.type("quarantine malicious");
+        ScanRunner.Result twinPlan = new ScanRunner(host).run();
+        String twinCode = codeFrom(twinPlan.commandOutcome);
+        host.type("confirm " + twinCode);
+        ScanRunner.Result twins = new ScanRunner(host).run();
+        check.that("duplicate plugin ids do not confuse which copy is acted on",
+                !new File(installed, "twinA").isDirectory()
+                        && new File(installed, "twinB").isDirectory(),
+                twins.commandOutcome);
+        deleteTree(new File(installed, "twinB"));
+        for (int i = 0; i < quarantine.list().size(); i++) {
+            quarantine.purge(quarantine.list().get(i).directory.getName());
+        }
+
+        // A pluginID is attacker-controlled and only reported when malformed, never rejected. One
+        // containing a newline used to split into several identities in the stored plan.
+        writePlugin(new File(installed, "sneaky"), "a\nb.other", "Sneaky", HOSTILE);
+        writePlugin(new File(installed, "bystander"), "b.other", "Bystander", HARMLESS);
+        host.type("quarantine malicious");
+        ScanRunner.Result sneakyPlan = new ScanRunner(host).run();
+        String sneakyCode = codeFrom(sneakyPlan.commandOutcome);
+        host.type("confirm " + sneakyCode);
+        ScanRunner.Result sneaky = new ScanRunner(host).run();
+        check.that("a newline in a plugin id cannot reach a package the plan did not list",
+                new File(installed, "bystander").isDirectory(), sneaky.commandOutcome);
+        deleteTree(new File(installed, "sneaky"));
+        deleteTree(new File(installed, "bystander"));
+        for (int i = 0; i < quarantine.list().size(); i++) {
+            quarantine.purge(quarantine.list().get(i).directory.getName());
+        }
+
+        // Two plugins in different folders can share a directory name, and a bulk move puts them in
+        // quarantine within the same millisecond.
+        File nestedOne = new File(installed, "vendorA/tools");
+        File nestedTwo = new File(installed, "vendorB/tools");
+        writePlugin(nestedOne, "vendor.a.tools", "Vendor A Tools", HOSTILE);
+        writePlugin(nestedTwo, "vendor.b.tools", "Vendor B Tools", HOSTILE);
+        host.type("quarantine malicious");
+        String nestedCode = codeFrom(new ScanRunner(host).run().commandOutcome);
+        host.type("confirm " + nestedCode);
+        ScanRunner.Result nested = new ScanRunner(host).run();
+        check.that("plugins sharing a directory name both survive the move intact",
+                quarantine.list().size() == 2
+                        && new File(quarantine.list().get(0).directory, "manifest.json").isFile()
+                        && new File(quarantine.list().get(1).directory, "manifest.json").isFile(),
+                nested.commandOutcome + " :: " + quarantine.list().size() + " in quarantine");
+        for (int i = quarantine.list().size() - 1; i >= 0; i--) {
+            quarantine.purge(quarantine.list().get(i).directory.getName());
+        }
+        deleteTree(new File(installed, "vendorA"));
+        deleteTree(new File(installed, "vendorB"));
+
+        // After a permanent delete the row must not offer a restore that does not exist.
+        writePlugin(new File(installed, "doomed"), "doomed.one", "Doomed", HOSTILE);
+        host.type("remove malicious");
+        String doomedCode = codeFrom(new ScanRunner(host).run().commandOutcome);
+        host.type("confirm " + doomedCode);
+        ScanRunner.Result doomed = new ScanRunner(host).run();
+        check.that("a deleted plugin is reported as deleted, not as quarantined",
+                rowsMention(doomed, "Deleted just now") && !rowsMention(doomed, "Moved to quarantine"),
+                doomed.commandOutcome);
+
+        // Switch keys must not collide: ids differing only in punctuation once shared one.
+        writePlugin(new File(installed, "dotted"), "foo.bar", "Dotted", HOSTILE);
+        writePlugin(new File(installed, "undered"), "foo_bar", "Undered", HOSTILE);
+        ScanRunner.Result keys = new ScanRunner(host).run();
+        check.that("plugins with similar ids get different switches",
+                !ScanRunner.armKey(reportFor(keys, "foo.bar"))
+                        .equals(ScanRunner.armKey(reportFor(keys, "foo_bar"))),
+                ScanRunner.armKey(reportFor(keys, "foo.bar")));
+        host.putFlag(ScanRunner.armKey(reportFor(keys, "foo.bar")), true);
+        new ScanRunner(host).run();
+        check.that("arming one of them quarantines that one and not its near-namesake",
+                !new File(installed, "dotted").isDirectory()
+                        && new File(installed, "undered").isDirectory(),
+                "the two switches must be independent");
+    }
+
+    /** True when any displayed row mentions {@code fragment}. */
+    private static boolean rowsMention(ScanRunner.Result result, String fragment) {
+        for (int i = 0; i < result.rows.size(); i++) {
+            ScanRunner.Row row = result.rows.get(i);
+            if ((row.title != null && row.title.contains(fragment))
+                    || (row.summary != null && row.summary.contains(fragment))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** What the harness needs from its caller. */

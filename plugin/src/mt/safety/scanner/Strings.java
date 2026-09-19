@@ -131,6 +131,18 @@ public final class Strings {
                 + "\u9875\u786e\u8ba4\u3002");
     }
 
+    public String actedOnRemoved() {
+        return pick("Deleted just now", "\u521a\u521a\u5df2\u5220\u9664");
+    }
+
+    public String actedOnRemovedHelp() {
+        return pick("Permanently removed, so there is no quarantined copy to restore. Restart MT"
+                + " Manager, then reopen this screen to confirm.",
+                "\u5df2\u6c38\u4e45\u5220\u9664\uff0c\u65e0\u53ef\u6062\u590d\u7684\u526f"
+                + "\u672c\u3002\u8bf7\u91cd\u542f MT \u7ba1\u7406\u5668\u540e\u91cd\u65b0"
+                + "\u6253\u5f00\u672c\u9875\u786e\u8ba4\u3002");
+    }
+
     public String bulkOffer(int malicious, int suspicious) {
         return pick(malicious + " to remove, " + suspicious + " flagged in total",
                 "\u5efa\u8bae\u79fb\u9664 " + malicious + " \u4e2a\uff0c\u5171\u6807\u8bb0 "

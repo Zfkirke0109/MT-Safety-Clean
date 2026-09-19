@@ -95,8 +95,14 @@ public final class Quarantine {
             return new Result(false, "Could not create the quarantine folder at " + store.getAbsolutePath());
         }
 
-        String stamp = Long.toString(System.currentTimeMillis());
-        File target = new File(store, stamp + "-" + safeName(pluginDir.getName()));
+        // A bulk action moves several plugins in a tight loop, so the timestamp alone is not unique:
+        // two plugins with the same directory name can land in the same millisecond, and the copy
+        // fallback would then write into an existing quarantine directory and merge the two.
+        File target = freeDestination(pluginDir.getName());
+        if (target == null) {
+            return new Result(false, "Could not find a free name in the quarantine folder for "
+                    + pluginDir.getName());
+        }
         String originalPath = pluginDir.getAbsolutePath();
 
         boolean moved = pluginDir.renameTo(target);
@@ -254,6 +260,16 @@ public final class Quarantine {
         } catch (IOException e) {
             return "";
         }
+    }
+
+    /** An unused directory inside the store, or null when even the suffixed names are taken. */
+    private File freeDestination(String sourceName) {
+        String base = System.currentTimeMillis() + "-" + safeName(sourceName);
+        File candidate = new File(store, base);
+        for (int suffix = 2; candidate.exists() && suffix < 1000; suffix++) {
+            candidate = new File(store, base + "-" + suffix);
+        }
+        return candidate.exists() ? null : candidate;
     }
 
     private static String safeName(String name) {
