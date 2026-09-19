@@ -139,8 +139,8 @@ tools/mtsafety --json plugin-dir/             # machine-readable
 ```
 
 Exit status is `0` when nothing needs action, `2` when something does, `1` on a usage or read error, so
-it drops into a script. It needs only a JDK — no Android SDK, no device — and runs under Termux on the
-phone itself.
+it drops into a script. It needs only a JDK (9 or newer) — no Android SDK, no device — and runs under
+Termux on the phone itself.
 
 ## Your own indicator lists
 
@@ -159,7 +159,8 @@ tools/build.sh test     # compile and test only
 tools/build.sh docs     # regenerate the rule reference from the rule catalogue
 ```
 
-Requirements: a JDK and `zip`. **No Android SDK is needed** — a plugin SDK v2 `.mtp` is a zip of Java
+Requirements: **JDK 9 or newer** and `zip`. (The scripts pass `javac --release 8`, which produces
+Java 8 bytecode for MT Manager's on-device compiler but is itself a JDK 9+ flag.) **No Android SDK is needed** — a plugin SDK v2 `.mtp` is a zip of Java
 sources that MT Manager compiles on the device. The `javac` run exists to catch errors before the phone
 does, using the stubs in `tools/stubs/` to stand in for classes MT Manager provides at runtime. Those
 stubs are never shipped inside the `.mtp`.

@@ -48,9 +48,18 @@ package() {
   # Zipped from inside plugin/ so manifest.json sits at the top of the archive, where MT expects it.
   ( cd plugin && zip -q -r -X "$mtp" manifest.json src assets $( [ -f icon.png ] && echo icon.png ) )
 
-  # Recorded so CI can tell whether the committed .mtp still matches the sources. The archive itself
-  # is not byte-reproducible (zip stores modification times), so the file list is what gets compared.
-  unzip -Z1 "$mtp" | sort > "$out_dir/CONTENTS.txt"
+  # Recorded so CI can tell whether the committed .mtp still matches the sources. The archive itself is
+  # not byte-reproducible, because a zip stores modification times, so each member's name is recorded
+  # with a hash of its contents. A member list alone catches a file added or removed but not one whose
+  # contents changed, which is exactly how a stale artefact would slip through.
+  : > "$out_dir/CONTENTS.txt"
+  while IFS= read -r member; do
+    case "$member" in
+      */) printf '%s  (directory)\n' "$member" >> "$out_dir/CONTENTS.txt" ;;
+      *)  printf '%s  %s\n' "$member" \
+            "$(unzip -p "$mtp" "$member" | sha256sum | cut -d' ' -f1)" >> "$out_dir/CONTENTS.txt" ;;
+    esac
+  done < <(unzip -Z1 "$mtp" | LC_ALL=C sort)
 
   echo "    $mtp"
   echo "    size    $(wc -c < "$mtp") bytes"

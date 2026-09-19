@@ -78,7 +78,7 @@ public final class Strings {
     }
 
     public String hashLabel() {
-        return pick("SHA-256 (first 16)", "SHA-256 \u524d16\u4f4d");
+        return pick("SHA-256 (for the trust command)", "SHA-256\uff08\u7528\u4e8e trust \u547d\u4ee4\uff09");
     }
 
     public String moreFindings(int count) {

@@ -49,14 +49,46 @@ public final class Bytes {
         }
     }
 
+    /** How often the streaming hash stops to ask whether the scan still has time. */
+    private static final int HASH_DEADLINE_CHECK_BYTES = 1 << 22;
+
     /** Streaming SHA-256; the stream is not closed. */
     public static String sha256(InputStream in) throws IOException {
+        return sha256(in, null);
+    }
+
+    /**
+     * Streaming SHA-256 that abandons the digest rather than outrunning the scan's deadline.
+     *
+     * <p>The byte allowance alone cannot bound this. Hashing is charged at a fraction of a file's
+     * length (see {@code PluginPackage.hashCost}) so that reserving it does not starve the rules that
+     * run afterwards, which means a reservation the budget grants can still stand for hundreds of
+     * megabytes of actual reading. On MT Manager's UI thread that is a freeze. So the loop rechecks
+     * the budget as it goes and gives up if the deadline passes, returning no hash at all: the report
+     * already treats an empty hash as an identity it could not establish, and keeps such a package out
+     * of any destructive plan.
+     *
+     * @param budget the scan budget to respect, or {@code null} to hash unconditionally
+     * @return the hex digest, or {@code ""} if the budget ran out before the stream ended
+     */
+    public static String sha256(InputStream in, ScanBudget budget) throws IOException {
         try {
             MessageDigest md = MessageDigest.getInstance("SHA-256");
             byte[] buf = new byte[1 << 16];
             int n;
+            int sinceCheck = 0;
             while ((n = in.read(buf)) > 0) {
                 md.update(buf, 0, n);
+                if (budget == null) {
+                    continue;
+                }
+                sinceCheck += n;
+                if (sinceCheck >= HASH_DEADLINE_CHECK_BYTES) {
+                    sinceCheck = 0;
+                    if (budget.exhausted()) {
+                        return "";
+                    }
+                }
             }
             return hex(md.digest());
         } catch (NoSuchAlgorithmException e) {
@@ -318,8 +350,15 @@ public final class Bytes {
 
     /** True when the blob starts with the ZIP local-header magic, i.e. it is an apk/jar/mtp. */
     public static boolean looksLikeZip(byte[] data) {
-        return data.length >= 4 && data[0] == 'P' && data[1] == 'K'
-                && (data[2] == 3 || data[2] == 5 || data[2] == 7);
+        if (data.length < 4 || data[0] != 'P' || data[1] != 'K') {
+            return false;
+        }
+        // Both signature bytes, not just the first: PK\3\4 is a local header, PK\5\6 an end-of-central
+        // directory, PK\7\8 a spanning marker. Checking one of the pair matches data that merely
+        // begins "PK" followed by a stray 3, 5 or 7.
+        return (data[2] == 3 && data[3] == 4)
+                || (data[2] == 5 && data[3] == 6)
+                || (data[2] == 7 && data[3] == 8);
     }
 
     /** True when the blob starts with the Dalvik executable magic. */

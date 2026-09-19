@@ -51,7 +51,7 @@ public final class ArchiveRules {
     public static void apply(ScanReport report, PluginPackage pkg, List<PluginPackage.Entry> entries,
             ScanBudget budget) {
         checkPaths(report, entries);
-        checkPayloads(report, pkg, entries, budget);
+        checkPayloads(report, pkg, entries, budget, report.manifest.sdkVersion == 3);
         checkCompressionRatio(report, entries);
         checkStructuralAnomalies(report, pkg, budget);
         checkEntropy(report, pkg, entries, budget);
@@ -94,7 +94,7 @@ public final class ArchiveRules {
 
     /** Members that are themselves installable or executable, and members outside the known layout. */
     private static void checkPayloads(ScanReport report, PluginPackage pkg, List<PluginPackage.Entry> entries,
-            ScanBudget budget) {
+            ScanBudget budget, boolean compiledExpected) {
         Signal payload = null;
         Signal unexpected = null;
         for (PluginPackage.Entry entry : entries) {
@@ -104,6 +104,12 @@ public final class ArchiveRules {
             String ext = entry.extension();
             String top = entry.topLevel();
 
+            // A plugin SDK v3 package is built by Gradle and carries compiled code rather than the
+            // sources a v2 package ships, so Java bytecode is what it is supposed to contain. Native
+            // libraries, installable packages and shell scripts stay reportable at any SDK version.
+            if (compiledExpected && (ext.equals("dex") || ext.equals("jar"))) {
+                continue;
+            }
             if (EXECUTABLE_EXTENSIONS.contains(ext)) {
                 if (payload == null) {
                     payload = new Signal("ARC003", Category.PERSISTENCE, Severity.HIGH,

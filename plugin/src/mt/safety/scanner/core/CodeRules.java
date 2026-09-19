@@ -45,33 +45,10 @@ public final class CodeRules {
     private static final int MAX_NESTED_ENTRIES = 400;
     private static final int MAX_NESTED_DEPTH = 2;
 
-    /**
-     * Extensions a member may be skipped under.
-     *
-     * <p>Every entry must be a format {@link Bytes#detectKind} can positively identify, because a
-     * member is only skipped once its magic bytes confirm the name. Listing a format the detector does
-     * not know would describe an exclusion that never actually happens.
-     */
-    private static final Set<String> SKIP_EXTENSIONS = new HashSet<String>();
     private static final Set<String> SOURCE_EXTENSIONS = new HashSet<String>();
     private static final Set<String> TEXT_EXTENSIONS = new HashSet<String>();
 
     static {
-        SKIP_EXTENSIONS.add("png");
-        SKIP_EXTENSIONS.add("jpg");
-        SKIP_EXTENSIONS.add("jpeg");
-        SKIP_EXTENSIONS.add("webp");
-        SKIP_EXTENSIONS.add("gif");
-        SKIP_EXTENSIONS.add("bmp");
-        SKIP_EXTENSIONS.add("ttf");
-        SKIP_EXTENSIONS.add("otf");
-        SKIP_EXTENSIONS.add("woff");
-        SKIP_EXTENSIONS.add("woff2");
-        SKIP_EXTENSIONS.add("mp3");
-        SKIP_EXTENSIONS.add("mp4");
-        SKIP_EXTENSIONS.add("ogg");
-        SKIP_EXTENSIONS.add("wav");
-
         SOURCE_EXTENSIONS.add("java");
         SOURCE_EXTENSIONS.add("kt");
 
@@ -96,17 +73,21 @@ public final class CodeRules {
     }
 
     /**
-     * The extensions a member may be skipped under.
+     * Scans members and records findings; returns the number of members actually read.
      *
-     * <p>Exposed so a test can assert the invariant this list depends on: every entry must be a
-     * format {@link Bytes#detectKind} can positively identify, or it describes an exclusion that never
-     * happens.
+     * <p>No member is exempt on the strength of its name or its first few bytes. An earlier version
+     * skipped anything with a media extension whose magic bytes matched, which sounds safe and is not:
+     * image decoders tolerate trailing junk, so a genuine PNG header followed by an appended payload
+     * satisfied the check and then bypassed every indicator, user pattern and encoded-payload rule.
+     * Reading an ordinary icon costs a fraction of the byte allowance; letting one carry a payload
+     * costs the whole point of the scan. Binary members are searched for printable runs rather than
+     * decoded whole, so real image data contributes nothing to match against.
+     *
+     * <p>The cost is real for a package that ships large media: those members now draw on the same
+     * byte allowance as everything else, and a package big enough to exhaust it is reported as
+     * truncated. That is the intended degradation. A scan that admits it did not finish is useful; one
+     * that reports Clean because it agreed not to look is not.
      */
-    public static java.util.Set<String> skippableExtensions() {
-        return java.util.Collections.unmodifiableSet(SKIP_EXTENSIONS);
-    }
-
-    /** Scans members and records findings; returns the number of members actually read. */
     public static int apply(ScanReport report, PluginPackage pkg, List<PluginPackage.Entry> entries,
             ScanBudget budget, IocDatabase database) {
         Map<String, Signal> byRule = new HashMap<String, Signal>();
@@ -121,9 +102,6 @@ public final class CodeRules {
                 break;
             }
             String ext = entry.extension();
-            if (SKIP_EXTENSIONS.contains(ext) && reallyIsMedia(pkg, entry, budget)) {
-                continue;
-            }
             Scope scope = classify(ext);
             int limit = scope == Scope.SOURCE ? SOURCE_LIMIT : BINARY_LIMIT;
 
@@ -136,6 +114,11 @@ public final class CodeRules {
             }
             if (data.length == 0) {
                 continue;
+            }
+            if (entry.size > limit) {
+                // Only the first part of this member was read, so a finding could be sitting past the
+                // cap. The report says the scan was incomplete rather than implying full coverage.
+                budget.markTruncated();
             }
             scanned++;
 
@@ -267,33 +250,6 @@ public final class CodeRules {
             report.addError("could not read inside " + parentName + ": " + e);
         } finally {
             PluginPackage.closeQuietly(zin);
-        }
-    }
-
-    /**
-     * True only when a member's bytes are positively identified as the media format it claims.
-     *
-     * <p>Skipping a member means never searching it, so this defaults the other way from
-     * {@link Bytes#contentMatchesExtension}, which the disguise rule uses. There, unrecognised content
-     * counts as consistent, because flagging every extensionless blob as a disguise would bury the
-     * user in noise. Here the same answer would be a hole: a {@code .png} holding plain text is not
-     * recognisable as anything, and treating that as "an image, skip it" let a package keep its drop
-     * endpoints in {@code assets/theme.png} where nothing would read them.
-     *
-     * <p>Likewise an unreadable or under-budget header is not confirmation. If we cannot say what a
-     * member is, we read it: scanning an ordinary image costs a little time, and skipping a disguised
-     * one costs the whole point of the scan.
-     */
-    private static boolean reallyIsMedia(PluginPackage pkg, PluginPackage.Entry entry, ScanBudget budget) {
-        try {
-            byte[] head = pkg.read(entry, 32, budget);
-            if (head.length < 4) {
-                return false;
-            }
-            return Bytes.detectKind(head) != null
-                    && Bytes.contentMatchesExtension(entry.extension(), head);
-        } catch (IOException e) {
-            return false;
         }
     }
 

@@ -53,7 +53,15 @@ public final class Signal {
         if (snippet == null) {
             return "";
         }
-        String flat = snippet.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ').trim();
+        // Every control character goes, not just the line breaks. This text is quoted from the package
+        // under examination and ends up on a terminal through the command line report, where an escape
+        // sequence could recolour or rewrite what the user is reading about the thing that produced it.
+        StringBuilder sb = new StringBuilder(snippet.length());
+        for (int i = 0; i < snippet.length(); i++) {
+            char c = snippet.charAt(i);
+            sb.append(c < 0x20 || c == 0x7F ? ' ' : c);
+        }
+        String flat = sb.toString().trim();
         if (flat.length() > 160) {
             flat = flat.substring(0, 157) + "...";
         }

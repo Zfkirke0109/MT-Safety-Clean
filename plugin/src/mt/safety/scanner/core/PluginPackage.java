@@ -28,6 +28,9 @@ public abstract class PluginPackage {
     /** Largest single member the scanner will pull into memory. */
     public static final int MAX_MEMBER_BYTES = 4 * 1024 * 1024;
 
+    /** How much an archive may claim to inflate to before the structural walk gives up on it. */
+    static final long WALK_INFLATION_CAP = 512L * 1024 * 1024;
+
     /** One member of a package. */
     public static final class Entry {
         public final String name;
@@ -210,12 +213,12 @@ public abstract class PluginPackage {
 
         @Override
         public String contentHash(ScanBudget budget) throws IOException {
-            if (budget.reserve(hashCost(file.length())) <= 0) {
+            if (!affordableToHash(file.length(), budget)) {
                 return "";
             }
             InputStream in = new BufferedInputStream(new FileInputStream(file));
             try {
-                return Bytes.sha256(in);
+                return Bytes.sha256(in, budget);
             } finally {
                 closeQuietly(in);
             }
@@ -234,11 +237,17 @@ public abstract class PluginPackage {
             try {
                 ZipEntry ze;
                 int guard = 0;
+                long declared = 0;
                 while ((ze = zin.getNextEntry()) != null) {
                     // Checked every iteration, not once before the walk: a large archive would
                     // otherwise stream tens of thousands of members past the deadline, on MT
                     // Manager's UI thread.
-                    if (guard++ >= 20000 || budget.exhausted()) {
+                    //
+                    // The size cap matters for a different reason: advancing to the next entry
+                    // inflates whatever remains of the current one, so walking an archive built as a
+                    // bomb expands it even though nothing here reads entry data on purpose.
+                    declared += Math.max(ze.getSize(), 0L);
+                    if (guard++ >= 20000 || declared > WALK_INFLATION_CAP || budget.exhausted()) {
                         readWholeArchive = false;
                         break;
                     }
@@ -401,11 +410,11 @@ public abstract class PluginPackage {
             }
             List<String> lines = new ArrayList<String>();
             for (Entry entry : entries()) {
-                if (budget.reserve(hashCost(entry.size)) <= 0) {
-                    return "";
-                }
                 if (entry.directory) {
                     continue;
+                }
+                if (!affordableToHash(entry.size, budget)) {
+                    return "";
                 }
                 File target = new File(root, entry.name);
                 if (!target.isFile()) {
@@ -413,7 +422,14 @@ public abstract class PluginPackage {
                 }
                 InputStream in = new BufferedInputStream(new FileInputStream(target));
                 try {
-                    lines.add(entry.name + ":" + Bytes.sha256(in));
+                    String memberHash = Bytes.sha256(in, budget);
+                    if (memberHash.length() == 0) {
+                        // The digest was abandoned mid-file, so this line would not identify the
+                        // member. A directory hash missing one member is not an identity for the
+                        // directory either; report none rather than a plausible-looking wrong answer.
+                        return "";
+                    }
+                    lines.add(entry.name + ":" + memberHash);
                 } finally {
                     closeQuietly(in);
                 }
@@ -506,6 +522,33 @@ public abstract class PluginPackage {
     static int hashCost(long length) {
         long cost = Math.max(length / 64L, 1L);
         return (int) Math.min(cost, (long) Integer.MAX_VALUE);
+    }
+
+    /**
+     * Beyond this, a package is reported as having no verifiable identity rather than hashed.
+     *
+     * <p>{@link #hashCost} deliberately under-charges, so the byte allowance on its own would let a
+     * granted reservation stand for a gigabyte of real reading. This is the ceiling on what that
+     * discount is allowed to hide. A plugin package is tens or hundreds of kilobytes; 64 MB is already
+     * far outside anything legitimate, and hashing it costs under a second even on a slow phone.
+     */
+    static final long MAX_HASHED_LENGTH = 64L * 1024 * 1024;
+
+    /**
+     * True when the budget can pay for hashing {@code length} bytes in full.
+     *
+     * <p>A partial grant is refused rather than accepted, because there is no such thing as hashing
+     * part of a file: the digest either covers the whole thing or it is not an identity. {@code
+     * reserve} returns whatever is left when it cannot grant the request, so checking only for a
+     * positive result was enough to let an enormous package through on the strength of a few spare
+     * bytes.
+     */
+    static boolean affordableToHash(long length, ScanBudget budget) {
+        if (length < 0 || length > MAX_HASHED_LENGTH) {
+            return false;
+        }
+        int cost = hashCost(length);
+        return budget.reserve(cost) >= cost;
     }
 
     static void closeQuietly(java.io.Closeable c) {

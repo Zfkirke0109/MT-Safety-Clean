@@ -648,7 +648,9 @@ public final class ScanRunner {
                 rows.add(Row.text(strings.problem(), report.errors.get(j)));
             }
             rows.add(Row.text(strings.pathLabel(), report.path));
-            rows.add(Row.text(strings.hashLabel(), shortHash(report.contentHash)));
+            // Shown in full: this is the value the trust command takes, and a truncated one cannot be
+            // used for anything the screen offers.
+            rows.add(Row.text(strings.hashLabel(), fullHash(report.contentHash)));
         }
 
         List<Row> about = result.aboutRows;
@@ -716,11 +718,8 @@ public final class ScanRunner {
         return sb.toString();
     }
 
-    private static String shortHash(String hash) {
-        if (hash == null || hash.length() < 16) {
-            return "(none)";
-        }
-        return hash.substring(0, 16);
+    private static String fullHash(String hash) {
+        return hash == null || hash.length() == 0 ? "(none)" : hash;
     }
 
     private static String describeRoots(List<File> roots) {

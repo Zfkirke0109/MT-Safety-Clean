@@ -749,9 +749,10 @@ public final class ScannerTest {
         check("an ordinary bundled library stays clean",
                 quietJarReport.verdict() == Verdict.CLEAN, summarise(quietJarReport));
 
-        // A member is only skipped once its magic bytes confirm its name, so every extension in the
-        // skip list must be a format the detector actually knows. Listing one it does not know would
-        // describe an exclusion that never happens, which is how that list drifted before.
+        // The disguise rule decides that a .png holds something else by asking the detector what the
+        // bytes actually are, so every media format it is expected to recognise must be one it really
+        // does. A format it silently does not know is a hole in that rule, which is how this table
+        // drifted before.
         Map<String, byte[]> magicSamples = new LinkedHashMap<String, byte[]>();
         magicSamples.put("png", Fixtures.fakePng(64));
         magicSamples.put("jpg", new byte[] {(byte) 0xFF, (byte) 0xD8, (byte) 0xFF, (byte) 0xE0, 0, 0, 0, 0});
@@ -769,19 +770,74 @@ public final class ScannerTest {
         magicSamples.put("ttf", new byte[] {0x00, 0x01, 0x00, 0x00, 0, 0, 0, 0});
 
         StringBuilder undetectable = new StringBuilder();
-        for (String ext : mt.safety.scanner.core.CodeRules.skippableExtensions()) {
-            byte[] sample = magicSamples.get(ext);
-            if (sample == null) {
-                undetectable.append(ext).append(" (no sample in this test) ");
-                continue;
-            }
-            if (Bytes.detectKind(sample) == null
-                    || !Bytes.contentMatchesExtension(ext, sample)) {
-                undetectable.append(ext).append(" (not detected) ");
+        for (Map.Entry<String, byte[]> sample : magicSamples.entrySet()) {
+            if (Bytes.detectKind(sample.getValue()) == null
+                    || !Bytes.contentMatchesExtension(sample.getKey(), sample.getValue())) {
+                undetectable.append(sample.getKey()).append(" (not detected) ");
             }
         }
-        check("every skippable extension is one the detector can confirm",
+        check("every media format the disguise rule relies on is one the detector can confirm",
                 undetectable.length() == 0, undetectable.toString());
+
+        // A genuine PNG header is not a clean bill of health for the rest of the file. Decoders ignore
+        // trailing bytes, so a real image with a payload appended after it used to satisfy the
+        // magic-bytes check and skip every content rule that follows.
+        byte[] realPngHeader = Fixtures.fakePng(512);
+        byte[] appended = Fixtures.bytes(
+                "Runtime getRuntime exec su -c "
+                        + "https://api.telegram.org/bot555:ZZZ/sendDocument "
+                        + "/data/data/com.whatsapp/databases "
+                        + "java/net/URL openConnection");
+        byte[] polyglot = new byte[realPngHeader.length + appended.length];
+        System.arraycopy(realPngHeader, 0, polyglot, 0, realPngHeader.length);
+        System.arraycopy(appended, 0, polyglot, realPngHeader.length, appended.length);
+        check("the polyglot fixture really is a valid PNG by the detector's own reckoning",
+                "png".equals(Bytes.detectKind(polyglot)), String.valueOf(Bytes.detectKind(polyglot)));
+        Map<String, byte[]> withPolyglot = new LinkedHashMap<String, byte[]>();
+        withPolyglot.put("manifest.json",
+                Fixtures.bytes(Fixtures.manifest("x.polyglot", "Themed", "demo.A")));
+        withPolyglot.put("src/demo/A.java", Fixtures.bytes(benign));
+        withPolyglot.put("assets/banner.png", polyglot);
+        ScanReport polyglotReport = scan(fixtures.rawArchive("polyglot.mtp", withPolyglot, false));
+        check("a payload appended after a valid image header is still found",
+                polyglotReport.verdict() != Verdict.CLEAN, summarise(polyglotReport));
+
+        // The other half of that bargain: reading ordinary images must not invent findings.
+        Map<String, byte[]> withRealArt = new LinkedHashMap<String, byte[]>();
+        withRealArt.put("manifest.json",
+                Fixtures.bytes(Fixtures.manifest("x.art", "Arty", "demo.A")));
+        withRealArt.put("src/demo/A.java", Fixtures.bytes(benign));
+        withRealArt.put("icon.png", Fixtures.fakePng(24 * 1024));
+        byte[] realJpeg = Fixtures.highEntropy(8 * 1024);
+        realJpeg[0] = (byte) 0xFF;
+        realJpeg[1] = (byte) 0xD8;
+        realJpeg[2] = (byte) 0xFF;
+        realJpeg[3] = (byte) 0xE0;
+        withRealArt.put("assets/tile.jpg", realJpeg);
+        ScanReport artReport = scan(fixtures.rawArchive("arty.mtp", withRealArt, false));
+        check("a plugin whose assets are real images stays clean",
+                artReport.verdict() == Verdict.CLEAN, summarise(artReport));
+
+        // Hashing is charged at a fraction of a file's length so that reserving it does not starve the
+        // rules that run afterwards. That discount made a partial grant dangerous: reserve() hands back
+        // whatever is left when it cannot meet the request, and the old check only asked for more than
+        // zero, so a few spare bytes bought a full pass over the entire package. On MT Manager's UI
+        // thread that is a freeze, not a slow scan.
+        Map<String, byte[]> bulkyMembers = new LinkedHashMap<String, byte[]>();
+        bulkyMembers.put("manifest.json", Fixtures.bytes(Fixtures.manifest("x.bulky", "Bulky", "demo.A")));
+        bulkyMembers.put("src/demo/A.java", Fixtures.bytes(benign));
+        bulkyMembers.put("assets/blob.bin", Fixtures.highEntropy(640 * 1024));
+        File bulkyArchive = fixtures.rawArchive("bulky.mtp", bulkyMembers, false);
+        ScanReport fullyPaid = new PluginScanner(IocDatabase.empty())
+                .scan(bulkyArchive, ScanBudget.unlimited());
+        check("a package the budget can afford to hash still gets an identity",
+                fullyPaid.contentHash.length() == 64, "got \"" + fullyPaid.contentHash + "\"");
+        ScanReport partlyPaid = new PluginScanner(IocDatabase.empty())
+                .scan(bulkyArchive, new ScanBudget(60000L, 5000L));
+        check("a hash the budget can only part-pay for is not computed at all",
+                partlyPaid.contentHash.length() == 0, "got \"" + partlyPaid.contentHash + "\"");
+        check("and the report says so rather than implying full coverage",
+                partlyPaid.truncated(), summarise(partlyPaid));
 
         // A narrowing cast turned 2.9 into 2 and anything past the int range into Integer.MAX_VALUE,
         // silently rewriting fields that come from an untrusted manifest.
@@ -855,6 +911,84 @@ public final class ScannerTest {
         check("the two help strings really are different translations",
                 !english.commandsHelp().equals(chinese.commandsHelp()),
                 "a language branch may have been dropped");
+
+        // A wrapper prefix has to cover the whole package. Rooting at "Plugin/" while other members
+        // sit outside it would hide everything outside from the scan, which is a way to carry code
+        // past a review.
+        Map<String, byte[]> partlyWrapped = new LinkedHashMap<String, byte[]>();
+        partlyWrapped.put("Plugin/manifest.json",
+                Fixtures.bytes(Fixtures.manifest("x.wrapped", "Wrapped", "demo.A")));
+        partlyWrapped.put("Plugin/src/demo/A.java", Fixtures.bytes(benign));
+        partlyWrapped.put("Other/src/x/Hidden.java", Fixtures.bytes(
+                "package x;\npublic class Hidden {"
+                        + " String u = \"https://api.telegram.org/bot9/x\"; }\n"));
+        ScanReport partial = scan(fixtures.rawArchive("partly-wrapped.mtp", partlyWrapped, false));
+        check("a member outside the wrapper folder is still scanned",
+                partial.hasRule("NET003"), summarise(partial));
+
+        // ...while a package that really is wrapped is still unwrapped normally.
+        Map<String, byte[]> fullyWrapped = new LinkedHashMap<String, byte[]>();
+        fullyWrapped.put("Plugin/manifest.json",
+                Fixtures.bytes(Fixtures.manifest("x.fullwrap", "Full Wrap", "demo.A")));
+        fullyWrapped.put("Plugin/src/demo/A.java", Fixtures.bytes(benign));
+        ScanReport wrapped = scan(fixtures.rawArchive("fully-wrapped.mtp", fullyWrapped, false));
+        check("a genuinely wrapped package is still unwrapped",
+                "x.fullwrap".equals(wrapped.manifest.pluginId) && wrapped.hasRule("ARC008"),
+                wrapped.manifest.pluginId + " :: " + summarise(wrapped));
+
+        // A downloaded .mtp beside the copy installed from it shares an identity by definition.
+        File installedCopy = fixtures.directoryPlugin("dl-installed",
+                Fixtures.manifest("com.same.tool", "Same Tool", "demo.A"),
+                Fixtures.sources("src/demo/A.java", benign));
+        Map<String, byte[]> downloadCopy = new LinkedHashMap<String, byte[]>();
+        downloadCopy.put("manifest.json",
+                Fixtures.bytes(Fixtures.manifest("com.same.tool", "Same Tool", "demo.A")));
+        downloadCopy.put("src/demo/A.java", Fixtures.bytes(benign));
+        File downloaded = fixtures.rawArchive("same-tool.mtp", downloadCopy, false);
+        List<File> both2 = new ArrayList<File>();
+        both2.add(installedCopy);
+        both2.add(downloaded);
+        List<ScanReport> pairReports = new PluginScanner(IocDatabase.empty())
+                .scanAll(both2, ScanBudget.unlimited());
+        check("a download beside its installed copy is not called impersonation",
+                !pairReports.get(0).hasRule("MFT011") && !pairReports.get(1).hasRule("MFT011"),
+                summarise(pairReports.get(0)) + " / " + summarise(pairReports.get(1)));
+
+        // Evidence is quoted from the package and printed to a terminal.
+        Map<String, byte[]> ansi = new LinkedHashMap<String, byte[]>();
+        ansi.put("manifest.json", Fixtures.bytes(Fixtures.manifest("x.ansi", "Ansi", "demo.A")));
+        ansi.put("src/demo/A.java", Fixtures.bytes(
+                "package demo;\npublic class A { String u = \"https://api.telegram.org/bot\u001b[2J1/x\"; }\n"));
+        ScanReport ansiReport = scan(fixtures.rawArchive("ansi.mtp", ansi, false));
+        String rendered = ReportFormatter.plainText(ansiReport);
+        check("the report carries no terminal escape sequences out of a package",
+                rendered.indexOf('\u001b') < 0, "an escape reached the rendered report");
+
+        // A zip signature is two bytes, not one.
+        check("zip detection requires the whole signature",
+                Bytes.looksLikeZip(Fixtures.bytes("PK\u0003\u0004rest"))
+                        && !Bytes.looksLikeZip(Fixtures.bytes("PK\u0003Xnot a zip")),
+                "PK plus a stray 3 is not a zip");
+
+        // Compiled code is what a plugin SDK v3 package is supposed to contain.
+        Map<String, byte[]> v3 = new LinkedHashMap<String, byte[]>();
+        v3.put("manifest.json", Fixtures.bytes(
+                Fixtures.manifest("x.v3", "V3", "demo.A").replace("\"pluginSdkVersion\": 2",
+                        "\"pluginSdkVersion\": 3")));
+        v3.put("classes.dex", Fixtures.fakeDex(2048));
+        ScanReport v3Report = scan(fixtures.rawArchive("v3.mtp", v3, false));
+        check("a v3 package is not flagged for carrying compiled code",
+                !v3Report.hasRule("ARC003"), summarise(v3Report));
+
+        // ...but a native library is still not a library archive, at any SDK version.
+        Map<String, byte[]> v3Native = new LinkedHashMap<String, byte[]>();
+        v3Native.put("manifest.json", Fixtures.bytes(
+                Fixtures.manifest("x.v3n", "V3 Native", "demo.A").replace("\"pluginSdkVersion\": 2",
+                        "\"pluginSdkVersion\": 3")));
+        v3Native.put("libs/libx.so", Fixtures.bytes("\u007fELF payload"));
+        ScanReport v3NativeReport = scan(fixtures.rawArchive("v3-native.mtp", v3Native, false));
+        check("a native library is still reported in a v3 package",
+                v3NativeReport.hasRule("ARC003"), summarise(v3NativeReport));
 
         // Stopping the archive walk early must not invent findings: every member not yet streamed
         // would otherwise look absent from the archive's own data.

@@ -136,7 +136,14 @@ public final class Quarantine {
             }
         }
 
-        writeInfo(target, pluginId, originalPath);
+        if (!writeInfo(target, pluginId, originalPath)) {
+            // Without the note there is nothing recording where this came from, so "use restore" would
+            // be a promise the quarantine cannot keep. Say where it went instead.
+            return new Result(true, "Moved " + (pluginId.length() > 0 ? pluginId : pluginDir.getName())
+                    + " to " + target.getAbsolutePath() + ", but its restore note could not be written,"
+                    + " so it cannot be restored automatically. Move it back by hand if you need it.",
+                    target);
+        }
         return new Result(true, "Quarantined " + (pluginId.length() > 0 ? pluginId : pluginDir.getName())
                 + ". Restart MT Manager, then check its plugin list. Use \"restore\" to undo.", target);
     }
@@ -247,7 +254,7 @@ public final class Quarantine {
                 || item.directory.getName().endsWith("-" + identifier);
     }
 
-    private void writeInfo(File directory, String pluginId, String originalPath) {
+    private boolean writeInfo(File directory, String pluginId, String originalPath) {
         StringBuilder sb = new StringBuilder();
         sb.append("{\n  \"pluginId\": ").append(Json.quote(pluginId)).append(",\n");
         sb.append("  \"originalPath\": ").append(Json.quote(originalPath)).append(",\n");
@@ -260,8 +267,9 @@ public final class Quarantine {
             } finally {
                 out.close();
             }
+            return true;
         } catch (IOException e) {
-            // Losing the note only costs the ability to restore automatically.
+            return false;
         }
     }
 
