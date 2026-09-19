@@ -240,7 +240,12 @@ public final class Strings {
                 + "   quarantine ID - move an installed plugin aside, reversibly."
                 + "   restore ID, purge ID, quarantined - manage what was moved."
                 + "   root PATH - also search a folder.",
-                "deep / fast - \u6df1\u5ea6\u6216\u5feb\u901f\u626b\u63cf\u3002"
+                "quarantine malicious / quarantine suspicious - \u53ef\u6062\u590d\u5730\u6279"
+                + "\u91cf\u9694\u79bb\u6240\u6709\u88ab\u6807\u8bb0\u7684\u63d2\u4ef6\u3002"
+                + "   remove malicious / remove suspicious - \u5f7b\u5e95\u5220\u9664\u3002"
+                + "   confirm CODE / cancel - \u786e\u8ba4\u6216\u53d6\u6d88\u5df2\u5217\u51fa"
+                + "\u7684\u64cd\u4f5c\u3002"
+                + "   deep / fast - \u6df1\u5ea6\u6216\u5feb\u901f\u626b\u63cf\u3002"
                 + "   export - \u5bfc\u51fa\u5b8c\u6574\u62a5\u544a\u5230\u672c\u63d2\u4ef6\u76ee\u5f55\u3002"
                 + "   trust HASH - \u6309 SHA-256 \u6807\u8bb0\u4e3a\u53ef\u4fe1\u3002"
                 + "   untrust HASH\u3001deny HASH_OR_ID - \u6492\u9500\u6216\u6807\u8bb0\u4e3a\u6076\u610f\u3002"

@@ -226,6 +226,29 @@ public final class ActionsTest {
         ScanRunner.Result bareRemove = new ScanRunner(host).run();
         check.that("remove without a scope explains itself instead of guessing",
                 bareRemove.commandOutcome.contains("remove malicious"), bareRemove.commandOutcome);
+        deleteTree(new File(installed, "self"));
+
+        // An armed switch and a pending confirmation in the same build both change what is installed.
+        // The armed action runs first, so the confirmation must be judged against what is left, not
+        // against the scan taken before it: otherwise the plan validates against a set that no longer
+        // exists, then fails on the moved plugin while still acting on the others.
+        writePlugin(new File(installed, "evil"), "evil.one", "Evil One", HOSTILE);
+        host.type("quarantine suspicious");
+        ScanRunner.Result overlapPlan = new ScanRunner(host).run();
+        String overlapCode = codeFrom(overlapPlan.commandOutcome);
+        check.that("the overlap plan covers both flagged plugins",
+                overlapCode != null && overlapPlan.commandOutcome.contains("Evil One")
+                        && overlapPlan.commandOutcome.contains("Shady Two"),
+                overlapPlan.commandOutcome);
+
+        ScanRunner.Result beforeOverlap = new ScanRunner(host).run();
+        host.putFlag(ScanRunner.armKey(reportFor(beforeOverlap, "shady.two")), true);
+        host.type("confirm " + overlapCode);
+        ScanRunner.Result overlap = new ScanRunner(host).run();
+        check.that("a confirmation is refused once an armed switch has changed the set",
+                new File(installed, "evil").isDirectory(), overlap.commandOutcome);
+        check.that("the armed switch still did its own job",
+                !new File(installed, "shady").isDirectory(), overlap.commandOutcome);
     }
 
     /** What the harness needs from its caller. */

@@ -835,6 +835,27 @@ public final class ScannerTest {
                 !quarantine.quarantine(victim, "demo.victim").ok,
                 "quarantining the scanner's own id must be refused");
 
+        // Destructive commands have to be discoverable in both languages, not only English. MT
+        // Manager's users are largely Chinese-speaking, so an English-only help string hides exactly
+        // the commands that delete things.
+        mt.safety.scanner.Strings english = mt.safety.scanner.Strings.forLanguage("en");
+        mt.safety.scanner.Strings chinese = mt.safety.scanner.Strings.forLanguage("zh");
+        String[] mustMention = {"quarantine malicious", "remove malicious", "confirm", "cancel"};
+        StringBuilder missing = new StringBuilder();
+        for (int i = 0; i < mustMention.length; i++) {
+            if (!english.commandsHelp().contains(mustMention[i])) {
+                missing.append("en:").append(mustMention[i]).append(' ');
+            }
+            if (!chinese.commandsHelp().contains(mustMention[i])) {
+                missing.append("zh:").append(mustMention[i]).append(' ');
+            }
+        }
+        check("both languages document the destructive commands",
+                missing.length() == 0, missing.toString());
+        check("the two help strings really are different translations",
+                !english.commandsHelp().equals(chinese.commandsHelp()),
+                "a language branch may have been dropped");
+
         // Stopping the archive walk early must not invent findings: every member not yet streamed
         // would otherwise look absent from the archive's own data.
         Map<String, byte[]> wide = new LinkedHashMap<String, byte[]>();

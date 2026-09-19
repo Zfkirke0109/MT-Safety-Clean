@@ -368,6 +368,13 @@ public final class ScanRunner {
             if (report.archive) {
                 continue;
             }
+            // The reports are the scan from before this build acted on anything. A plugin an armed
+            // switch has just moved is no longer installed, and counting it here would let a pending
+            // confirmation validate against a set that no longer exists: the check would pass, then
+            // the action would fail on the moved plugin while still processing the rest.
+            if (result.actioned.contains(report.path)) {
+                continue;
+            }
             if (host.pluginId().equals(report.manifest.pluginId)) {
                 continue;
             }
@@ -388,8 +395,12 @@ public final class ScanRunner {
 
     private static ScanReport findByIdentity(String id, Result result) {
         for (int i = 0; i < result.reports.size(); i++) {
-            if (identityOf(result.reports.get(i)).equals(id)) {
-                return result.reports.get(i);
+            ScanReport report = result.reports.get(i);
+            if (result.actioned.contains(report.path)) {
+                continue;
+            }
+            if (identityOf(report).equals(id)) {
+                return report;
             }
         }
         return null;

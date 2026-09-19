@@ -96,6 +96,9 @@ public final class MtEnvironment {
     }
 
     private static String canonicalPath(File file) {
+        if (file == null) {
+            return "";
+        }
         try {
             return file.getCanonicalPath();
         } catch (java.io.IOException e) {
@@ -113,7 +116,7 @@ public final class MtEnvironment {
     public static List<Discovery.Candidate> findPlugins(List<File> roots, String ownPluginId,
             File ownFilesDir) {
         List<Discovery.Candidate> found = new Discovery().find(roots);
-        String ownArea = canonicalPath(ownFilesDir);
+        String ownArea = ownFilesDir == null ? "" : canonicalPath(ownFilesDir);
         List<Discovery.Candidate> out = new ArrayList<Discovery.Candidate>();
         for (int i = 0; i < found.size(); i++) {
             Discovery.Candidate candidate = found.get(i);
