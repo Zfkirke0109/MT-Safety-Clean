@@ -693,6 +693,56 @@ public final class ScannerTest {
         check("a genuine image is still skipped and reports nothing",
                 quietReport.verdict() == Verdict.CLEAN, summarise(quietReport));
 
+        // A jar's members are deflated, so searching the container's raw bytes finds nothing. libs/
+        // is the documented home for third-party jars, which made it the obvious place to hide a
+        // payload: before this, a plugin shipping one scanned Clean with zero findings.
+        Map<String, byte[]> jarMembers = new LinkedHashMap<String, byte[]>();
+        jarMembers.put("evil/Evil.class", Fixtures.bytes(
+                "Runtime getRuntime exec su -c "
+                        + "https://api.telegram.org/bot555:ZZZ/sendDocument "
+                        + "/data/data/com.whatsapp/databases "
+                        + "java/net/URL openConnection"));
+        byte[] hostileJar = Fixtures.deflatedJar(jarMembers);
+        check("the jar fixture really does hide its contents from a raw search",
+                !Bytes.extractedText(hostileJar, 6).contains("telegram"),
+                "the fixture must be compressed or it tests nothing");
+
+        Map<String, byte[]> withJar = new LinkedHashMap<String, byte[]>();
+        withJar.put("manifest.json", Fixtures.bytes(Fixtures.manifest("x.jar", "Helper", "demo.A")));
+        withJar.put("src/demo/A.java", Fixtures.bytes(benign));
+        withJar.put("libs/helper.jar", hostileJar);
+        ScanReport jarReport = scan(fixtures.rawArchive("with-jar.mtp", withJar, false));
+        check("a payload inside a bundled jar is found",
+                jarReport.hasRule("NET003") && jarReport.hasRule("SEN001")
+                        && jarReport.verdict().actionable(),
+                jarReport.verdict() + " :: " + summarise(jarReport));
+        check("evidence names the file inside the jar",
+                evidenceMentions(jarReport, "helper.jar!evil/Evil.class"),
+                "expected the nested path in the evidence");
+
+        // Dalvik bytecode inside a library archive is a payload in a wrapper, not a library.
+        Map<String, byte[]> jarWithDex = new LinkedHashMap<String, byte[]>();
+        jarWithDex.put("payload.dex", Fixtures.fakeDex(2048));
+        Map<String, byte[]> withDexJar = new LinkedHashMap<String, byte[]>();
+        withDexJar.put("manifest.json", Fixtures.bytes(Fixtures.manifest("x.dexjar", "DexJar", "demo.A")));
+        withDexJar.put("src/demo/A.java", Fixtures.bytes(benign));
+        withDexJar.put("libs/wrapper.jar", Fixtures.deflatedJar(jarWithDex));
+        ScanReport dexJarReport = scan(fixtures.rawArchive("with-dex-jar.mtp", withDexJar, false));
+        check("executable code inside a bundled jar is reported",
+                dexJarReport.hasRule("ARC009"), summarise(dexJarReport));
+
+        // An ordinary library must not become noise just because it is now opened.
+        Map<String, byte[]> quietJarMembers = new LinkedHashMap<String, byte[]>();
+        quietJarMembers.put("util/Strings.class", Fixtures.bytes(
+                "java/lang/String toUpperCase toLowerCase trim substring valueOf"));
+        Map<String, byte[]> withQuietJar = new LinkedHashMap<String, byte[]>();
+        withQuietJar.put("manifest.json", Fixtures.bytes(Fixtures.manifest("x.quietjar", "Quiet", "demo.A")));
+        withQuietJar.put("src/demo/A.java", Fixtures.bytes(benign));
+        withQuietJar.put("libs/strings.jar", Fixtures.deflatedJar(quietJarMembers));
+        ScanReport quietJarReport = scan(fixtures.rawArchive("quiet-jar.mtp", withQuietJar, false));
+        check("an ordinary bundled library stays clean",
+                quietJarReport.verdict() == Verdict.CLEAN, summarise(quietJarReport));
+
         // Stopping the archive walk early must not invent findings: every member not yet streamed
         // would otherwise look absent from the archive's own data.
         Map<String, byte[]> wide = new LinkedHashMap<String, byte[]>();
@@ -720,6 +770,19 @@ public final class ScannerTest {
         } finally {
             in.close();
         }
+    }
+
+    private static boolean evidenceMentions(ScanReport report, String fragment) {
+        List<mt.safety.scanner.core.Signal> signals = report.signals;
+        for (int i = 0; i < signals.size(); i++) {
+            List<mt.safety.scanner.core.Signal.Evidence> evidence = signals.get(i).evidence();
+            for (int j = 0; j < evidence.size(); j++) {
+                if (evidence.get(j).where.contains(fragment)) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     private static int countRule(ScanReport report, String ruleId) {

@@ -1,5 +1,6 @@
 package mt.safety.scanner.core;
 
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -8,6 +9,8 @@ import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
 
 import mt.safety.scanner.core.Indicator.Scope;
 
@@ -36,6 +39,11 @@ public final class CodeRules {
     /** How much of a single member is read, by kind. */
     private static final int SOURCE_LIMIT = 1024 * 1024;
     private static final int BINARY_LIMIT = 4 * 1024 * 1024;
+
+    /** Bounds on looking inside an archived member such as a jar under libs/. */
+    private static final int NESTED_MEMBER_LIMIT = 512 * 1024;
+    private static final int MAX_NESTED_ENTRIES = 400;
+    private static final int MAX_NESTED_DEPTH = 2;
 
     private static final Set<String> SKIP_EXTENSIONS = new HashSet<String>();
     private static final Set<String> SOURCE_EXTENSIONS = new HashSet<String>();
@@ -113,6 +121,13 @@ public final class CodeRules {
             }
             scanned++;
 
+            // A jar's members are deflated, so searching the container's raw bytes finds nothing at
+            // all. libs/ is the documented home for third-party jars, which makes it the obvious
+            // place to hide a payload: it has to be opened, not just skimmed.
+            if (Bytes.looksLikeZip(data)) {
+                scanNestedArchive(report, byRule, entry.name, data, budget, database, 1);
+            }
+
             String text = scope == Scope.BINARY ? Bytes.extractedText(data, 6) : Bytes.text(data);
             if (scope == Scope.SOURCE && isDeclaredEntryPoint(entry.name, report)
                     && TRANSLATION_ENGINE.matcher(text).find()) {
@@ -151,6 +166,89 @@ public final class CodeRules {
                     "One of the patterns in your indicator file was found in this package.");
             signal.withEvidence(location(entry, text, matcher.start()),
                     database.patternSources().get(i) + " -> " + snippet(text, matcher.start(), matcher.end()));
+        }
+    }
+
+    /**
+     * Opens an archived member and applies the same rules to what is inside it.
+     *
+     * <p>Bounded in every direction: entry count, bytes per entry, nesting depth, and the scan budget,
+     * because the archive being opened is the untrusted thing under examination.
+     *
+     * <p>Evidence keeps the path that leads to it, {@code libs/helper.jar!evil/Evil.class}, so a
+     * finding can be traced back to the file it actually came from.
+     */
+    private static void scanNestedArchive(ScanReport report, Map<String, Signal> byRule, String parentName,
+            byte[] data, ScanBudget budget, IocDatabase database, int depth) {
+        if (depth > MAX_NESTED_DEPTH) {
+            return;
+        }
+        Signal executableInside = null;
+        ZipInputStream zin = new ZipInputStream(new ByteArrayInputStream(data));
+        try {
+            ZipEntry ze;
+            int count = 0;
+            while ((ze = zin.getNextEntry()) != null) {
+                if (count++ >= MAX_NESTED_ENTRIES || budget.exhausted()) {
+                    budget.markTruncated();
+                    break;
+                }
+                if (ze.isDirectory()) {
+                    continue;
+                }
+                int granted = budget.reserve(NESTED_MEMBER_LIMIT);
+                if (granted <= 0) {
+                    budget.markTruncated();
+                    break;
+                }
+                byte[] child;
+                try {
+                    child = Bytes.readAtMost(zin, granted);
+                } catch (IOException e) {
+                    report.addError("could not read " + parentName + "!" + ze.getName() + ": "
+                            + e.getMessage());
+                    continue;
+                }
+                if (child.length == 0) {
+                    continue;
+                }
+
+                String childName = parentName + "!" + ze.getName();
+                PluginPackage.Entry synthetic =
+                        new PluginPackage.Entry(childName, child.length, child.length, false);
+
+                // Dalvik bytecode or a native library inside a library archive is not a library.
+                String kind = Bytes.detectKind(child);
+                if ("dex".equals(kind) || "elf".equals(kind)) {
+                    if (executableInside == null) {
+                        executableInside = signalFor(report, byRule, "ARC009", Category.PERSISTENCE,
+                                Severity.HIGH,
+                                "An archived library contains executable code",
+                                "A jar under libs/ is expected to hold Java classes. Dalvik bytecode or a"
+                                        + " native binary inside one is a payload travelling in a wrapper.");
+                    }
+                    executableInside.withEvidence(childName, kind + ", " + Bytes.humanSize(child.length));
+                }
+
+                Scope childScope = classify(synthetic.extension());
+                String childText = childScope == Scope.BINARY
+                        ? Bytes.extractedText(child, 6) : Bytes.text(child);
+                matchIndicators(report, byRule, synthetic, childScope, childText);
+                matchPairs(report, byRule, synthetic, childScope, childText);
+                matchUserPatterns(report, byRule, synthetic, childText, database);
+                checkEncodedPayloads(report, byRule, synthetic, childText);
+
+                if (Bytes.looksLikeZip(child)) {
+                    scanNestedArchive(report, byRule, childName, child, budget, database, depth + 1);
+                }
+            }
+        } catch (IOException e) {
+            report.addError("could not open " + parentName + ": " + e.getMessage());
+        } catch (RuntimeException e) {
+            // A malformed archive must not take the scan down with it.
+            report.addError("could not read inside " + parentName + ": " + e);
+        } finally {
+            PluginPackage.closeQuietly(zin);
         }
     }
 

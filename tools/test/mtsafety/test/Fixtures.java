@@ -192,6 +192,30 @@ public final class Fixtures {
         return out;
     }
 
+    /**
+     * A deflated jar built in memory.
+     *
+     * <p>Compression is the point: the raw bytes of a deflated archive contain none of the strings its
+     * members do, which is exactly why an archive has to be opened rather than skimmed.
+     */
+    public static byte[] deflatedJar(Map<String, byte[]> members) {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        try {
+            java.util.zip.ZipOutputStream zip = new java.util.zip.ZipOutputStream(out);
+            zip.setMethod(java.util.zip.ZipOutputStream.DEFLATED);
+            zip.setLevel(9);
+            for (Map.Entry<String, byte[]> member : members.entrySet()) {
+                zip.putNextEntry(new java.util.zip.ZipEntry(member.getKey()));
+                zip.write(member.getValue());
+                zip.closeEntry();
+            }
+            zip.close();
+        } catch (IOException e) {
+            throw new IllegalStateException("could not build a jar fixture", e);
+        }
+        return out.toByteArray();
+    }
+
     /** Bytes that begin with the real PNG signature, so a genuine image can be tested too. */
     public static byte[] fakePng(int length) {
         byte[] out = new byte[Math.max(length, 16)];
