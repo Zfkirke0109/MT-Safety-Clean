@@ -92,6 +92,10 @@ public final class Quarantine {
      * {@code /storage/emulated/0}. Only the last path component is in question.
      */
     private String storeProblem() {
+        if (store.exists() && !store.isDirectory()) {
+            return "The quarantine folder at " + store.getAbsolutePath() + " is not a directory, so"
+                    + " nothing was done.";
+        }
         try {
             if (store.exists() && isLink(store)) {
                 return "The quarantine folder at " + store.getAbsolutePath() + " is a link to somewhere"
@@ -106,16 +110,29 @@ public final class Quarantine {
     }
 
     /**
+     * The same check, plus creating the store when it is simply not there yet.
+     *
+     * <p>Split from {@link #storeProblem} because reading quarantine must never bring the folder into
+     * existence: {@code list} on a fresh install should say the quarantine is empty, not create it.
+     */
+    private String ensureUsableStore() {
+        String problem = storeProblem();
+        if (problem != null) {
+            return problem;
+        }
+        if (!store.isDirectory() && !store.mkdirs()) {
+            return "Could not create the quarantine folder at " + store.getAbsolutePath();
+        }
+        return null;
+    }
+
+    /**
      * Moves {@code pluginDir} into the quarantine store.
      *
      * <p>Refuses anything that is not recognisably an installed plugin, and refuses to act on itself,
      * so a mistyped command cannot take out the scanner or an unrelated folder.
      */
     public Result quarantine(File pluginDir, String ownPluginId) {
-        String storeProblem = storeProblem();
-        if (storeProblem != null) {
-            return new Result(false, storeProblem);
-        }
         if (pluginDir == null || !pluginDir.isDirectory()) {
             return new Result(false, "Not a directory: " + pluginDir);
         }
@@ -138,8 +155,9 @@ public final class Quarantine {
             return new Result(false, "That is this scanner. Uninstall it from MT Manager's plugin list"
                     + " if you want it gone.");
         }
-        if (!store.isDirectory() && !store.mkdirs()) {
-            return new Result(false, "Could not create the quarantine folder at " + store.getAbsolutePath());
+        String storeProblem = ensureUsableStore();
+        if (storeProblem != null) {
+            return new Result(false, storeProblem);
         }
 
         // A bulk action moves several plugins in a tight loop, so the timestamp alone is not unique:

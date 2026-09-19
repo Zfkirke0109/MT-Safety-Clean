@@ -131,15 +131,6 @@ public final class Strings {
                 + "\u9875\u786e\u8ba4\u3002");
     }
 
-    public String notInThisScan(String name) {
-        return pick(name + " was not part of the scan on this screen, so nothing was done to it."
-                + " Reopen this screen to scan it, then try again.",
-                name + " \u4e0d\u5728\u672c\u9875\u7684\u626b\u63cf\u7ed3\u679c\u4e2d\uff0c"
-                + "\u672a\u5bf9\u5176\u6267\u884c\u4efb\u4f55\u64cd\u4f5c\u3002\u8bf7"
-                + "\u91cd\u65b0\u6253\u5f00\u672c\u9875\u626b\u63cf\u540e\u518d\u8bd5"
-                + "\u3002");
-    }
-
     public String changedSinceScan(String name) {
         return pick(name + " changed since it was scanned, so nothing was done to it. Reopen this"
                 + " screen to scan it again.",

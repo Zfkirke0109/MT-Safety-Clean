@@ -26,9 +26,14 @@ public final class ActionsTest {
 
     /** A Host backed by maps and a temporary directory. */
     static final class FakeHost implements Host {
+        interface Hook {
+            void run();
+        }
+
         private final File filesDir;
         private final Map<String, String> values = new HashMap<String, String>();
         private final Map<String, Boolean> flags = new HashMap<String, Boolean>();
+        private Hook beforeCommandRead;
 
         FakeHost(File filesDir) {
             this.filesDir = filesDir;
@@ -41,6 +46,11 @@ public final class ActionsTest {
 
         @Override
         public String config(String key, String fallback) {
+            if (ScanRunner.KEY_COMMAND.equals(key) && beforeCommandRead != null) {
+                Hook hook = beforeCommandRead;
+                beforeCommandRead = null;
+                hook.run();
+            }
             String v = values.get(key);
             return v == null ? fallback : v;
         }
@@ -89,6 +99,10 @@ public final class ActionsTest {
 
         void type(String command) {
             values.put(ScanRunner.KEY_COMMAND, command);
+        }
+
+        void beforeCommandRead(Hook hook) {
+            beforeCommandRead = hook;
         }
     }
 
@@ -412,6 +426,31 @@ public final class ActionsTest {
         }
         deleteTree(linked);
 
+        // The quarantine store lives under this plugin's files directory. If that store root is itself
+        // a link, moving a plugin there would act on the link's target instead.
+        File linkedStoreTarget = new File(iso, "linked-store-target");
+        File linkedStoreSentinel = new File(linkedStoreTarget, "keep.txt");
+        Fixtures.write(linkedStoreSentinel, "must survive");
+        File linkedStorePath = new File(filesDir, "linked-store");
+        Quarantine linkedStore = new Quarantine(linkedStorePath);
+        File linkedStorePlugin = new File(installed, "storelink");
+        writePlugin(linkedStorePlugin, "store.link", "Store Link", HOSTILE);
+        if (makeSymlink(linkedStorePath, linkedStoreTarget)) {
+            Quarantine.Result refusedStore = linkedStore.quarantine(linkedStorePlugin, host.pluginId());
+            check.that("a linked quarantine store root is refused",
+                    !refusedStore.ok && linkedStorePlugin.isDirectory(), refusedStore.message);
+            check.that("a linked quarantine store root is not listed or used",
+                    linkedStore.list().isEmpty() && linkedStoreSentinel.isFile(),
+                    "the store target must stay untouched");
+            linkedStorePath.delete();
+        } else {
+            check.that("a linked quarantine store root is refused", true,
+                    "skipped: no symlink support here");
+            check.that("a linked quarantine store root is not listed or used", true, "skipped");
+        }
+        deleteTree(linkedStoreTarget);
+        deleteTree(linkedStorePlugin);
+
         // Telling the user nothing matches must not leave an older plan armed.
         writePlugin(new File(installed, "lingerer"), "linger.one", "Lingerer", RISKY);
         host.type("quarantine suspicious");
@@ -519,12 +558,9 @@ public final class ActionsTest {
         // manifest, so a same-id replacement between the scan and the command was moved in place of the
         // package the report described. Held to the same standard as the switch and the bulk commands.
         //
-        // The refusal itself is not asserted here, and saying so is better than a test that looks like
-        // it covers this. run() scans, then runs the typed command, so within one build the scan is
-        // never stale: anything this test changes beforehand is simply what the next scan sees. The
-        // window the fix closes is between those two steps inside a single build, which the harness
-        // cannot get between. What is asserted is that the added check does not block the ordinary
-        // case, which is the way a guard like this usually goes wrong.
+        // The refusal itself is covered further down, by a hook that changes the package between the
+        // scan and the command read. What this asserts is the other half: that the added check does not
+        // block the ordinary case, which is the usual way a guard like this goes wrong.
         writePlugin(new File(installed, "typed"), "typed.one", "Typed", HOSTILE);
         new ScanRunner(host).run();
         host.type("quarantine typed.one");
@@ -555,6 +591,34 @@ public final class ActionsTest {
         check.that("a package that changed after the scan is not acted on",
                 new File(installed, "mutating").isDirectory(), afterMutation.commandOutcome);
         deleteTree(new File(installed, "mutating"));
+
+        // The typed "quarantine ID" path runs after the scan too, so it has to prove the package on
+        // disk is still the one that was reported before moving it.
+        final File namedDir = new File(installed, "named");
+        writePlugin(namedDir, "named.one", "Named", HOSTILE);
+        host.type("quarantine named.one");
+        host.beforeCommandRead(new FakeHost.Hook() {
+            @Override
+            public void run() {
+                Fixtures.write(new File(namedDir, "src/x/Changed.java"),
+                        "package x;\npublic class Changed {}\n");
+            }
+        });
+        ScanRunner.Result namedChanged = new ScanRunner(host).run();
+        check.that("quarantining one plugin by name is refused after the package changes",
+                namedDir.isDirectory(), namedChanged.commandOutcome);
+        deleteTree(namedDir);
+
+        // The confirmation prompt names the plugin about to be acted on, so the same terminal-control
+        // filtering used for evidence has to apply here too.
+        writePlugin(new File(installed, "c1liar"), "c1.liar", "C1\u009b2JPlugin", HOSTILE);
+        host.type("quarantine malicious");
+        ScanRunner.Result c1Liar = new ScanRunner(host).run();
+        check.that("a plugin name cannot inject C1 controls into the confirmation prompt",
+                c1Liar.commandOutcome.indexOf('\u009b') < 0, c1Liar.commandOutcome);
+        host.type("cancel");
+        new ScanRunner(host).run();
+        deleteTree(new File(installed, "c1liar"));
 
         // Removing a plugin recreated at a path that already has an older quarantined copy must
         // delete the copy just made, not the older one.

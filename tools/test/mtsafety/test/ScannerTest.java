@@ -1099,6 +1099,18 @@ public final class ScannerTest {
         check("a native library is still reported in a v3 package",
                 v3NativeReport.hasRule("ARC003"), summarise(v3NativeReport));
 
+        // The v3 exemption is only for the usual build outputs. A dex tucked under assets/ is still a
+        // payload, and a jar outside libs/ is still outside MT Manager's layout.
+        Map<String, byte[]> v3Odd = new LinkedHashMap<String, byte[]>();
+        v3Odd.put("manifest.json", Fixtures.bytes(
+                Fixtures.manifest("x.v3odd", "V3 Odd", "demo.A").replace("\"pluginSdkVersion\": 2",
+                        "\"pluginSdkVersion\": 3")));
+        v3Odd.put("assets/payload.dex", Fixtures.fakeDex(2048));
+        v3Odd.put("evil.jar", Fixtures.deflatedJar(new LinkedHashMap<String, byte[]>()));
+        ScanReport v3OddReport = scan(fixtures.rawArchive("v3-odd.mtp", v3Odd, false));
+        check("only the expected compiled outputs are exempt in a v3 package",
+                v3OddReport.hasRule("ARC003") && v3OddReport.hasRule("ARC002"), summarise(v3OddReport));
+
         // Stopping the archive walk early must not invent findings: every member not yet streamed
         // would otherwise look absent from the archive's own data.
         Map<String, byte[]> wide = new LinkedHashMap<String, byte[]>();
