@@ -529,7 +529,7 @@ public final class ScanRunner {
         StringBuilder sb = new StringBuilder(name.length());
         for (int i = 0; i < name.length() && sb.length() < 60; i++) {
             char c = name.charAt(i);
-            sb.append(c < 0x20 || c == 0x7F ? ' ' : c);
+            sb.append(c < 0x20 || (c >= 0x7F && c <= 0x9F) ? ' ' : c);
         }
         String flat = sb.toString().trim();
         return flat.length() == 0 ? "(unnamed)" : flat;
@@ -839,25 +839,23 @@ public final class ScanRunner {
         if (argument.length() == 0) {
             return strings.needsArgument("quarantine");
         }
-        List<File> roots = MtEnvironment.candidateRoots(host.filesDir(), host.config(KEY_EXTRA_ROOT, ""));
-        List<Discovery.Candidate> candidates = MtEnvironment.findPlugins(roots, host.pluginId(), host.filesDir());
-        for (int i = 0; i < candidates.size(); i++) {
-            Discovery.Candidate candidate = candidates.get(i);
-            if (!candidate.installed) {
+        for (int i = 0; i < result.reports.size(); i++) {
+            ScanReport report = result.reports.get(i);
+            if (report.archive || result.actioned.containsKey(report.path)) {
                 continue;
             }
-            // Only the plugin's identity is needed here. Scanning each candidate in full would cost
-            // pattern matching, archive rules and hashing to learn one string, on the UI thread.
-            PluginManifest manifest = PluginManifest.readFrom(candidate.path);
-            boolean match = argument.equals(manifest.pluginId)
-                    || argument.equals(candidate.path.getName())
-                    || argument.equalsIgnoreCase(manifest.displayName());
+            boolean match = argument.equals(report.manifest.pluginId)
+                    || argument.equals(new File(report.path).getName())
+                    || argument.equalsIgnoreCase(report.manifest.displayName());
             if (match) {
-                Quarantine.Result moved = quarantine.quarantine(candidate.path, host.pluginId());
+                if (!stillMatches(report)) {
+                    return strings.changedSinceScan(flatten(report.manifest.displayName()));
+                }
+                Quarantine.Result moved = quarantine.quarantine(new File(report.path), host.pluginId());
                 if (moved.ok) {
                     // Recorded so the rebuilt screen shows this as moved rather than still installed
                     // with a live switch: the scan ran before this command did.
-                    result.actioned.put(candidate.path.getAbsolutePath(), "quarantined");
+                    result.actioned.put(report.path, "quarantined");
                 }
                 return moved.message;
             }

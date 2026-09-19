@@ -8,11 +8,11 @@ src/mt/safety/  (directory)
 src/mt/safety/scanner/  (directory)
 src/mt/safety/scanner/Host.java  a15485fc39f35f4ee1f308ebda7379e4ebea1fe8ae8210eb413e774ca3026f4b
 src/mt/safety/scanner/MtEnvironment.java  c149ff05af582816d2d4927b8ac4e342f4dbfa8b2ab4d4f629698d3326f4f2b2
-src/mt/safety/scanner/Quarantine.java  cd04199080df8ce009d629d201ed788e03c950080d9c1523dde920a2159e489f
-src/mt/safety/scanner/ScanRunner.java  012b76476ad4b8329ffcac3107c0853d39b18d080e7cfe4d2fb2bb077e5f9911
+src/mt/safety/scanner/Quarantine.java  c8b931a1eb73f0e7470bd4cbf98efe160535e624c43520f93821e1f2df1e0b23
+src/mt/safety/scanner/ScanRunner.java  0b876ac8a166c5d24a40d6bcae8867ec28e2381c94dbe5cfc542061cbb00127c
 src/mt/safety/scanner/Strings.java  c46c9f7355744f2348bc7683b63a33c7ebe081fd2a10d5db88c8881d6a2691c1
 src/mt/safety/scanner/core/  (directory)
-src/mt/safety/scanner/core/ArchiveRules.java  a6cdf56036f25ca529c591026b821453567c31fd0e5c7f93073e3d3bd09894c3
+src/mt/safety/scanner/core/ArchiveRules.java  7c9b5d467afe118ca623e59f9ba2cd16043441945e2c877dfc5ee1962f18eefc
 src/mt/safety/scanner/core/Bytes.java  1269e678d0678d1e56ced491de4171fffe711e1b9a41478242af30ac921c38ec
 src/mt/safety/scanner/core/Category.java  c4d64a3ac745b108901e52fee02bb6d28f267c48017eaa10ccb1515d5ec0cbd2
 src/mt/safety/scanner/core/CodePatterns.java  81cbfce24052daf2ad6158598d90adf48be7d4a894771bf6232b5049702a914f
@@ -24,7 +24,7 @@ src/mt/safety/scanner/core/Json.java  801e8c38eebc3cec53c173dcab9df644c4b8580b73
 src/mt/safety/scanner/core/ManifestRules.java  a8fde9354f5c2eb4aa4f3aad21acbfcd734df58bee179a880243d6ce3b92cc3a
 src/mt/safety/scanner/core/PairIndicator.java  bee4648c0d20989d3783c387cf43255ca3a238904313d06e5252fa7316fc7cea
 src/mt/safety/scanner/core/PluginManifest.java  884749907bc211909ab7710ee7d603e95ae0554a1e9e6686716a3785ece33e82
-src/mt/safety/scanner/core/PluginPackage.java  0981bb06a0f470b9627ee4a685a58e0ddbcd97a2c2c0a0d0bd6b0fd2f01efb10
+src/mt/safety/scanner/core/PluginPackage.java  976f4197f02bc0eb12451f86e8a3ce3c3956cf2299cfc84d97830ff4f44e96b4
 src/mt/safety/scanner/core/PluginScanner.java  d091281ecb10e1c96a9a96c307b9b36a6f3a84f1c7f871a6da6d97cf64fad157
 src/mt/safety/scanner/core/ReportFormatter.java  2e767e9ee294bbbb54241b16bb9e31f5f9dbd931caca7b6aaa07f13becb50dd2
 src/mt/safety/scanner/core/RiskScorer.java  b010eb8563bea4e9f0686416338795358d4e1186ffcca666c9c80994bb4a701c

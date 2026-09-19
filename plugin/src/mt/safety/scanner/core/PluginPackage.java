@@ -237,17 +237,18 @@ public abstract class PluginPackage {
             try {
                 ZipEntry ze;
                 int guard = 0;
-                long declared = 0;
+                long inflated = 0;
+                byte[] buffer = new byte[8192];
                 while ((ze = zin.getNextEntry()) != null) {
                     // Checked every iteration, not once before the walk: a large archive would
                     // otherwise stream tens of thousands of members past the deadline, on MT
                     // Manager's UI thread.
                     //
-                    // The size cap matters for a different reason: advancing to the next entry
-                    // inflates whatever remains of the current one, so walking an archive built as a
-                    // bomb expands it even though nothing here reads entry data on purpose.
-                    declared += Math.max(ze.getSize(), 0L);
-                    if (guard++ >= 20000 || declared > WALK_INFLATION_CAP || budget.exhausted()) {
+                    // The size cap has to count the bytes actually inflated from each member. With a
+                    // data descriptor the local header can leave the size unknown, and advancing to
+                    // the next entry inflates whatever remains of the current one to find that
+                    // descriptor. Consuming each entry ourselves is what lets the guard stop the walk.
+                    if (guard++ >= 20000 || budget.exhausted()) {
                         readWholeArchive = false;
                         break;
                     }
@@ -255,6 +256,17 @@ public abstract class PluginPackage {
                     streamed.add(name);
                     if (!seen.add(name)) {
                         problems.add("duplicate archive member: " + name);
+                    }
+                    int read;
+                    while ((read = zin.read(buffer)) >= 0) {
+                        inflated += read;
+                        if (inflated > WALK_INFLATION_CAP || budget.exhausted()) {
+                            readWholeArchive = false;
+                            break;
+                        }
+                    }
+                    if (!readWholeArchive) {
+                        break;
                     }
                 }
             } catch (IOException e) {

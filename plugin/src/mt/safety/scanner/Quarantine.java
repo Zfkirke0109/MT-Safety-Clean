@@ -107,8 +107,9 @@ public final class Quarantine {
             return new Result(false, "That is this scanner. Uninstall it from MT Manager's plugin list"
                     + " if you want it gone.");
         }
-        if (!store.isDirectory() && !store.mkdirs()) {
-            return new Result(false, "Could not create the quarantine folder at " + store.getAbsolutePath());
+        String storeProblem = ensureUsableStore();
+        if (storeProblem != null) {
+            return new Result(false, storeProblem);
         }
 
         // A bulk action moves several plugins in a tight loop, so the timestamp alone is not unique:
@@ -210,6 +211,9 @@ public final class Quarantine {
     /** Everything currently held in quarantine. */
     public List<Item> list() {
         List<Item> out = new ArrayList<Item>();
+        if (!existingStoreUsable()) {
+            return out;
+        }
         File[] children = store.listFiles();
         if (children == null) {
             return out;
@@ -283,6 +287,44 @@ public final class Quarantine {
             }
         } catch (IOException e) {
             return "";
+        }
+    }
+
+    /**
+     * Ensures the store exists and is a real directory, not a link to somewhere else.
+     *
+     * <p>Linked ancestors are fine and common on Android; what matters is the store directory itself.
+     * A linked store would turn every move and purge into an action somewhere outside this plugin's own
+     * storage.
+     */
+    private String ensureUsableStore() {
+        if (!store.exists()) {
+            if (!store.mkdirs()) {
+                return "Could not create the quarantine folder at " + store.getAbsolutePath();
+            }
+        } else if (!store.isDirectory()) {
+            return "Could not use the quarantine folder at " + store.getAbsolutePath();
+        }
+        try {
+            if (isLink(store)) {
+                return "The quarantine folder at " + store.getAbsolutePath()
+                        + " is a link. Using it could affect files elsewhere, so nothing was done.";
+            }
+        } catch (IOException e) {
+            return "Could not verify the quarantine folder at " + store.getAbsolutePath();
+        }
+        return null;
+    }
+
+    /** True when the existing store can be read without following a linked root. */
+    private boolean existingStoreUsable() {
+        if (!store.isDirectory()) {
+            return false;
+        }
+        try {
+            return !isLink(store);
+        } catch (IOException e) {
+            return false;
         }
     }
 

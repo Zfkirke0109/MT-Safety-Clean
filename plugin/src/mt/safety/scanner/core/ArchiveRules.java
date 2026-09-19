@@ -107,7 +107,7 @@ public final class ArchiveRules {
             // A plugin SDK v3 package is built by Gradle and carries compiled code rather than the
             // sources a v2 package ships, so Java bytecode is what it is supposed to contain. Native
             // libraries, installable packages and shell scripts stay reportable at any SDK version.
-            if (compiledExpected && (ext.equals("dex") || ext.equals("jar"))) {
+            if (compiledExpected && expectedCompiledOutput(entry, ext)) {
                 continue;
             }
             if (EXECUTABLE_EXTENSIONS.contains(ext)) {
@@ -146,6 +146,21 @@ public final class ArchiveRules {
                 unexpected.withEvidence(entry.name, Bytes.humanSize(entry.size));
             }
         }
+    }
+
+    /**
+     * True for the compiled members a v3 package is expected to carry.
+     *
+     * <p>The exemption is about the normal build outputs, not about every member whose name happens to
+     * end in {@code .dex} or {@code .jar}. An arbitrary {@code assets/payload.dex} is still a payload,
+     * and a top-level {@code evil.jar} is still outside MT Manager's layout.
+     */
+    private static boolean expectedCompiledOutput(PluginPackage.Entry entry, String ext) {
+        if (ext.equals("dex")) {
+            return entry.name.equals("classes.dex")
+                    || entry.name.matches("classes[0-9]+\\.dex");
+        }
+        return ext.equals("jar") && entry.name.startsWith("libs/");
     }
 
     /**
