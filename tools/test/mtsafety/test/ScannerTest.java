@@ -818,6 +818,82 @@ public final class ScannerTest {
         check("a plugin whose assets are real images stays clean",
                 artReport.verdict() == Verdict.CLEAN, summarise(artReport));
 
+        // A v3 manifest explains compiled code where the build puts it, not compiled code anywhere.
+        // Exempting the extension alone let a v3 package carry assets/payload.dex untouched, and skipped
+        // the layout check with it.
+        Map<String, byte[]> v3Hidden = new LinkedHashMap<String, byte[]>();
+        v3Hidden.put("manifest.json", Fixtures.bytes(
+                "{\"pluginSdkVersion\": 3, \"pluginID\": \"x.v3hidden\", \"pluginName\": \"V3\","
+                        + " \"mainPreference\": \"demo.A\", \"interfaces\": []}"));
+        v3Hidden.put("classes.dex", Fixtures.fakeDex(2048));
+        v3Hidden.put("libs/helper.jar", Fixtures.deflatedJar(quietJarMembers));
+        v3Hidden.put("assets/payload.dex", Fixtures.fakeDex(4096));
+        ScanReport v3HiddenReport = scan(fixtures.rawArchive("v3-hidden.mtp", v3Hidden, false));
+        check("a v3 package's own compiled output is not reported",
+                !evidenceMentions(v3HiddenReport, "classes.dex")
+                        && !evidenceMentions(v3HiddenReport, "libs/helper.jar"),
+                summarise(v3HiddenReport));
+        check("but bytecode dropped somewhere the build never puts it still is",
+                v3HiddenReport.hasRule("ARC003")
+                        && evidenceMentions(v3HiddenReport, "assets/payload.dex"),
+                summarise(v3HiddenReport));
+
+        // classesEVIL.dex is not a multidex output. Only classes.dex and classes<digits>.dex are.
+        Map<String, byte[]> v3Lookalike = new LinkedHashMap<String, byte[]>();
+        v3Lookalike.put("manifest.json", Fixtures.bytes(
+                "{\"pluginSdkVersion\": 3, \"pluginID\": \"x.v3look\", \"pluginName\": \"V3L\","
+                        + " \"mainPreference\": \"demo.A\", \"interfaces\": []}"));
+        v3Lookalike.put("classes2.dex", Fixtures.fakeDex(2048));
+        v3Lookalike.put("classesEVIL.dex", Fixtures.fakeDex(2048));
+        ScanReport v3LookReport = scan(fixtures.rawArchive("v3-look.mtp", v3Lookalike, false));
+        check("a multidex output is accepted and a lookalike name is not",
+                !evidenceMentions(v3LookReport, "classes2.dex")
+                        && evidenceMentions(v3LookReport, "classesEVIL.dex"),
+                summarise(v3LookReport));
+
+        // A member whose size is only declared after its data reports -1 while the walk is running, so
+        // a guard that summed declared sizes never grew and one member could inflate without limit.
+        // The walk now counts what actually comes out of the inflater, which the archive cannot lie
+        // about. The cap is derived from the read allowance, so a small budget makes it reachable here.
+        byte[] compressible = new byte[3 * 1024 * 1024];
+        Map<String, byte[]> bomb = new LinkedHashMap<String, byte[]>();
+        bomb.put("manifest.json", Fixtures.bytes(Fixtures.manifest("x.bomb", "Bomb", "demo.A")));
+        bomb.put("src/demo/A.java", Fixtures.bytes(benign));
+        bomb.put("assets/big.bin", compressible);
+        File descriptorBomb = fixtures.dataDescriptorArchive("descriptor-bomb.mtp", bomb);
+        check("the fixture really does withhold its sizes until after the data",
+                sizeIsWithheldWhileWalking(descriptorBomb),
+                "getSize() must read -1 during the walk or this tests nothing");
+        ScanBudget tight = new ScanBudget(60000L, 200L * 1024);
+        ScanReport bombReport = new PluginScanner(IocDatabase.empty()).scan(descriptorBomb, tight);
+        check("a member that inflates past the walk's allowance stops the walk",
+                ReportFormatter.plainText(bombReport).contains("while being read; stopped"),
+                summarise(bombReport));
+
+        // Negative control: the same tight budget truncates an ordinary package too, by the byte
+        // allowance rather than by inflation. Asserting only that the report was truncated would have
+        // passed without the inflation guard doing anything at all.
+        Map<String, byte[]> smallOne = new LinkedHashMap<String, byte[]>();
+        smallOne.put("manifest.json", Fixtures.bytes(Fixtures.manifest("x.small", "Small", "demo.A")));
+        smallOne.put("src/demo/A.java", Fixtures.bytes(benign));
+        smallOne.put("assets/tiny.bin", new byte[64]);
+        ScanReport smallReport = new PluginScanner(IocDatabase.empty())
+                .scan(fixtures.dataDescriptorArchive("descriptor-small.mtp", smallOne), tight);
+        check("an archive that does not expand is not accused of expanding",
+                !ReportFormatter.plainText(smallReport).contains("while being read; stopped"),
+                summarise(smallReport));
+        check("and the walk does not invent missing members out of stopping early",
+                !ReportFormatter.plainText(bombReport).contains("missing from its data"),
+                summarise(bombReport));
+
+        // The same archive under a budget that can afford it is walked to the end, so the guard above
+        // is a bound and not a refusal to read data-descriptor archives at all.
+        ScanReport bombFully = new PluginScanner(IocDatabase.empty())
+                .scan(descriptorBomb, ScanBudget.unlimited());
+        check("an archive that withholds its sizes is still walked when there is room for it",
+                !ReportFormatter.plainText(bombFully).contains("missing from its data"),
+                summarise(bombFully));
+
         // A hash over a listing that quietly skipped part of the tree is not an identity for the
         // directory. Only the file-count cap used to say so; the depth cap returned in silence, so a
         // replacement differing only below that depth would pass the re-verification a destructive
@@ -1049,6 +1125,37 @@ public final class ScannerTest {
             return Bytes.text(Bytes.readAtMost(in, 1 << 20));
         } finally {
             in.close();
+        }
+    }
+
+    /**
+     * True when walking this archive as a stream sees a member with no declared size.
+     *
+     * <p>Asserted directly, because the fixture is only a test of the inflation guard if it really does
+     * withhold its sizes: a writer that filled them in would leave the old summed-size guard working
+     * and the test passing for the wrong reason.
+     */
+    private static boolean sizeIsWithheldWhileWalking(File archive) {
+        java.util.zip.ZipInputStream zin = null;
+        try {
+            zin = new java.util.zip.ZipInputStream(new java.io.FileInputStream(archive));
+            java.util.zip.ZipEntry entry;
+            while ((entry = zin.getNextEntry()) != null) {
+                if (entry.getSize() < 0) {
+                    return true;
+                }
+            }
+            return false;
+        } catch (java.io.IOException e) {
+            return false;
+        } finally {
+            if (zin != null) {
+                try {
+                    zin.close();
+                } catch (java.io.IOException ignored) {
+                    // nothing useful to do while closing
+                }
+            }
         }
     }
 

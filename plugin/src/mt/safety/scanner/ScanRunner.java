@@ -485,6 +485,24 @@ public final class ScanRunner {
         return null;
     }
 
+    /**
+     * The scanned report for a path, for commands that resolve a package by name rather than by plan.
+     *
+     * <p>Separate from {@link #findByPath} on purpose: that one also demands a matching hash, because
+     * it is confirming a stored plan against the packages present now. Here the name came from the user
+     * in this same build, and the contents are checked by {@code stillMatches} instead, so matching on
+     * the hash as well would refuse every package whose report simply has one.
+     */
+    private static ScanReport scannedAt(String path, Result result) {
+        for (int i = 0; i < result.reports.size(); i++) {
+            ScanReport report = result.reports.get(i);
+            if (report.path.equals(path)) {
+                return report;
+            }
+        }
+        return null;
+    }
+
     /** Rebuilds the canonical target list from a stored plan, for comparison with the current one. */
     private static String rebuildTargetList(List<java.util.Map<String, Object>> targets) {
         List<String> entries = new ArrayList<String>();
@@ -529,7 +547,11 @@ public final class ScanRunner {
         StringBuilder sb = new StringBuilder(name.length());
         for (int i = 0; i < name.length() && sb.length() < 60; i++) {
             char c = name.charAt(i);
-            sb.append(c < 0x20 || c == 0x7F ? ' ' : c);
+            // The same range Signal.trim drops, for the same reason. This name is a plugin's own
+            // choosing and it is printed in the line asking the user to confirm a deletion, so U+009B
+            // acting as CSI would let it rewrite the question it is the answer to.
+            boolean control = c < 0x20 || (c >= 0x7F && c <= 0x9F);
+            sb.append(control ? ' ' : c);
         }
         String flat = sb.toString().trim();
         return flat.length() == 0 ? "(unnamed)" : flat;
@@ -853,6 +875,17 @@ public final class ScanRunner {
                     || argument.equals(candidate.path.getName())
                     || argument.equalsIgnoreCase(manifest.displayName());
             if (match) {
+                // Held to the same standard as the switch and the bulk commands. The scan ran earlier
+                // in this build, and the user typed this id having read what the scan said about that
+                // package; a same-id replacement in between would otherwise be moved in its place,
+                // described by a report that was never about it.
+                ScanReport scanned = scannedAt(candidate.path.getAbsolutePath(), result);
+                if (scanned == null) {
+                    return strings.notInThisScan(flatten(manifest.displayName()));
+                }
+                if (!stillMatches(scanned)) {
+                    return strings.changedSinceScan(flatten(scanned.manifest.displayName()));
+                }
                 Quarantine.Result moved = quarantine.quarantine(candidate.path, host.pluginId());
                 if (moved.ok) {
                     // Recorded so the rebuilt screen shows this as moved rather than still installed

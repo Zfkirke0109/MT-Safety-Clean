@@ -466,6 +466,36 @@ public final class ActionsTest {
         }
         deleteTree(linkedParent);
 
+        // The store itself was the one link the guards did not cover. Replace filesDir/quarantine with
+        // a link and every plugin moved aside lands wherever it points, list() reads what is sitting
+        // there as though it were quarantined, and restore copies it back out to a path from an .info
+        // file someone else wrote.
+        File elsewhere = new File(iso, "elsewhere");
+        File plantedEntry = new File(elsewhere, "planted");
+        Fixtures.write(new File(plantedEntry, "manifest.json"),
+                Fixtures.manifest("planted.one", "Planted", "demo.A"));
+        File storePath = quarantine.store();
+        deleteTree(storePath);
+        writePlugin(new File(installed, "victim"), "victim.one", "Victim", HOSTILE);
+        if (makeSymlink(storePath, elsewhere)) {
+            Quarantine.Result refusedStore =
+                    quarantine.quarantine(new File(installed, "victim"), host.pluginId());
+            check.that("a linked quarantine store is refused rather than moved into",
+                    !refusedStore.ok && new File(installed, "victim").isDirectory(),
+                    refusedStore.message);
+            check.that("and what is behind it is not reported as quarantined",
+                    quarantine.list().isEmpty(), "list() read through the link");
+            check.that("and purge will not delete through it",
+                    !quarantine.purge("planted").ok && plantedEntry.isDirectory(),
+                    "purge acted through a linked store");
+            storePath.delete();
+        } else {
+            check.that("a linked quarantine store is refused rather than moved into", true,
+                    "skipped: no symlink support here");
+        }
+        deleteTree(new File(installed, "victim"));
+        deleteTree(elsewhere);
+
         // purge deletes a quarantine entry by name. If that entry is a link, taking its canonical path
         // as the boundary makes the link's target the root, every child of that target then tests as
         // inside it, and the recursion deletes somewhere else entirely.
@@ -484,6 +514,36 @@ public final class ActionsTest {
                     "skipped: no symlink support here");
         }
         deleteTree(offLimits);
+
+        // The typed `quarantine ID` path resolved the id against a fresh discovery and read only the
+        // manifest, so a same-id replacement between the scan and the command was moved in place of the
+        // package the report described. Held to the same standard as the switch and the bulk commands.
+        //
+        // The refusal itself is not asserted here, and saying so is better than a test that looks like
+        // it covers this. run() scans, then runs the typed command, so within one build the scan is
+        // never stale: anything this test changes beforehand is simply what the next scan sees. The
+        // window the fix closes is between those two steps inside a single build, which the harness
+        // cannot get between. What is asserted is that the added check does not block the ordinary
+        // case, which is the way a guard like this usually goes wrong.
+        writePlugin(new File(installed, "typed"), "typed.one", "Typed", HOSTILE);
+        new ScanRunner(host).run();
+        host.type("quarantine typed.one");
+        ScanRunner.Result typedUnchanged = new ScanRunner(host).run();
+        check.that("a typed quarantine still moves an unchanged package",
+                !new File(installed, "typed").isDirectory(), typedUnchanged.commandOutcome);
+
+        // A plugin's display name is its own choosing and is printed in the line asking the user to
+        // confirm a deletion, so C1 controls must not survive into it either.
+        writePlugin(new File(installed, "named"), "named.one", "Ansi\u009b2JName", HOSTILE);
+        new ScanRunner(host).run();
+        host.type("quarantine malicious");
+        ScanRunner.Result planWithName = new ScanRunner(host).run();
+        check.that("a display name cannot carry terminal controls into the confirmation",
+                planWithName.commandOutcome.indexOf('\u009b') < 0
+                        && planWithName.commandOutcome.indexOf('\u001b') < 0,
+                "a control character reached the confirmation line");
+        host.type("");
+        deleteTree(new File(installed, "named"));
 
         // The scan is a snapshot. If the package changes before the action runs, act on nothing.
         writePlugin(new File(installed, "mutating"), "mutate.one", "Mutating", HOSTILE);

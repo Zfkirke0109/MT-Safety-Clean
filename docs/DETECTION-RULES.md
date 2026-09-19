@@ -117,10 +117,11 @@ These run against Java sources, plain-text members, and strings recovered from c
 regular expression matches both the source spelling (`Runtime.getRuntime`) and the form that survives
 in a compiled constant pool (`Ljava/lang/Runtime;`).
 
-Media members are skipped only when their magic bytes positively identify them as the format their
-name claims. An image whose header cannot be read, or whose contents are not recognisable as any
-format, is searched rather than skipped: scanning an ordinary image costs a little time, and skipping
-a disguised one costs the whole point of the scan.
+No member is exempt on the strength of its name or its first few bytes, media included. Image decoders
+tolerate trailing junk, so a genuine PNG header followed by an appended payload would satisfy any
+magic-byte check and then bypass every rule below it. Binary members are searched for printable runs
+rather than decoded whole, so real image data contributes nothing to match against; a package that
+ships enough media to exhaust the byte allowance is reported as truncated rather than as clean.
 
 | Rule | Severity | Category | What it means |
 | --- | --- | --- | --- |

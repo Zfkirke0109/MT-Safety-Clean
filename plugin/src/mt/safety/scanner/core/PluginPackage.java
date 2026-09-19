@@ -29,7 +29,6 @@ public abstract class PluginPackage {
     public static final int MAX_MEMBER_BYTES = 4 * 1024 * 1024;
 
     /** How much an archive may claim to inflate to before the structural walk gives up on it. */
-    static final long WALK_INFLATION_CAP = 512L * 1024 * 1024;
 
     /** One member of a package. */
     public static final class Entry {
@@ -237,17 +236,12 @@ public abstract class PluginPackage {
             try {
                 ZipEntry ze;
                 int guard = 0;
-                long declared = 0;
+                long inflated = 0;
                 while ((ze = zin.getNextEntry()) != null) {
                     // Checked every iteration, not once before the walk: a large archive would
                     // otherwise stream tens of thousands of members past the deadline, on MT
                     // Manager's UI thread.
-                    //
-                    // The size cap matters for a different reason: advancing to the next entry
-                    // inflates whatever remains of the current one, so walking an archive built as a
-                    // bomb expands it even though nothing here reads entry data on purpose.
-                    declared += Math.max(ze.getSize(), 0L);
-                    if (guard++ >= 20000 || declared > WALK_INFLATION_CAP || budget.exhausted()) {
+                    if (guard++ >= 20000 || budget.exhausted()) {
                         readWholeArchive = false;
                         break;
                     }
@@ -255,6 +249,32 @@ public abstract class PluginPackage {
                     streamed.add(name);
                     if (!seen.add(name)) {
                         problems.add("duplicate archive member: " + name);
+                    }
+
+                    // Nothing here wants this member's data, but advancing past it inflates it
+                    // regardless: getNextEntry closes the current entry, and closing means reading
+                    // whatever is left of it. So the bytes are consumed here instead, where they can
+                    // be counted and stopped.
+                    //
+                    // The member's declared size cannot do this job. An entry written with a data
+                    // descriptor carries its size *after* its data, so getSize() is -1 at this point
+                    // and a running total of it never grows -- which is exactly how a bomb would be
+                    // stored. Counting what actually comes out of the inflater is the only measure
+                    // that a hostile archive does not get to choose.
+                    long cap = budget.walkInflationCap();
+                    inflated += drain(zin, cap - inflated, budget);
+                    if (inflated >= cap || budget.exhausted()) {
+                        // Stop without advancing: the next getNextEntry would inflate the rest of
+                        // this member in one unbounded go, which is the thing being guarded against.
+                        readWholeArchive = false;
+                        if (inflated >= cap) {
+                            // Worth saying rather than only counting as truncation. A package that
+                            // expands past what the scan will spend on reading it is the shape of a
+                            // bomb, and the user is choosing whether to trust it.
+                            problems.add("archive expands to more than " + Bytes.humanSize(cap)
+                                    + " while being read; stopped at " + name);
+                        }
+                        break;
                     }
                 }
             } catch (IOException e) {
@@ -581,6 +601,33 @@ public abstract class PluginPackage {
         }
         int cost = hashCost(length);
         return budget.reserve(cost) >= cost;
+    }
+
+    /**
+     * Consumes at most {@code limit} bytes of the archive stream's current member.
+     *
+     * <p>Returns how many bytes it actually took, which is how the caller measures inflation without
+     * trusting anything the archive declares about itself. Stops early on the scan deadline as well as
+     * on the limit, because a bomb that inflates slowly is still a frozen UI.
+     */
+    private static long drain(ZipInputStream zin, long limit, ScanBudget budget) throws IOException {
+        if (limit <= 0) {
+            return 0;
+        }
+        byte[] buffer = new byte[1 << 16];
+        long total = 0;
+        while (total < limit) {
+            int want = (int) Math.min((long) buffer.length, limit - total);
+            int read = zin.read(buffer, 0, want);
+            if (read <= 0) {
+                return total;
+            }
+            total += read;
+            if (budget.exhausted()) {
+                return total;
+            }
+        }
+        return total;
     }
 
     static void closeQuietly(java.io.Closeable c) {

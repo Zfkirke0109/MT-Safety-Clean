@@ -83,6 +83,30 @@ public final class ScanBudget {
         return truncated;
     }
 
+    /**
+     * How many bytes a structural archive walk may inflate before it gives up.
+     *
+     * <p>Advancing through an archive inflates each member whether or not anything reads it, so this is
+     * the bound that stops a zip bomb. It is derived from the read allowance rather than fixed: a walk
+     * permitted to inflate half a gigabyte inside an interactive scan that allows 24 MB of reading was
+     * never in proportion to it, and a fixed constant could not be exercised by a test without a
+     * fixture that size.
+     *
+     * <p>Generous relative to the allowance, because inflating is cheaper than the rules that follow
+     * and an ordinary package must not trip this. The ceiling is what keeps an unlimited budget from
+     * meaning an unlimited walk.
+     */
+    public long walkInflationCap() {
+        if (maxBytes >= WALK_INFLATION_CEILING / WALK_INFLATION_FACTOR) {
+            return WALK_INFLATION_CEILING;
+        }
+        return Math.max(maxBytes * WALK_INFLATION_FACTOR, WALK_INFLATION_FLOOR);
+    }
+
+    private static final long WALK_INFLATION_FACTOR = 8L;
+    private static final long WALK_INFLATION_CEILING = 512L * 1024 * 1024;
+    private static final long WALK_INFLATION_FLOOR = 256L * 1024;
+
     /** Marks the scan as incomplete without consuming budget. */
     public void markTruncated() {
         truncated = true;

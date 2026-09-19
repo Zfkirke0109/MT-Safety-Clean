@@ -79,12 +79,43 @@ public final class Quarantine {
     }
 
     /**
+     * Why the quarantine store must not be used, or {@code null} when it is sound.
+     *
+     * <p>The link checks elsewhere cover the plugin being moved and the entries already held. The store
+     * itself was the gap: replace {@code filesDir/quarantine} with a link and every plugin this tool
+     * moves aside lands wherever that link points, {@code list} reads whatever is sitting there as
+     * though it were quarantined, and {@code restore} will copy it back out to a path taken from an
+     * {@code .info} file someone else wrote. Nothing downstream can recover from that, so it is refused
+     * at the door.
+     *
+     * <p>A linked ancestor is still fine, and has to be: on Android {@code /sdcard} is itself a link to
+     * {@code /storage/emulated/0}. Only the last path component is in question.
+     */
+    private String storeProblem() {
+        try {
+            if (store.exists() && isLink(store)) {
+                return "The quarantine folder at " + store.getAbsolutePath() + " is a link to somewhere"
+                        + " else, so nothing was done. Delete or inspect it by hand before using"
+                        + " quarantine again.";
+            }
+        } catch (IOException e) {
+            return "The quarantine folder at " + store.getAbsolutePath() + " could not be resolved ("
+                    + e.getMessage() + "), so nothing was done.";
+        }
+        return null;
+    }
+
+    /**
      * Moves {@code pluginDir} into the quarantine store.
      *
      * <p>Refuses anything that is not recognisably an installed plugin, and refuses to act on itself,
      * so a mistyped command cannot take out the scanner or an unrelated folder.
      */
     public Result quarantine(File pluginDir, String ownPluginId) {
+        String storeProblem = storeProblem();
+        if (storeProblem != null) {
+            return new Result(false, storeProblem);
+        }
         if (pluginDir == null || !pluginDir.isDirectory()) {
             return new Result(false, "Not a directory: " + pluginDir);
         }
@@ -150,6 +181,10 @@ public final class Quarantine {
 
     /** Puts a quarantined plugin back where it came from. */
     public Result restore(String identifier) {
+        String storeProblem = storeProblem();
+        if (storeProblem != null) {
+            return new Result(false, storeProblem);
+        }
         List<Item> items = list();
         for (int i = 0; i < items.size(); i++) {
             Item item = items.get(i);
@@ -193,6 +228,10 @@ public final class Quarantine {
 
     /** Permanently deletes a quarantined plugin. */
     public Result purge(String identifier) {
+        String storeProblem = storeProblem();
+        if (storeProblem != null) {
+            return new Result(false, storeProblem);
+        }
         List<Item> items = list();
         for (int i = 0; i < items.size(); i++) {
             Item item = items.get(i);
@@ -210,6 +249,10 @@ public final class Quarantine {
     /** Everything currently held in quarantine. */
     public List<Item> list() {
         List<Item> out = new ArrayList<Item>();
+        if (storeProblem() != null) {
+            // Whatever is behind a linked store is not this plugin's to report as quarantined.
+            return out;
+        }
         File[] children = store.listFiles();
         if (children == null) {
             return out;

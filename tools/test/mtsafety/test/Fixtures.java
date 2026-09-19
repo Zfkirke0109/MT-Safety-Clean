@@ -51,6 +51,115 @@ public final class Fixtures {
     }
 
     /**
+     * Writes a ZIP whose members declare their sizes only *after* their data, in a data descriptor.
+     *
+     * <p>A real shape, produced by any writer that streams without knowing a member's length in
+     * advance, and the shape that defeated the walk's inflation guard: the local header carries zeroes
+     * for the sizes and sets bit 3 of the general purpose flag, so {@code ZipEntry.getSize()} is -1
+     * while the stream is being walked. A guard that added up declared sizes therefore never grew, and
+     * a single member could inflate without limit. The central directory still carries the true sizes,
+     * which is why {@code ZipFile} sees this archive as ordinary.
+     */
+    public File dataDescriptorArchive(String name, Map<String, byte[]> members) {
+        File file = new File(root, name);
+        file.getParentFile().mkdirs();
+
+        ByteArrayOutputStream body = new ByteArrayOutputStream();
+        ByteArrayOutputStream central = new ByteArrayOutputStream();
+        int count = 0;
+        try {
+            for (Map.Entry<String, byte[]> member : members.entrySet()) {
+                byte[] data = member.getValue();
+                int offset = body.size();
+                CRC32 crc = new CRC32();
+                crc.update(data);
+                byte[] deflated = deflate(data);
+                byte[] nameBytes = member.getKey().getBytes("UTF-8");
+
+                // Local file header: deflated, flag bit 3 set, sizes withheld.
+                writeInt(body, 0x04034b50);
+                writeShort(body, 20);
+                writeShort(body, 0x0008);
+                writeShort(body, 8);
+                writeShort(body, 0);
+                writeShort(body, 0);
+                writeInt(body, 0);
+                writeInt(body, 0);
+                writeInt(body, 0);
+                writeShort(body, nameBytes.length);
+                writeShort(body, 0);
+                body.write(nameBytes);
+                body.write(deflated);
+
+                // Data descriptor, carrying what the header left out.
+                writeInt(body, 0x08074b50);
+                writeInt(body, (int) crc.getValue());
+                writeInt(body, deflated.length);
+                writeInt(body, data.length);
+
+                // The central directory tells the truth, as a real writer's would.
+                writeInt(central, 0x02014b50);
+                writeShort(central, 20);
+                writeShort(central, 20);
+                writeShort(central, 0x0008);
+                writeShort(central, 8);
+                writeShort(central, 0);
+                writeShort(central, 0);
+                writeInt(central, (int) crc.getValue());
+                writeInt(central, deflated.length);
+                writeInt(central, data.length);
+                writeShort(central, nameBytes.length);
+                writeShort(central, 0);
+                writeShort(central, 0);
+                writeShort(central, 0);
+                writeShort(central, 0);
+                writeInt(central, 0);
+                writeInt(central, offset);
+                central.write(nameBytes);
+                count++;
+            }
+
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            out.write(body.toByteArray());
+            int centralOffset = body.size();
+            out.write(central.toByteArray());
+            writeInt(out, 0x06054b50);
+            writeShort(out, 0);
+            writeShort(out, 0);
+            writeShort(out, count);
+            writeShort(out, count);
+            writeInt(out, central.size());
+            writeInt(out, centralOffset);
+            writeShort(out, 0);
+
+            OutputStream fileOut = new FileOutputStream(file);
+            try {
+                fileOut.write(out.toByteArray());
+            } finally {
+                fileOut.close();
+            }
+        } catch (IOException e) {
+            throw new IllegalStateException("could not write " + file, e);
+        }
+        return file;
+    }
+
+    /** Raw deflate, no zlib wrapper, as a ZIP member stores it. */
+    private static byte[] deflate(byte[] data) {
+        java.util.zip.Deflater deflater = new java.util.zip.Deflater(9, true);
+        deflater.setInput(data);
+        deflater.finish();
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        byte[] buffer = new byte[1 << 16];
+        while (!deflater.finished()) {
+            int n = deflater.deflate(buffer);
+            out.write(buffer, 0, n);
+        }
+        deflater.end();
+        return out.toByteArray();
+    }
+
+    /**
      * Writes a ZIP by hand.
      *
      * @param duplicateFirstMember when true, the first member is written into the archive twice, so the

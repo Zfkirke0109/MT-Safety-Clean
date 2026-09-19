@@ -107,7 +107,11 @@ public final class ArchiveRules {
             // A plugin SDK v3 package is built by Gradle and carries compiled code rather than the
             // sources a v2 package ships, so Java bytecode is what it is supposed to contain. Native
             // libraries, installable packages and shell scripts stay reportable at any SDK version.
-            if (compiledExpected && (ext.equals("dex") || ext.equals("jar"))) {
+            //
+            // Scoped to where that output actually lands, not to the extension. Exempting the
+            // extension alone excused an arbitrary assets/payload.dex, and skipped the layout check
+            // too, so a v3 manifest was all it took to hide a payload anywhere in the package.
+            if (compiledExpected && isExpectedCompiledOutput(entry.name, ext)) {
                 continue;
             }
             if (EXECUTABLE_EXTENSIONS.contains(ext)) {
@@ -146,6 +150,44 @@ public final class ArchiveRules {
                 unexpected.withEvidence(entry.name, Bytes.humanSize(entry.size));
             }
         }
+    }
+
+    /**
+     * True for the compiled output a Gradle-built SDK v3 package is expected to carry, at its expected
+     * place in the layout.
+     *
+     * <p>Dalvik bytecode belongs at the top of the package as {@code classes.dex}, or {@code
+     * classes2.dex} and upwards once the build splits it. A library belongs directly under {@code
+     * libs/}. Anywhere else, and under any other name, a {@code .dex} or {@code .jar} is reported like
+     * any other payload: being a v3 package explains compiled code in the build's own output paths, it
+     * does not explain compiled code in {@code assets/}.
+     */
+    private static boolean isExpectedCompiledOutput(String name, String ext) {
+        if (ext.equals("jar")) {
+            // Directly under libs/, not nested deeper inside it.
+            return name.startsWith("libs/") && name.indexOf('/', "libs/".length()) < 0;
+        }
+        if (!ext.equals("dex") || name.indexOf('/') >= 0) {
+            return false;
+        }
+        if (name.equals("classes.dex")) {
+            return true;
+        }
+        // classes2.dex, classes3.dex, ... from a multidex build. The digits are checked rather than
+        // matched loosely, so classesEVIL.dex is not mistaken for one of them.
+        if (!name.startsWith("classes") || !name.endsWith(".dex")) {
+            return false;
+        }
+        String middle = name.substring("classes".length(), name.length() - ".dex".length());
+        if (middle.length() == 0) {
+            return false;
+        }
+        for (int i = 0; i < middle.length(); i++) {
+            if (middle.charAt(i) < '0' || middle.charAt(i) > '9') {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**
