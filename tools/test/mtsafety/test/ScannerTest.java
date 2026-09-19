@@ -653,6 +653,24 @@ public final class ScannerTest {
                     String.valueOf(e));
         }
 
+        // A manifest that was present but unread used to be reported as malformed, with wording
+        // implying the package was hiding its declarations.
+        File normal = fixtures.directoryPlugin("unread-manifest",
+                Fixtures.manifest("demo.unread", "Unread", "demo.A"),
+                Fixtures.sources("src/demo/A.java", benign));
+        ScanReport unread = new PluginScanner(IocDatabase.empty()).scan(normal, new ScanBudget(0L, 0L));
+        check("an unread manifest is not reported as malformed",
+                !unread.hasRule("MFT002") && unread.hasRule("MFT012"), summarise(unread));
+        check("an unread manifest is not treated as evidence against the package",
+                unread.verdict() == Verdict.CLEAN || unread.verdict() == Verdict.REVIEW,
+                unread.verdict() + " score=" + unread.score() + " :: " + summarise(unread));
+
+        // ...while a genuinely malformed one still is.
+        ScanReport malformed = scan(fixtures.directoryPlugin("still-malformed", "{ not json at all",
+                Fixtures.sources("src/demo/A.java", benign)));
+        check("a malformed manifest is still reported as malformed",
+                malformed.hasRule("MFT002") && !malformed.hasRule("MFT012"), summarise(malformed));
+
         // Stopping the archive walk early must not invent findings: every member not yet streamed
         // would otherwise look absent from the archive's own data.
         Map<String, byte[]> wide = new LinkedHashMap<String, byte[]>();
@@ -713,6 +731,11 @@ public final class ScannerTest {
                 "should have been rejected");
         check("JSON still accepts well-formed numbers",
                 parses("{\"a\": -1.5e-3, \"b\": 0, \"c\": 12}"), "should have parsed");
+        // 1e309 matches the grammar but overflows a double, and an Infinity reaching Json.integer
+        // came back as Integer.MAX_VALUE for whatever an untrusted manifest asked for.
+        check("JSON rejects numbers that overflow to infinity",
+                !parses("{\"versionCode\": 1e309}") && !parses("{\"a\": -1e309}"),
+                "should have been rejected");
         check("JSON rejects unterminated input", !parses("{\"a\": "), "should have been rejected");
 
         StringBuilder deep = new StringBuilder();

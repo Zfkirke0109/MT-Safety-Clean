@@ -140,11 +140,11 @@ public final class PluginScanner {
                     byte[] data = pkg.read(entry, 512 * 1024, budget);
                     if (data.length == 0) {
                         budget.markTruncated();
-                        return PluginManifest.broken("present, but not read within the scan budget");
+                        return PluginManifest.unreadable("not read within the scan budget");
                     }
                     return PluginManifest.parse(data);
                 } catch (IOException e) {
-                    return PluginManifest.broken("could not be read: " + e.getMessage());
+                    return PluginManifest.unreadable("could not be read: " + e.getMessage());
                 }
             }
         }

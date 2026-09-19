@@ -260,11 +260,19 @@ public final class Json {
         if (!NUMBER.matcher(text).matches()) {
             throw new JsonException("bad number: " + text);
         }
+        Double value;
         try {
-            return Double.valueOf(text);
+            value = Double.valueOf(text);
         } catch (NumberFormatException e) {
             throw new JsonException("bad number: " + text);
         }
+        // The grammar admits exponents that overflow the double, and an overflowed value would reach
+        // callers as Infinity: Json.integer would then hand back Integer.MAX_VALUE for a versionCode
+        // an untrusted manifest chose. A number that cannot be represented is not a number we accept.
+        if (value.isInfinite() || value.isNaN()) {
+            throw new JsonException("number out of range: " + text);
+        }
+        return value;
     }
 
     // ---------------------------------------------------------------- helpers

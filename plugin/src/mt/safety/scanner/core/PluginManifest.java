@@ -16,6 +16,8 @@ import java.util.Map;
 public final class PluginManifest {
 
     public final boolean present;
+    /** True when the manifest exists but could not be read, as opposed to being malformed. */
+    public final boolean unreadable;
     public final String parseError;
     public final int sdkVersion;
     public final String pluginId;
@@ -28,7 +30,13 @@ public final class PluginManifest {
     public final Map<String, Object> raw;
 
     private PluginManifest(boolean present, String parseError, Map<String, Object> raw) {
+        this(present, false, parseError, raw);
+    }
+
+    private PluginManifest(boolean present, boolean unreadable, String parseError,
+            Map<String, Object> raw) {
         this.present = present;
+        this.unreadable = unreadable;
         this.parseError = parseError;
         this.raw = raw;
         if (raw == null) {
@@ -57,9 +65,21 @@ public final class PluginManifest {
         return new PluginManifest(false, null, null);
     }
 
-    /** A manifest that was found but is not usable. */
+    /** A manifest that was found but is malformed. */
     public static PluginManifest broken(String parseError) {
         return new PluginManifest(true, parseError, null);
+    }
+
+    /**
+     * A manifest that is present but was not read, through an I/O failure or an exhausted budget.
+     *
+     * <p>Kept apart from {@link #broken} because the two mean opposite things to the person reading
+     * the report: one says the package may be hiding what it declares, the other says the scanner ran
+     * out of room. Reporting a limitation of the scan as evidence against the package is the kind of
+     * false alarm that teaches people to ignore reports.
+     */
+    public static PluginManifest unreadable(String reason) {
+        return new PluginManifest(true, true, reason, null);
     }
 
     /** Parses manifest bytes; never throws. */

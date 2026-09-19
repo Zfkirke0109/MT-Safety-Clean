@@ -38,6 +38,15 @@ public final class ManifestRules {
                             + " been repacked."));
             return;
         }
+        if (manifest.unreadable) {
+            report.add(new Signal("MFT012", Category.MANIFEST, Severity.LOW,
+                    "manifest.json was not read",
+                    "The manifest is present but the scanner could not read it, so nothing below is"
+                            + " based on what this plugin declares about itself. This is a limit of the"
+                            + " scan, not a finding against the package.")
+                    .withEvidence("manifest.json", String.valueOf(manifest.parseError)));
+            return;
+        }
         if (!manifest.usable()) {
             report.add(new Signal("MFT002", Category.MANIFEST, Severity.HIGH,
                     "manifest.json is not valid JSON",
