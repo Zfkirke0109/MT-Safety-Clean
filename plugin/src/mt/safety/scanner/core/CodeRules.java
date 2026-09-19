@@ -155,20 +155,29 @@ public final class CodeRules {
     }
 
     /**
-     * True when a media member's bytes really are that media format.
+     * True only when a member's bytes are positively identified as the media format it claims.
      *
-     * <p>Skipping images by file name alone would mean a payload renamed to {@code banner.png} was
-     * never searched at all, so the skip is only granted once the magic bytes agree.
+     * <p>Skipping a member means never searching it, so this defaults the other way from
+     * {@link Bytes#contentMatchesExtension}, which the disguise rule uses. There, unrecognised content
+     * counts as consistent, because flagging every extensionless blob as a disguise would bury the
+     * user in noise. Here the same answer would be a hole: a {@code .png} holding plain text is not
+     * recognisable as anything, and treating that as "an image, skip it" let a package keep its drop
+     * endpoints in {@code assets/theme.png} where nothing would read them.
+     *
+     * <p>Likewise an unreadable or under-budget header is not confirmation. If we cannot say what a
+     * member is, we read it: scanning an ordinary image costs a little time, and skipping a disguised
+     * one costs the whole point of the scan.
      */
     private static boolean reallyIsMedia(PluginPackage pkg, PluginPackage.Entry entry, ScanBudget budget) {
         try {
             byte[] head = pkg.read(entry, 32, budget);
             if (head.length < 4) {
-                return true;
+                return false;
             }
-            return Bytes.contentMatchesExtension(entry.extension(), head);
+            return Bytes.detectKind(head) != null
+                    && Bytes.contentMatchesExtension(entry.extension(), head);
         } catch (IOException e) {
-            return true;
+            return false;
         }
     }
 

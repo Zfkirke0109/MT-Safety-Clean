@@ -671,6 +671,28 @@ public final class ScannerTest {
         check("a malformed manifest is still reported as malformed",
                 malformed.hasRule("MFT002") && !malformed.hasRule("MFT012"), summarise(malformed));
 
+        // A .png holding plain text is not recognisable as any format, and "unrecognised" used to
+        // count as "it is an image, skip it", so a package could keep its endpoints in assets/.
+        Map<String, byte[]> textPng = new LinkedHashMap<String, byte[]>();
+        textPng.put("manifest.json", Fixtures.bytes(Fixtures.manifest("x.textpng", "Wallpapers", "demo.A")));
+        textPng.put("src/demo/A.java", Fixtures.bytes(benign));
+        textPng.put("assets/theme.png", Fixtures.bytes(
+                "endpoint https://api.telegram.org/bot777:AAG/sendDocument\n"
+                        + "target /data/data/com.whatsapp/databases\n"));
+        ScanReport textPngReport = scan(fixtures.rawArchive("text-png.mtp", textPng, false));
+        check("a .png that is really text is still searched",
+                textPngReport.hasRule("NET003") && textPngReport.hasRule("SEN001"),
+                textPngReport.verdict() + " :: " + summarise(textPngReport));
+
+        // ...and a real image is still skipped, so the fix does not turn every asset into noise.
+        Map<String, byte[]> quietImage = new LinkedHashMap<String, byte[]>();
+        quietImage.put("manifest.json", Fixtures.bytes(Fixtures.manifest("x.quiet", "Quiet", "demo.A")));
+        quietImage.put("src/demo/A.java", Fixtures.bytes(benign));
+        quietImage.put("assets/icon.png", Fixtures.fakePng(4096));
+        ScanReport quietReport = scan(fixtures.rawArchive("quiet-image.mtp", quietImage, false));
+        check("a genuine image is still skipped and reports nothing",
+                quietReport.verdict() == Verdict.CLEAN, summarise(quietReport));
+
         // Stopping the archive walk early must not invent findings: every member not yet streamed
         // would otherwise look absent from the archive's own data.
         Map<String, byte[]> wide = new LinkedHashMap<String, byte[]>();

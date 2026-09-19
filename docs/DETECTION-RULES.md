@@ -117,6 +117,11 @@ These run against Java sources, plain-text members, and strings recovered from c
 regular expression matches both the source spelling (`Runtime.getRuntime`) and the form that survives
 in a compiled constant pool (`Ljava/lang/Runtime;`).
 
+Media members are skipped only when their magic bytes positively identify them as the format their
+name claims. An image whose header cannot be read, or whose contents are not recognisable as any
+format, is searched rather than skipped: scanning an ordinary image costs a little time, and skipping
+a disguised one costs the whole point of the scan.
+
 | Rule | Severity | Category | What it means |
 | --- | --- | --- | --- |
 | `EXE001` | High | Shell and root commands | **Runs operating system commands.** The plugin starts external processes. A plugin that only extends MT Manager's own features has no reason to shell out. |
