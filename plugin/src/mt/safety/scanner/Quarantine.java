@@ -36,7 +36,7 @@ public final class Quarantine {
         public final boolean ok;
         public final String message;
 
-        Result(boolean ok, String message) {
+        public Result(boolean ok, String message) {
             this.ok = ok;
             this.message = message;
         }

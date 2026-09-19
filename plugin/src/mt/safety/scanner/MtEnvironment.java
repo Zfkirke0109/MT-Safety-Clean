@@ -110,19 +110,36 @@ public final class MtEnvironment {
      * scanning itself would produce a page of findings about the tool doing its job. The exclusion is by
      * plugin id, and it is stated in the report so nothing is hidden silently.
      */
-    public static List<Discovery.Candidate> findPlugins(List<File> roots, String ownPluginId) {
+    public static List<Discovery.Candidate> findPlugins(List<File> roots, String ownPluginId,
+            File ownFilesDir) {
         List<Discovery.Candidate> found = new Discovery().find(roots);
-        if (ownPluginId == null || ownPluginId.length() == 0) {
-            return found;
-        }
+        String ownArea = canonicalPath(ownFilesDir);
         List<Discovery.Candidate> out = new ArrayList<Discovery.Candidate>();
         for (int i = 0; i < found.size(); i++) {
             Discovery.Candidate candidate = found.get(i);
-            if (!isSelf(candidate.path, ownPluginId)) {
-                out.add(candidate);
+            if (ownPluginId != null && ownPluginId.length() > 0
+                    && isSelf(candidate.path, ownPluginId)) {
+                continue;
             }
+            // This plugin's own directory holds the quarantine store, and a quarantined plugin still
+            // looks exactly like an installed one. Without this, everything moved aside comes back in
+            // the next report as though it were still installed, and a bulk action tries to quarantine
+            // the quarantined copy.
+            if (ownFilesDir != null && isUnder(candidate.path, ownArea)) {
+                continue;
+            }
+            out.add(candidate);
         }
         return out;
+    }
+
+    /** True when {@code path} sits inside the directory whose canonical form is {@code area}. */
+    private static boolean isUnder(File path, String area) {
+        if (area == null || area.length() == 0) {
+            return false;
+        }
+        String candidate = canonicalPath(path);
+        return candidate.equals(area) || candidate.startsWith(area + File.separator);
     }
 
     /** True when a candidate is this scanner: same plugin id, or a directory named after it. */

@@ -50,6 +50,12 @@ public final class ScannerTest {
         trustDecisions(fixtures);
         reportRendering(fixtures);
         regressions(fixtures);
+        ActionsTest.run(new ActionsTest.Checker() {
+            @Override
+            public void that(String description, boolean condition, String context) {
+                check(description, condition, context);
+            }
+        });
 
         System.out.println();
         System.out.println(passed + " checks passed, " + failures.size() + " failed");

@@ -149,6 +149,24 @@ Long Base64 runs are decoded and examined, one level deep:
 - Decoding to text that itself trips a medium-or-worse rule is `OBF006`, **high**: something the
   plugin would rather you did not read is stored encoded.
 
+## Acting on what is found
+
+Findings are only useful if something can be done with them, and the settings screen has no buttons, so
+acting happens in two ways. A switch under each flagged plugin arms a quarantine that runs the next time
+the screen is opened. A typed `quarantine malicious`, `quarantine suspicious`, `remove malicious` or
+`remove suspicious` covers everything the scan flagged.
+
+A bulk action never runs when it is typed. It lists the plugins it would touch and issues a short code
+derived from that exact set; only `confirm CODE` carries it out, and only while the set is unchanged. A
+code that no longer matches the installed plugins is refused rather than applied to a different list
+than the one that was read. Bulk actions cover installed plugins only, never a package file sitting in a
+downloads folder, and never the scanner itself.
+
+Quarantine moves a plugin into the scanner's own storage and records where it came from, so `restore`
+puts it back; `remove` deletes it outright. MT Manager's own plugin management screen remains the clean
+way to uninstall, since it keeps the record of what is installed, and no plugin can call that
+uninstaller.
+
 ## Known limits
 
 - **Heuristics, not proof.** Rules describe capability. A flagged plugin can be entirely honest, and
