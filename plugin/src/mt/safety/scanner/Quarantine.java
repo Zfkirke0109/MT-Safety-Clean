@@ -142,7 +142,13 @@ public final class Quarantine {
             }
             try {
                 copyTree(item.directory, destination, 0);
-                deleteTree(item.directory, 0);
+                // The plugin is back either way, but a copy left behind is worth saying out loud:
+                // silence here would leave the user with a duplicate they never hear about.
+                if (!deleteTree(item.directory, 0)) {
+                    return new Result(true, "Restored to " + item.originalPath
+                            + ", but the quarantined copy could not be removed. Delete it with"
+                            + " \"purge " + item.directory.getName() + "\". Restart MT Manager.");
+                }
                 return new Result(true, "Restored to " + item.originalPath + ". Restart MT Manager.");
             } catch (IOException e) {
                 // Leave nothing half-written at the destination: MT Manager would try to load it, and

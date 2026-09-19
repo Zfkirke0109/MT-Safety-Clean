@@ -82,6 +82,34 @@ public final class PluginManifest {
         return new PluginManifest(true, true, reason, null);
     }
 
+    /**
+     * Reads the manifest of a package on disk, without scanning it.
+     *
+     * <p>For the places that need only a plugin's identity: matching a typed command against the
+     * installed plugins, or leaving the scanner out of its own results. Running a full scan for that
+     * would cost pattern matching, archive rules and hashing to learn a single string.
+     */
+    public static PluginManifest readFrom(java.io.File path) {
+        PluginPackage pkg = null;
+        try {
+            pkg = PluginPackage.open(path);
+            for (PluginPackage.Entry entry : pkg.entries()) {
+                if (!entry.directory && entry.name.equals("manifest.json")) {
+                    return parse(pkg.read(entry, 512 * 1024, ScanBudget.unlimited()));
+                }
+            }
+            return missing();
+        } catch (java.io.IOException e) {
+            return unreadable("could not be read: " + e.getMessage());
+        } catch (RuntimeException e) {
+            return unreadable("could not be parsed: " + e);
+        } finally {
+            if (pkg != null) {
+                pkg.close();
+            }
+        }
+    }
+
     /** Parses manifest bytes; never throws. */
     public static PluginManifest parse(byte[] data) {
         if (data == null || data.length == 0) {

@@ -777,6 +777,58 @@ public final class ScannerTest {
         check("every skippable extension is one the detector can confirm",
                 undetectable.length() == 0, undetectable.toString());
 
+        // A narrowing cast turned 2.9 into 2 and anything past the int range into Integer.MAX_VALUE,
+        // silently rewriting fields that come from an untrusted manifest.
+        try {
+            Map<String, Object> odd = Json.parseObject(
+                    "{\"a\": 2.9, \"b\": 1e18, \"c\": 2.0, \"d\": -7, \"e\": \"3\"}");
+            check("a non-integer is not truncated into an integer field",
+                    Json.integer(odd, "a", -1) == -1, "got " + Json.integer(odd, "a", -1));
+            check("a value past the int range is not saturated",
+                    Json.integer(odd, "b", -1) == -1, "got " + Json.integer(odd, "b", -1));
+            check("whole numbers still read as integers",
+                    Json.integer(odd, "c", -1) == 2 && Json.integer(odd, "d", -1) == -7
+                            && Json.integer(odd, "e", -1) == 3,
+                    "2.0 -> " + Json.integer(odd, "c", -1) + ", -7 -> " + Json.integer(odd, "d", -1)
+                            + ", \"3\" -> " + Json.integer(odd, "e", -1));
+        } catch (Json.JsonException e) {
+            check("a non-integer is not truncated into an integer field", false, String.valueOf(e));
+        }
+
+        // Reading a package's identity must not require scanning it, and must work for both shapes.
+        File identityDir = fixtures.directoryPlugin("identity",
+                Fixtures.manifest("demo.identity", "Identity", "demo.A"),
+                Fixtures.sources("src/demo/A.java", benign));
+        Map<String, byte[]> identityArchive = new LinkedHashMap<String, byte[]>();
+        identityArchive.put("manifest.json",
+                Fixtures.bytes(Fixtures.manifest("demo.identity", "Identity", "demo.A")));
+        identityArchive.put("src/demo/A.java", Fixtures.bytes(benign));
+        File identityMtp = fixtures.rawArchive("identity.mtp", identityArchive, false);
+        check("a package's identity can be read from a folder and from an archive",
+                "demo.identity".equals(mt.safety.scanner.core.PluginManifest.readFrom(identityDir).pluginId)
+                        && "demo.identity".equals(
+                                mt.safety.scanner.core.PluginManifest.readFrom(identityMtp).pluginId),
+                "folder and archive must agree");
+
+        // Quarantine and restore must round-trip, leaving nothing behind on either side.
+        File store = new File(fixtures.root(), "quarantine-store");
+        mt.safety.scanner.Quarantine quarantine = new mt.safety.scanner.Quarantine(store);
+        File victim = fixtures.directoryPlugin("to-quarantine",
+                Fixtures.manifest("demo.victim", "Victim", "demo.A"),
+                Fixtures.sources("src/demo/A.java", benign));
+        mt.safety.scanner.Quarantine.Result moved = quarantine.quarantine(victim, "mt.safety.scanner");
+        check("quarantine moves the plugin out of its folder",
+                moved.ok && !victim.exists() && quarantine.list().size() == 1,
+                moved.message);
+        mt.safety.scanner.Quarantine.Result back = quarantine.restore("demo.victim");
+        check("restore puts it back and empties the quarantine",
+                back.ok && victim.isDirectory() && new File(victim, "manifest.json").isFile()
+                        && quarantine.list().isEmpty(),
+                back.message);
+        check("restore refuses to move this scanner itself",
+                !quarantine.quarantine(victim, "demo.victim").ok,
+                "quarantining the scanner's own id must be refused");
+
         // Stopping the archive walk early must not invent findings: every member not yet streamed
         // would otherwise look absent from the archive's own data.
         Map<String, byte[]> wide = new LinkedHashMap<String, byte[]>();

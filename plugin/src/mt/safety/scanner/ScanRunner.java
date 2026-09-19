@@ -9,6 +9,7 @@ import java.util.List;
 
 import mt.safety.scanner.core.Discovery;
 import mt.safety.scanner.core.IocDatabase;
+import mt.safety.scanner.core.PluginManifest;
 import mt.safety.scanner.core.PluginScanner;
 import mt.safety.scanner.core.ReportFormatter;
 import mt.safety.scanner.core.ScanBudget;
@@ -374,11 +375,12 @@ public final class ScanRunner {
             if (!candidate.installed) {
                 continue;
             }
-            ScanReport report = new PluginScanner(IocDatabase.empty())
-                    .scan(candidate.path, ScanBudget.interactive());
-            boolean match = argument.equals(report.manifest.pluginId)
+            // Only the plugin's identity is needed here. Scanning each candidate in full would cost
+            // pattern matching, archive rules and hashing to learn one string, on the UI thread.
+            PluginManifest manifest = PluginManifest.readFrom(candidate.path);
+            boolean match = argument.equals(manifest.pluginId)
                     || argument.equals(candidate.path.getName())
-                    || argument.equalsIgnoreCase(report.manifest.displayName());
+                    || argument.equalsIgnoreCase(manifest.displayName());
             if (match) {
                 Quarantine.Result result = quarantine.quarantine(candidate.path, host.pluginId());
                 return result.message;

@@ -6,7 +6,6 @@ import java.util.List;
 
 import mt.safety.scanner.core.Discovery;
 import mt.safety.scanner.core.PluginManifest;
-import mt.safety.scanner.core.PluginPackage;
 import mt.safety.scanner.core.IocDatabase;
 import mt.safety.scanner.core.PluginScanner;
 import mt.safety.scanner.core.ReportFormatter;
@@ -139,25 +138,7 @@ public final class MtSafetyCli {
      * reported a page of findings about the tool's rule catalogue.
      */
     private static String pluginIdOf(File file) {
-        PluginPackage pkg = null;
-        try {
-            pkg = PluginPackage.open(file);
-            for (PluginPackage.Entry entry : pkg.entries()) {
-                if (!entry.directory && entry.name.equals("manifest.json")) {
-                    return PluginManifest.parse(pkg.read(entry, 512 * 1024, ScanBudget.unlimited()))
-                            .pluginId;
-                }
-            }
-        } catch (java.io.IOException e) {
-            // Unreadable: keep it, the scan itself will report the problem.
-        } catch (RuntimeException e) {
-            // Malformed: same.
-        } finally {
-            if (pkg != null) {
-                pkg.close();
-            }
-        }
-        return "";
+        return PluginManifest.readFrom(file).pluginId;
     }
 
     private static void usage(java.io.PrintStream out) {

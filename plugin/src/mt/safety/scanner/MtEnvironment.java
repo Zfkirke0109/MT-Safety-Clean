@@ -130,22 +130,6 @@ public final class MtEnvironment {
         if (path.getName().equals(ownPluginId)) {
             return true;
         }
-        File manifest = new File(path, "manifest.json");
-        if (!manifest.isFile()) {
-            return false;
-        }
-        try {
-            java.io.InputStream in = new java.io.FileInputStream(manifest);
-            try {
-                byte[] data = mt.safety.scanner.core.Bytes.readAtMost(in, 256 * 1024);
-                return ownPluginId.equals(mt.safety.scanner.core.PluginManifest.parse(data).pluginId);
-            } finally {
-                if (in != null) {
-                    in.close();
-                }
-            }
-        } catch (java.io.IOException e) {
-            return false;
-        }
+        return ownPluginId.equals(mt.safety.scanner.core.PluginManifest.readFrom(path).pluginId);
     }
 }

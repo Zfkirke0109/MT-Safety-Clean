@@ -342,7 +342,14 @@ public final class Json {
         }
         Object v = obj.get(key);
         if (v instanceof Double) {
-            return (int) ((Double) v).doubleValue();
+            double d = ((Double) v).doubleValue();
+            // A narrowing cast would turn 2.9 into 2 and anything past the int range into
+            // Integer.MAX_VALUE, both silently. These fields come from an untrusted manifest, so a
+            // value that is not an integer is treated as absent rather than quietly rewritten.
+            if (d != Math.floor(d) || d < Integer.MIN_VALUE || d > Integer.MAX_VALUE) {
+                return fallback;
+            }
+            return (int) d;
         }
         if (v instanceof String) {
             try {
