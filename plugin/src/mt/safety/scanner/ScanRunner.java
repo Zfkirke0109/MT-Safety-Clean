@@ -223,6 +223,11 @@ public final class ScanRunner {
         StringBuilder done = new StringBuilder();
         for (int i = 0; i < result.reports.size(); i++) {
             ScanReport report = result.reports.get(i);
+            if (report.contentHash == null || report.contentHash.length() == 0) {
+                // The key is not package-bound without a hash, so an armed flag here could belong to
+                // whatever used to be at this path. Never act on it.
+                continue;
+            }
             String key = armKey(report);
             if (!host.configFlag(key, false)) {
                 continue;
@@ -252,18 +257,13 @@ public final class ScanRunner {
      */
     private String planBulk(String action, String scope, Result result) {
         List<ScanReport> all = bulkTargets(scope, result);
-        List<ScanReport> targets = new ArrayList<ScanReport>();
-        int unverifiable = 0;
-        for (int i = 0; i < all.size(); i++) {
-            // A package the scan could not hash cannot be re-identified at confirmation time, so it is
-            // left out of the plan rather than included and failed later.
-            if (all.get(i).contentHash != null && all.get(i).contentHash.length() > 0) {
-                targets.add(all.get(i));
-            } else {
-                unverifiable++;
-            }
-        }
+        List<ScanReport> targets = verifiable(all);
+        int unverifiable = all.size() - targets.size();
         if (targets.isEmpty()) {
+            // Clearing matters here: leaving an older plan armed after telling the user nothing
+            // matches means a later confirm still carries out an action they were just told was not
+            // pending.
+            host.putConfig(KEY_PENDING_PLAN, "");
             return unverifiable > 0 ? strings.noneVerifiable(unverifiable) : strings.nothingMatches(scope);
         }
         StringBuilder names = new StringBuilder();
@@ -322,7 +322,8 @@ public final class ScanRunner {
 
         Quarantine quarantine = new Quarantine(new File(host.filesDir(), "quarantine"));
         boolean permanent = action.equals("remove");
-        int done = 0;
+        int removed = 0;
+        int quarantined = 0;
         StringBuilder problems = new StringBuilder();
         for (int i = 0; i < targets.size(); i++) {
             String path = Json.str(targets.get(i), "path", "");
@@ -343,19 +344,29 @@ public final class ScanRunner {
                 append(problems, moved.message);
                 continue;
             }
-            result.actioned.put(match.path, permanent ? "removed" : "quarantined");
-            done++;
+            // Counted by what actually happened. A removal whose purge failed left a restorable copy
+            // behind, so it is a quarantine, and reporting it as deleted would tell the user there is
+            // nothing left to recover when there is.
             if (permanent) {
                 Quarantine.Result purged = purgeByOriginalPath(quarantine, match.path);
-                if (!purged.ok) {
-                    // The move succeeded but the copy survives, so the plugin is quarantined rather
-                    // than gone. Say that, instead of reporting a deletion that did not happen.
+                if (purged.ok) {
+                    result.actioned.put(match.path, "removed");
+                    removed++;
+                } else {
                     result.actioned.put(match.path, "quarantined");
+                    quarantined++;
                     append(problems, purged.message);
                 }
+            } else {
+                result.actioned.put(match.path, "quarantined");
+                quarantined++;
             }
         }
-        String summary = strings.bulkDone(action, done);
+        String summary = permanent ? strings.bulkDone("remove", removed)
+                : strings.bulkDone("quarantine", quarantined);
+        if (permanent && quarantined > 0) {
+            summary = summary + "   " + strings.someOnlyQuarantined(quarantined);
+        }
         return problems.length() == 0 ? summary : summary + "   " + problems;
     }
 
@@ -377,7 +388,7 @@ public final class ScanRunner {
      * present, regardless of the order the scan happened to return them in.
      */
     private String targetIds(String scope, Result result) {
-        List<ScanReport> targets = bulkTargets(scope, result);
+        List<ScanReport> targets = verifiable(bulkTargets(scope, result));
         List<String> entries = new ArrayList<String>();
         for (int i = 0; i < targets.size(); i++) {
             ScanReport report = targets.get(i);
@@ -397,6 +408,25 @@ public final class ScanRunner {
             sb.append(entries.get(i));
         }
         return sb.append("]").toString();
+    }
+
+    /**
+     * The subset whose contents the scan managed to hash.
+     *
+     * <p>A package with no hash cannot be re-identified when the confirmation arrives, so it is left
+     * out of both the displayed list and the stored plan. Those two have to agree: a plan that
+     * silently covers something the user was not shown is exactly what the confirmation exists to
+     * prevent.
+     */
+    private static List<ScanReport> verifiable(List<ScanReport> reports) {
+        List<ScanReport> out = new ArrayList<ScanReport>();
+        for (int i = 0; i < reports.size(); i++) {
+            ScanReport report = reports.get(i);
+            if (report.contentHash != null && report.contentHash.length() > 0) {
+                out.add(report);
+            }
+        }
+        return out;
     }
 
     /** The installed plugins a scope covers, never including this scanner. */
@@ -542,7 +572,10 @@ public final class ScanRunner {
             rows.add(Row.text(strings.verdictLabel() + ": " + report.verdict().label()
                     + "  (" + report.score() + ")", report.verdict().advice()));
             // One tap beats typing an id, and only for the installed plugins this can actually move.
+            // Offered only when the package was hashed: without one, the switch key is the same for
+            // whatever replaces this directory, and reopening would quarantine the replacement.
             if (!report.archive && report.verdict().actionable()
+                    && report.contentHash != null && report.contentHash.length() > 0
                     && !host.pluginId().equals(report.manifest.pluginId)
                     && !result.actioned.containsKey(report.path)) {
                 rows.add(Row.toggle(strings.quarantineThis(), strings.quarantineThisHelp(),

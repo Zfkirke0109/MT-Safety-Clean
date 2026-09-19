@@ -86,6 +86,15 @@ public final class Quarantine {
             return new Result(false, "No manifest.json here, so this is not an installed plugin: "
                     + pluginDir.getName());
         }
+        // A cross-volume move falls back to copy-then-delete, and a directory link inside the plugin
+        // would take that delete outside the plugin entirely. This is a tool for removing hostile
+        // plugins, so a hostile plugin planting such a link is the expected case, not a freak one.
+        String escaping = findEscapingLink(pluginDir);
+        if (escaping != null) {
+            return new Result(false, "This plugin contains a link pointing outside its own folder ("
+                    + escaping + "). Moving it could affect files elsewhere, so nothing was done."
+                    + " Inspect it by hand.");
+        }
         String pluginId = readPluginId(manifest);
         if (ownPluginId != null && ownPluginId.equals(pluginId)) {
             return new Result(false, "That is this scanner. Uninstall it from MT Manager's plugin list"
@@ -281,6 +290,45 @@ public final class Quarantine {
         return sb.length() == 0 ? "plugin" : sb.toString();
     }
 
+    /**
+     * Returns the first entry that resolves outside {@code root}, or null when there is none.
+     *
+     * <p>{@code java.nio.file} is unavailable on the Android versions this supports, so a link is
+     * identified the same way the scanner identifies one: by comparing canonical paths.
+     */
+    private static String findEscapingLink(File root) {
+        try {
+            return walkForEscape(root, root.getCanonicalPath(), 0);
+        } catch (IOException e) {
+            // If the tree cannot even be resolved, treat it as unsafe to move.
+            return root.getName();
+        }
+    }
+
+    private static String walkForEscape(File dir, String rootCanonical, int depth) throws IOException {
+        if (depth > MAX_DEPTH) {
+            return dir.getName();
+        }
+        File[] children = dir.listFiles();
+        if (children == null) {
+            return null;
+        }
+        for (int i = 0; i < children.length; i++) {
+            File child = children[i];
+            String canonical = child.getCanonicalPath();
+            if (!canonical.equals(rootCanonical) && !canonical.startsWith(rootCanonical + File.separator)) {
+                return child.getName();
+            }
+            if (child.isDirectory()) {
+                String found = walkForEscape(child, rootCanonical, depth + 1);
+                if (found != null) {
+                    return found;
+                }
+            }
+        }
+        return null;
+    }
+
     private static void copyTree(File from, File to, int depth) throws IOException {
         if (depth > MAX_DEPTH) {
             throw new IOException("directory nested too deeply: " + from.getName());
@@ -316,17 +364,46 @@ public final class Quarantine {
     }
 
     private static boolean deleteTree(File file, int depth) {
+        return deleteTree(file, canonicalOrNull(file), depth);
+    }
+
+    /**
+     * Deletes a tree without following anything that leaves it.
+     *
+     * <p>A child resolving outside the root is deleted as the link it is, never descended into:
+     * deleting through a link would take files with it that were never part of what was removed.
+     */
+    private static boolean deleteTree(File file, String rootCanonical, int depth) {
         if (file == null || !file.exists() || depth > MAX_DEPTH) {
             return false;
         }
-        if (file.isDirectory()) {
+        if (file.isDirectory() && !escapes(file, rootCanonical)) {
             File[] children = file.listFiles();
             if (children != null) {
                 for (int i = 0; i < children.length; i++) {
-                    deleteTree(children[i], depth + 1);
+                    deleteTree(children[i], rootCanonical, depth + 1);
                 }
             }
         }
         return file.delete();
+    }
+
+    private static boolean escapes(File file, String rootCanonical) {
+        if (rootCanonical == null) {
+            return true;
+        }
+        String canonical = canonicalOrNull(file);
+        if (canonical == null) {
+            return true;
+        }
+        return !canonical.equals(rootCanonical) && !canonical.startsWith(rootCanonical + File.separator);
+    }
+
+    private static String canonicalOrNull(File file) {
+        try {
+            return file.getCanonicalPath();
+        } catch (IOException e) {
+            return null;
+        }
     }
 }

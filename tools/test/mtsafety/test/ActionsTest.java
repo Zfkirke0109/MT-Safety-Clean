@@ -386,6 +386,56 @@ public final class ActionsTest {
                 !new File(installed, "byname").isDirectory()
                         && rowsMention(byName, "Moved to quarantine just now"),
                 byName.commandOutcome);
+        for (int i = quarantine.list().size() - 1; i >= 0; i--) {
+            quarantine.purge(quarantine.list().get(i).directory.getName());
+        }
+
+        // A plugin containing a link out of its own folder must not be moved: the cross-volume
+        // fallback copies and then deletes, and deleting through the link would take files with it
+        // that were never part of the plugin. A hostile plugin planting one is the expected case.
+        File linked = new File(installed, "linked");
+        writePlugin(linked, "linked.one", "Linked", HOSTILE);
+        File outside = new File(iso, "precious");
+        File keepMe = new File(outside, "keep.txt");
+        Fixtures.write(keepMe, "must survive");
+        boolean linkMade = makeSymlink(new File(linked, "escape"), outside);
+        if (linkMade) {
+            Quarantine.Result refused = quarantine.quarantine(linked, host.pluginId());
+            check.that("a plugin containing a link out of its folder is not moved",
+                    !refused.ok && linked.isDirectory(), refused.message);
+            check.that("nothing outside the plugin was touched",
+                    keepMe.isFile(), "the linked-to file must survive");
+        } else {
+            check.that("a plugin containing a link out of its folder is not moved", true,
+                    "skipped: this filesystem does not support symlinks");
+            check.that("nothing outside the plugin was touched", true, "skipped");
+        }
+        deleteTree(linked);
+
+        // Telling the user nothing matches must not leave an older plan armed.
+        writePlugin(new File(installed, "lingerer"), "linger.one", "Lingerer", RISKY);
+        host.type("quarantine suspicious");
+        String lingerCode = codeFrom(new ScanRunner(host).run().commandOutcome);
+        host.type("quarantine malicious");
+        ScanRunner.Result noMatches = new ScanRunner(host).run();
+        check.that("a scope with no targets reports so", !noMatches.commandOutcome.contains("confirm "),
+                noMatches.commandOutcome);
+        host.type("confirm " + lingerCode);
+        ScanRunner.Result afterNoMatches = new ScanRunner(host).run();
+        check.that("an older plan is not left armed after a command that matched nothing",
+                new File(installed, "lingerer").isDirectory(), afterNoMatches.commandOutcome);
+        deleteTree(new File(installed, "lingerer"));
+    }
+
+    /** Creates a symlink, returning false when the platform or filesystem will not allow it. */
+    private static boolean makeSymlink(File link, File target) {
+        try {
+            Process process = new ProcessBuilder("ln", "-s", target.getAbsolutePath(),
+                    link.getAbsolutePath()).start();
+            return process.waitFor() == 0 && link.exists();
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     /** Writes a plugin outside the discovered area, for checks that scan it directly. */

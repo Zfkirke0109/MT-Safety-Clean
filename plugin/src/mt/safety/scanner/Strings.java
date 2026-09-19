@@ -176,6 +176,13 @@ public final class Strings {
                 zhVerb + " " + count + " \u4e2a\u63d2\u4ef6\u3002\u8bf7\u91cd\u542f MT \u7ba1\u7406\u5668\u3002");
     }
 
+    public String someOnlyQuarantined(int count) {
+        return pick(count + " could not be deleted and were left in quarantine, so they can still be"
+                + " restored or purged.",
+                "\u5176\u4e2d " + count + " \u4e2a\u65e0\u6cd5\u5220\u9664\uff0c\u5df2\u7559"
+                + "\u5728\u9694\u79bb\u533a\uff0c\u4ecd\u53ef\u6062\u590d\u6216\u6e05\u9664\u3002");
+    }
+
     public String nothingMatches(String scope) {
         return pick("Nothing matches \"" + scope + "\".",
                 "\u6ca1\u6709\u5339\u914d \"" + scope + "\" \u7684\u9879\u3002");
