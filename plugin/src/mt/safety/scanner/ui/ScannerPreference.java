@@ -77,13 +77,6 @@ public class ScannerPreference implements PluginPreference {
     }
 
     /**
-     * Makes a string safe to hand to MT Manager's preference builder.
-     *
-     * <p>MT Manager resolves <code>{name}</code> in preference text against the plugin's language files.
-     * Report lines quote source code, which is full of braces, so braces are replaced before display.
-     * Without this, evidence from a scanned plugin would drive lookups in this plugin's own resources.
-     */
-    /**
      * Puts a documented, empty indicator file in the plugin's folder on first run.
      *
      * <p>Without this the user has to invent the file's format before they can record a trust
@@ -124,6 +117,13 @@ public class ScannerPreference implements PluginPreference {
         }
     }
 
+    /**
+     * Makes a string safe to hand to MT Manager's preference builder.
+     *
+     * <p>MT Manager resolves <code>{name}</code> in preference text against the plugin's language files.
+     * Report lines quote source code, which is full of braces, so braces are replaced before display.
+     * Without this, evidence from a scanned plugin would drive lookups in this plugin's own resources.
+     */
     private static String safe(String value) {
         if (value == null) {
             return "";
@@ -175,8 +175,27 @@ public class ScannerPreference implements PluginPreference {
         public void putConfig(String key, String value) {
             try {
                 SharedPreferences prefs = context.getPreferences();
+                if (prefs == null) {
+                    return;
+                }
+                if (value == null) {
+                    prefs.edit().remove(key).apply();
+                } else {
+                    prefs.edit().putString(key, value).apply();
+                }
+            } catch (RuntimeException e) {
+                context.log("could not store " + key, e);
+            }
+        }
+
+        @Override
+        public void putFlag(String key, boolean value) {
+            try {
+                SharedPreferences prefs = context.getPreferences();
                 if (prefs != null) {
-                    prefs.edit().putString(key, value == null ? "" : value).apply();
+                    // Stored as a boolean because MT Manager's switch widget is bound to this same key
+                    // and reads it with getBoolean, outside this plugin's own error handling.
+                    prefs.edit().putBoolean(key, value).apply();
                 }
             } catch (RuntimeException e) {
                 context.log("could not store " + key, e);

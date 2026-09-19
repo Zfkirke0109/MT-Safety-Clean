@@ -206,6 +206,85 @@ public final class Bytes {
         return -1;
     }
 
+    /**
+     * Identifies a blob by its leading magic bytes, independent of what it is called.
+     *
+     * <p>Renaming a payload is the oldest trick there is, so every decision about what a member "is"
+     * goes through this rather than through its file extension.
+     *
+     * @return one of {@code dex}, {@code elf}, {@code class}, {@code zip}, {@code png}, {@code jpeg},
+     *         {@code gif}, {@code webp}, {@code ogg}, {@code mp3}, or null when nothing is recognised
+     */
+    public static String detectKind(byte[] head) {
+        if (looksLikeDex(head)) {
+            return "dex";
+        }
+        if (looksLikeElf(head)) {
+            return "elf";
+        }
+        if (head.length >= 4 && (head[0] & 0xFF) == 0xCA && (head[1] & 0xFF) == 0xFE
+                && (head[2] & 0xFF) == 0xBA && (head[3] & 0xFF) == 0xBE) {
+            return "class";
+        }
+        if (looksLikeZip(head)) {
+            return "zip";
+        }
+        if (head.length >= 8 && (head[0] & 0xFF) == 0x89 && head[1] == 'P' && head[2] == 'N'
+                && head[3] == 'G') {
+            return "png";
+        }
+        if (head.length >= 3 && (head[0] & 0xFF) == 0xFF && (head[1] & 0xFF) == 0xD8
+                && (head[2] & 0xFF) == 0xFF) {
+            return "jpeg";
+        }
+        if (head.length >= 4 && head[0] == 'G' && head[1] == 'I' && head[2] == 'F' && head[3] == '8') {
+            return "gif";
+        }
+        if (head.length >= 12 && head[0] == 'R' && head[1] == 'I' && head[2] == 'F' && head[3] == 'F'
+                && head[8] == 'W' && head[9] == 'E' && head[10] == 'B' && head[11] == 'P') {
+            return "webp";
+        }
+        if (head.length >= 4 && head[0] == 'O' && head[1] == 'g' && head[2] == 'g' && head[3] == 'S') {
+            return "ogg";
+        }
+        if (head.length >= 3 && head[0] == 'I' && head[1] == 'D' && head[2] == '3') {
+            return "mp3";
+        }
+        return null;
+    }
+
+    /**
+     * True when a member's contents match what its file name claims.
+     *
+     * <p>Unrecognised contents count as consistent: plenty of legitimate members (text, fonts, raw
+     * data) have no magic number, and treating every one of them as a disguise would bury the user in
+     * noise. What this rules out is the case that matters, contents that are recognisably something
+     * else.
+     */
+    public static boolean contentMatchesExtension(String extension, byte[] head) {
+        String kind = detectKind(head);
+        if (kind == null) {
+            return true;
+        }
+        String ext = extension == null ? "" : extension.toLowerCase(java.util.Locale.US);
+        if (kind.equals("zip")) {
+            // Every one of these formats legitimately is a zip.
+            return ext.equals("zip") || ext.equals("jar") || ext.equals("apk") || ext.equals("mtp")
+                    || ext.equals("aar") || ext.equals("docx") || ext.equals("xlsx")
+                    || ext.equals("odt") || ext.equals("epub");
+        }
+        if (kind.equals("jpeg")) {
+            return ext.equals("jpg") || ext.equals("jpeg");
+        }
+        if (kind.equals("mp3")) {
+            return ext.equals("mp3");
+        }
+        if (kind.equals("ogg")) {
+            return ext.equals("ogg") || ext.equals("oga");
+        }
+        return kind.equals(ext);
+    }
+
     /** True when the blob starts with the ZIP local-header magic, i.e. it is an apk/jar/mtp. */
     public static boolean looksLikeZip(byte[] data) {
         return data.length >= 4 && data[0] == 'P' && data[1] == 'K'

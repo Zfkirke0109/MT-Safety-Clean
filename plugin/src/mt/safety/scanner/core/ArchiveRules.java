@@ -53,7 +53,7 @@ public final class ArchiveRules {
         checkPaths(report, entries);
         checkPayloads(report, pkg, entries, budget);
         checkCompressionRatio(report, entries);
-        checkStructuralAnomalies(report, pkg);
+        checkStructuralAnomalies(report, pkg, budget);
         checkEntropy(report, pkg, entries, budget);
     }
 
@@ -142,18 +142,21 @@ public final class ArchiveRules {
         }
     }
 
-    /** Reads a member's first bytes to see whether its contents match its name. */
+    /**
+     * Reads a member's first bytes to see whether its contents match its name.
+     *
+     * <p>No extension is exempt. Exempting image extensions here would have meant that renaming a
+     * payload to {@code banner.png} hid it from this rule entirely, which is precisely the dodge the
+     * rule exists to catch. Whether a member is allowed to be an archive or a binary is decided from
+     * its magic bytes against its declared type, in {@link Bytes#contentMatchesExtension}.
+     */
     private static boolean looksExecutable(PluginPackage pkg, PluginPackage.Entry entry, ScanBudget budget) {
-        String ext = entry.extension();
-        // Formats that are legitimately archives or binaries in their own right.
-        if (ext.equals("jar") || ext.equals("zip") || ext.equals("png") || ext.equals("jpg")
-                || ext.equals("jpeg") || ext.equals("webp") || ext.equals("ttf") || ext.equals("otf")) {
-            return false;
-        }
         try {
             byte[] head = pkg.read(entry, 512, budget);
-            return Bytes.looksLikeDex(head) || Bytes.looksLikeElf(head)
-                    || (Bytes.looksLikeZip(head) && !ext.equals("apk"));
+            if (head.length < 4) {
+                return false;
+            }
+            return !Bytes.contentMatchesExtension(entry.extension(), head);
         } catch (IOException e) {
             return false;
         }
@@ -179,9 +182,9 @@ public final class ArchiveRules {
     }
 
     /** Disagreements between the archive's index and its contents. */
-    private static void checkStructuralAnomalies(ScanReport report, PluginPackage pkg) {
+    private static void checkStructuralAnomalies(ScanReport report, PluginPackage pkg, ScanBudget budget) {
         try {
-            List<String> problems = pkg.structuralAnomalies();
+            List<String> problems = pkg.structuralAnomalies(budget);
             if (problems.isEmpty()) {
                 return;
             }
@@ -206,16 +209,16 @@ public final class ArchiveRules {
             if (entry.directory || entry.size < ENTROPY_MIN_BYTES || budget.exhausted()) {
                 continue;
             }
-            String ext = entry.extension();
-            // Already-compressed formats are legitimately high entropy.
-            if (ext.equals("png") || ext.equals("jpg") || ext.equals("jpeg") || ext.equals("webp")
-                    || ext.equals("zip") || ext.equals("jar") || ext.equals("gz") || ext.equals("mp3")
-                    || ext.equals("mp4") || ext.equals("ogg") || ext.equals("woff") || ext.equals("woff2")) {
-                continue;
-            }
             try {
                 byte[] sample = pkg.read(entry, 128 * 1024, budget);
                 if (sample.length < ENTROPY_MIN_BYTES) {
+                    continue;
+                }
+                // Already-compressed formats are legitimately high entropy, but only when the contents
+                // really are that format: the exemption follows the magic bytes, not the file name.
+                String kind = Bytes.detectKind(sample);
+                if (kind != null && Bytes.contentMatchesExtension(entry.extension(), sample)
+                        && !kind.equals("dex") && !kind.equals("elf") && !kind.equals("class")) {
                     continue;
                 }
                 double entropy = Bytes.entropy(sample);

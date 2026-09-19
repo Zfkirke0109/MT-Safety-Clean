@@ -145,8 +145,12 @@ public final class Quarantine {
                 deleteTree(item.directory, 0);
                 return new Result(true, "Restored to " + item.originalPath + ". Restart MT Manager.");
             } catch (IOException e) {
+                // Leave nothing half-written at the destination: MT Manager would try to load it, and
+                // the next restore attempt would refuse because something already exists there.
+                deleteTree(destination, 0);
                 writeInfo(item.directory, item.pluginId, item.originalPath);
-                return new Result(false, "Could not restore: " + e.getMessage());
+                return new Result(false, "Could not restore: " + e.getMessage()
+                        + ". The plugin is still in quarantine and nothing was left behind.");
             }
         }
         return new Result(false, "Nothing in quarantine matches \"" + identifier + "\".");

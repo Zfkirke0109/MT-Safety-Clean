@@ -5,6 +5,8 @@ import java.util.ArrayList;
 import java.util.List;
 
 import mt.safety.scanner.core.Discovery;
+import mt.safety.scanner.core.PluginManifest;
+import mt.safety.scanner.core.PluginPackage;
 import mt.safety.scanner.core.IocDatabase;
 import mt.safety.scanner.core.PluginScanner;
 import mt.safety.scanner.core.ReportFormatter;
@@ -21,6 +23,9 @@ import mt.safety.scanner.core.ScanReport;
  * <p>Exit status is meant for scripts: 0 when nothing needs action, 2 when something does, 1 on error.
  */
 public final class MtSafetyCli {
+
+    /** This scanner's own plugin id, skipped in discovery results unless --include-self is given. */
+    private static final String SCANNER_PLUGIN_ID = "mt.safety.scanner";
 
     private static final int EXIT_OK = 0;
     private static final int EXIT_ERROR = 1;
@@ -92,7 +97,9 @@ public final class MtSafetyCli {
         PluginScanner scanner = new PluginScanner(database);
         List<ScanReport> reports = new ArrayList<ScanReport>();
         for (int i = 0; i < packages.size(); i++) {
-            reports.add(scanner.scan(packages.get(i), deep ? ScanBudget.deep() : ScanBudget.unlimited()));
+            // --deep lifts the limits; without it a generous but bounded budget keeps a hostile package
+            // from running the tool forever. This was inverted before, so --deep scanned less.
+            reports.add(scanner.scan(packages.get(i), deep ? ScanBudget.unlimited() : ScanBudget.deep()));
         }
         scanner.finishSet(reports);
 
@@ -118,26 +125,39 @@ public final class MtSafetyCli {
         List<File> out = new ArrayList<File>();
         for (int i = 0; i < packages.size(); i++) {
             File file = packages.get(i);
-            File manifest = new File(file, "manifest.json");
-            if (file.isDirectory() && manifest.isFile()) {
-                try {
-                    java.io.InputStream in = new java.io.FileInputStream(manifest);
-                    try {
-                        String id = mt.safety.scanner.core.PluginManifest.parse(
-                                mt.safety.scanner.core.Bytes.readAtMost(in, 512 * 1024)).pluginId;
-                        if ("mt.safety.scanner".equals(id)) {
-                            continue;
-                        }
-                    } finally {
-                        in.close();
-                    }
-                } catch (java.io.IOException e) {
-                    // Unreadable manifest: keep it, the scan will report the problem.
-                }
+            if (!SCANNER_PLUGIN_ID.equals(pluginIdOf(file))) {
+                out.add(file);
             }
-            out.add(file);
         }
         return out;
+    }
+
+    /**
+     * Reads a package's plugin id, whether it is an unpacked directory or an .mtp archive.
+     *
+     * <p>Handling only directories meant a discovered copy of this scanner's own .mtp was scanned and
+     * reported a page of findings about the tool's rule catalogue.
+     */
+    private static String pluginIdOf(File file) {
+        PluginPackage pkg = null;
+        try {
+            pkg = PluginPackage.open(file);
+            for (PluginPackage.Entry entry : pkg.entries()) {
+                if (!entry.directory && entry.name.equals("manifest.json")) {
+                    return PluginManifest.parse(pkg.read(entry, 512 * 1024, ScanBudget.unlimited()))
+                            .pluginId;
+                }
+            }
+        } catch (java.io.IOException e) {
+            // Unreadable: keep it, the scan itself will report the problem.
+        } catch (RuntimeException e) {
+            // Malformed: same.
+        } finally {
+            if (pkg != null) {
+                pkg.close();
+            }
+        }
+        return "";
     }
 
     private static void usage(java.io.PrintStream out) {
@@ -149,7 +169,7 @@ public final class MtSafetyCli {
         out.println();
         out.println("  --scan-dir DIR     also search DIR for plugins and .mtp files");
         out.println("  --indicators FILE  load your trusted/denied lists and extra patterns");
-        out.println("  --deep             read more of each package");
+        out.println("  --deep             lift the read limits entirely (slower on huge packages)");
         out.println("  --json             machine-readable output");
         out.println("  --include-self     do not skip this scanner's own package");
         out.println();

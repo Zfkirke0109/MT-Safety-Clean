@@ -196,17 +196,43 @@ public final class IocDatabase {
         }
     }
 
-    /** Writes the database to disk, creating parent directories as needed. */
+    /**
+     * Writes the database to disk, creating parent directories as needed.
+     *
+     * <p>Written to a temporary file and then moved into place, and the writer is closed inside the
+     * try so a failure during the flush is raised rather than swallowed. This file holds the user's
+     * security decisions: losing it silently, or replacing a good copy with a truncated one, is worse
+     * than failing loudly.
+     */
     public void save(File file) throws IOException {
         File parent = file.getParentFile();
         if (parent != null && !parent.isDirectory() && !parent.mkdirs()) {
             throw new IOException("could not create " + parent.getAbsolutePath());
         }
-        Writer writer = new OutputStreamWriter(new FileOutputStream(file), "UTF-8");
+        File temporary = new File(file.getAbsolutePath() + ".tmp");
+        boolean written = false;
         try {
-            writer.write(toJson());
+            Writer writer = new OutputStreamWriter(new FileOutputStream(temporary), "UTF-8");
+            try {
+                writer.write(toJson());
+                writer.flush();
+            } finally {
+                // close() flushes, so its failure is the one that matters most: it must propagate.
+                writer.close();
+            }
+            written = true;
         } finally {
-            PluginPackage.closeQuietly(writer);
+            if (!written) {
+                temporary.delete();
+            }
+        }
+        if (file.exists() && !file.delete()) {
+            temporary.delete();
+            throw new IOException("could not replace " + file.getAbsolutePath());
+        }
+        if (!temporary.renameTo(file)) {
+            temporary.delete();
+            throw new IOException("could not move the new list into place at " + file.getAbsolutePath());
         }
     }
 }

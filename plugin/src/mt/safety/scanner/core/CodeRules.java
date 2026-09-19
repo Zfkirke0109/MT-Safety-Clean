@@ -20,9 +20,15 @@ import mt.safety.scanner.core.Indicator.Scope;
  */
 public final class CodeRules {
 
-    /** How a plugin declares itself a translation engine, which excuses ordinary network use. */
-    private static final Pattern TRANSLATION_ENGINE =
-            Pattern.compile("BaseTranslationEngine|implements\\s+TranslationEngine|TranslationEngine\\b");
+    /**
+     * How a plugin declares itself a translation engine, which excuses ordinary network use.
+     *
+     * <p>Deliberately narrow: only a class declaration that extends or implements the engine type
+     * counts, and only in a file the manifest names as an entry point. Matching the bare word anywhere
+     * would let a plugin switch off its own network scoring with a comment.
+     */
+    private static final Pattern TRANSLATION_ENGINE = Pattern.compile(
+            "(extends|implements)\\s+(Base)?TranslationEngine\\b");
 
     /** Long unbroken Base64 runs, the usual shape of an embedded payload. */
     private static final Pattern BASE64_BLOB = Pattern.compile("[A-Za-z0-9+/]{512,}={0,2}");
@@ -89,7 +95,7 @@ public final class CodeRules {
                 break;
             }
             String ext = entry.extension();
-            if (SKIP_EXTENSIONS.contains(ext)) {
+            if (SKIP_EXTENSIONS.contains(ext) && reallyIsMedia(pkg, entry, budget)) {
                 continue;
             }
             Scope scope = classify(ext);
@@ -108,7 +114,8 @@ public final class CodeRules {
             scanned++;
 
             String text = scope == Scope.BINARY ? Bytes.extractedText(data, 6) : Bytes.text(data);
-            if (scope == Scope.SOURCE && TRANSLATION_ENGINE.matcher(text).find()) {
+            if (scope == Scope.SOURCE && isDeclaredEntryPoint(entry.name, report)
+                    && TRANSLATION_ENGINE.matcher(text).find()) {
                 report.traits.add("translation-engine");
             }
             matchIndicators(report, byRule, entry, scope, text);
@@ -145,6 +152,45 @@ public final class CodeRules {
             signal.withEvidence(location(entry, text, matcher.start()),
                     database.patternSources().get(i) + " -> " + snippet(text, matcher.start(), matcher.end()));
         }
+    }
+
+    /**
+     * True when a media member's bytes really are that media format.
+     *
+     * <p>Skipping images by file name alone would mean a payload renamed to {@code banner.png} was
+     * never searched at all, so the skip is only granted once the magic bytes agree.
+     */
+    private static boolean reallyIsMedia(PluginPackage pkg, PluginPackage.Entry entry, ScanBudget budget) {
+        try {
+            byte[] head = pkg.read(entry, 32, budget);
+            if (head.length < 4) {
+                return true;
+            }
+            return Bytes.contentMatchesExtension(entry.extension(), head);
+        } catch (IOException e) {
+            return true;
+        }
+    }
+
+    /** True when the manifest names this source file as an interface or the settings screen. */
+    private static boolean isDeclaredEntryPoint(String memberName, ScanReport report) {
+        java.util.List<String> declared = report.manifest.declaredClasses();
+        for (int i = 0; i < declared.size(); i++) {
+            String className = declared.get(i);
+            if (className == null || className.length() == 0) {
+                continue;
+            }
+            String asPath = className.replace('.', '/') + ".java";
+            if (memberName.endsWith(asPath)) {
+                return true;
+            }
+            int lastDot = className.lastIndexOf('.');
+            String simple = lastDot >= 0 ? className.substring(lastDot + 1) : className;
+            if (memberName.endsWith("/" + simple + ".java") || memberName.equals(simple + ".java")) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static Scope classify(String extension) {
@@ -223,9 +269,11 @@ public final class CodeRules {
             signal.withEvidence(entry.name, "longest line is " + longestLine + " characters");
         }
 
+        // Only type declarations count. An earlier version also matched `int i`, which made every
+        // ordinary for-loop look like obfuscation; obfuscators rename types, so that is what to look at.
         int singleLetterDeclarations = countMatches(text,
-                Pattern.compile("\\b(class|void|int|String|boolean|long|double|float)\\s+[a-zA-Z]\\b"));
-        if (singleLetterDeclarations >= 12) {
+                Pattern.compile("\\b(class|interface|enum)\\s+[a-zA-Z]\\b"));
+        if (singleLetterDeclarations >= 5) {
             Signal signal = signalFor(report, byRule, "OBF008", Category.OBFUSCATION, Severity.MEDIUM,
                     "Identifiers look machine-shortened",
                     "Many one-character class, method and field names, which is what an obfuscator leaves"

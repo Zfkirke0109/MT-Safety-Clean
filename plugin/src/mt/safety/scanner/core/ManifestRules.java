@@ -23,7 +23,7 @@ public final class ManifestRules {
 
     /** Claims of official provenance, in the languages MT Manager's audience actually uses. */
     private static final Pattern OFFICIAL_CLAIM = Pattern.compile(
-            "official|\\bofficial\\b|verified|\u5b98\u65b9|\u6b63\u7248|\u8ba4\u8bc1|\u5b98\u7f51",
+            "\\b(?<!un)official\\b|\\bverified\\b|\u5b98\u65b9|\u6b63\u7248|\u8ba4\u8bc1|\u5b98\u7f51",
             Pattern.CASE_INSENSITIVE);
 
     private ManifestRules() {
@@ -194,8 +194,12 @@ public final class ManifestRules {
                 if (!idLookalike && !nameLookalike) {
                     continue;
                 }
-                String detail = "Two installed plugins have near-identical identities. One of them may be"
-                        + " impersonating the other; keep the one you can trace to its author.";
+                boolean identical = (idA != null && idA.equals(idB)) || (nameA != null && nameA.equals(nameB));
+                String detail = identical
+                        ? "Two installed plugins claim the same identity. One is a copy of the other, or"
+                                + " an impersonation; keep only the one you can trace to its author."
+                        : "Two installed plugins have near-identical identities. One of them may be"
+                                + " impersonating the other; keep the one you can trace to its author.";
                 a.add(new Signal("MFT011", Category.PROVENANCE, Severity.HIGH,
                         "Nearly identical to another installed plugin", detail)
                         .withEvidence(a.label, describe(a) + "  vs  " + describe(b)));
@@ -221,8 +225,10 @@ public final class ManifestRules {
             return false;
         }
         if (x.equals(y)) {
-            // Same identity after removing decoration: either a duplicate install or a copy.
-            return !a.equals(b);
+            // Same identity after folding decoration. Two packages claiming one identity is worth
+            // reporting whether or not the raw strings differ: a byte-identical id is a straight
+            // clone, which is the strongest form of this, not a reason to stay quiet.
+            return true;
         }
         return editDistance(x, y) == 1;
     }

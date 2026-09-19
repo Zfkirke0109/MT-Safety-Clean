@@ -86,7 +86,7 @@ the README is exactly this case.
 | --- | --- | --- |
 | `ARC001` | Critical | A member is named so that it unpacks **outside** the plugin folder (`../`, or an absolute path). Extraction could overwrite MT Manager's own files. |
 | `ARC002` | Medium | Members outside the documented layout of `manifest.json`, `icon.*`, `src/`, `assets/`, `libs/`. |
-| `ARC003` | High | Carries an installable or executable file: apk, mtp, dex, native library or shell script. Also fires on contents that do not match the file extension, so renaming a payload to `.dat` does not help. |
+| `ARC003` | High | Carries an installable or executable file: apk, mtp, dex, native library or shell script. Judged by magic bytes against the declared type, so renaming a payload to `.dat` or `.png` does not hide it. No extension is exempt from this check. |
 | `ARC004` | High | A member that expands enormously when unpacked. |
 | `ARC005` | High | The archive index disagrees with its contents, for example the same member twice. The file a reviewer reads need not be the file that installs. |
 | `ARC006` | Low | Hidden or oddly named members. |

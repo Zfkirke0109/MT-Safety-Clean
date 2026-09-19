@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 /**
  * Minimal, dependency-free JSON parser.
@@ -33,6 +34,17 @@ public final class Json {
     private int depth;
 
     private static final int MAX_DEPTH = 64;
+
+    /**
+     * JSON's number grammar.
+     *
+     * <p>The scanning loop below is deliberately loose about which characters it gathers, so the token
+     * it produces is checked against the real grammar rather than handed straight to
+     * {@link Double#valueOf}, which accepts plenty that JSON does not ({@code +1}, {@code 1d},
+     * {@code Infinity}). Being more permissive than the parser MT Manager uses would leave somewhere
+     * for a manifest to mean two different things.
+     */
+    private static final Pattern NUMBER = Pattern.compile("-?(0|[1-9][0-9]*)(\\.[0-9]+)?([eE][-+]?[0-9]+)?");
 
     private Json(String src) {
         this.src = src;
@@ -228,7 +240,9 @@ public final class Json {
 
     private Double readNumber() throws JsonException {
         int start = pos;
-        if (peek() == '-' || peek() == '+') {
+        // JSON allows a leading minus only. Accepting '+' would make this parser more permissive than
+        // the one MT Manager uses, and any disagreement about an untrusted manifest is a place to hide.
+        if (peek() == '-') {
             pos++;
         }
         while (pos < src.length()) {
@@ -242,6 +256,9 @@ public final class Json {
         String text = src.substring(start, pos);
         if (text.length() == 0) {
             throw new JsonException("unexpected character '" + src.charAt(start) + "' at offset " + start);
+        }
+        if (!NUMBER.matcher(text).matches()) {
+            throw new JsonException("bad number: " + text);
         }
         try {
             return Double.valueOf(text);

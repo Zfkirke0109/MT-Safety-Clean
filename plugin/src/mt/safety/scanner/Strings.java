@@ -91,6 +91,19 @@ public final class Strings {
                 "\u672a\u80fd\u5b8c\u6574\u8bfb\u53d6\u8be5\u63d2\u4ef6");
     }
 
+    public String notReached(int count) {
+        return pick(count + " more plugin(s) were not scanned this time",
+                "\u8fd8\u6709 " + count + " \u4e2a\u63d2\u4ef6\u672c\u6b21\u672a\u626b\u63cf");
+    }
+
+    public String notReachedHelp() {
+        return pick("The scan stopped at its time limit so this screen stays responsive."
+                + " Use the deep command, or export, to scan everything.",
+                "\u4e3a\u4fdd\u8bc1\u9875\u9762\u54cd\u5e94\uff0c\u626b\u63cf\u5df2\u8fbe"
+                + "\u65f6\u95f4\u4e0a\u9650\u3002\u8bf7\u4f7f\u7528 deep \u6216 export "
+                + "\u626b\u63cf\u5168\u90e8\u3002");
+    }
+
     public String problem() {
         return pick("Problem", "\u95ee\u9898");
     }

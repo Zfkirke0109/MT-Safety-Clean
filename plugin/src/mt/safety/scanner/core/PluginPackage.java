@@ -79,8 +79,13 @@ public abstract class PluginPackage {
     /** Reads a member, capped at {@code limit} bytes and at whatever the budget allows. */
     public abstract byte[] read(Entry entry, int limit, ScanBudget budget) throws IOException;
 
-    /** A stable digest identifying this exact package content. */
-    public abstract String contentHash() throws IOException;
+    /**
+     * A stable digest identifying this exact package content.
+     *
+     * <p>Takes the budget because this reads the package end to end: on a multi-gigabyte file it is
+     * the single largest read a scan performs, and it runs on MT Manager's UI thread.
+     */
+    public abstract String contentHash(ScanBudget budget) throws IOException;
 
     /**
      * Members whose local headers disagree with the central directory, or that appear twice.
@@ -88,7 +93,7 @@ public abstract class PluginPackage {
      * <p>Only meaningful for archives. Duplicate names are a real packaging trick: a reviewer's tool
      * reads one copy while the installer extracts the other.
      */
-    public List<String> structuralAnomalies() throws IOException {
+    public List<String> structuralAnomalies(ScanBudget budget) throws IOException {
         return Collections.emptyList();
     }
 
@@ -107,6 +112,21 @@ public abstract class PluginPackage {
             return delegate;
         }
         return new RootedPackage(delegate, prefix);
+    }
+
+    /**
+     * How many bytes a read of {@code entry} should reserve.
+     *
+     * <p>Bounded by the member's own size as well as the caller's limit. Reserving the full limit for
+     * a two-line source file would exhaust an interactive budget after a handful of members and leave
+     * the rest of the package unread while reporting almost nothing consumed.
+     */
+    static int wanted(Entry entry, int limit) {
+        long cap = Math.min((long) limit, (long) MAX_MEMBER_BYTES);
+        if (entry != null && entry.size > 0) {
+            cap = Math.min(cap, entry.size);
+        }
+        return (int) Math.max(cap, 0L);
     }
 
     /** Opens a path as a package, choosing the archive or directory reader. */
@@ -172,7 +192,7 @@ public abstract class PluginPackage {
 
         @Override
         public byte[] read(Entry entry, int limit, ScanBudget budget) throws IOException {
-            int granted = budget.reserve((int) Math.min((long) limit, MAX_MEMBER_BYTES));
+            int granted = budget.reserve(wanted(entry, limit));
             if (granted <= 0) {
                 return new byte[0];
             }
@@ -189,7 +209,10 @@ public abstract class PluginPackage {
         }
 
         @Override
-        public String contentHash() throws IOException {
+        public String contentHash(ScanBudget budget) throws IOException {
+            if (budget.reserve(hashCost(file.length())) <= 0) {
+                return "";
+            }
             InputStream in = new BufferedInputStream(new FileInputStream(file));
             try {
                 return Bytes.sha256(in);
@@ -199,7 +222,10 @@ public abstract class PluginPackage {
         }
 
         @Override
-        public List<String> structuralAnomalies() throws IOException {
+        public List<String> structuralAnomalies(ScanBudget budget) throws IOException {
+            if (budget.exhausted()) {
+                return Collections.emptyList();
+            }
             List<String> problems = new ArrayList<String>();
             Set<String> seen = new HashSet<String>();
             Set<String> streamed = new HashSet<String>();
@@ -330,7 +356,7 @@ public abstract class PluginPackage {
 
         @Override
         public byte[] read(Entry entry, int limit, ScanBudget budget) throws IOException {
-            int granted = budget.reserve((int) Math.min((long) limit, MAX_MEMBER_BYTES));
+            int granted = budget.reserve(wanted(entry, limit));
             if (granted <= 0) {
                 return new byte[0];
             }
@@ -347,9 +373,12 @@ public abstract class PluginPackage {
         }
 
         @Override
-        public String contentHash() throws IOException {
+        public String contentHash(ScanBudget budget) throws IOException {
             List<String> lines = new ArrayList<String>();
             for (Entry entry : entries()) {
+                if (budget.reserve(hashCost(entry.size)) <= 0) {
+                    return "";
+                }
                 if (entry.directory) {
                     continue;
                 }
@@ -373,7 +402,7 @@ public abstract class PluginPackage {
         }
 
         @Override
-        public List<String> structuralAnomalies() throws IOException {
+        public List<String> structuralAnomalies(ScanBudget budget) throws IOException {
             entries();
             return anomalies;
         }
@@ -427,19 +456,31 @@ public abstract class PluginPackage {
         }
 
         @Override
-        public String contentHash() throws IOException {
-            return delegate.contentHash();
+        public String contentHash(ScanBudget budget) throws IOException {
+            return delegate.contentHash(budget);
         }
 
         @Override
-        public List<String> structuralAnomalies() throws IOException {
-            return delegate.structuralAnomalies();
+        public List<String> structuralAnomalies(ScanBudget budget) throws IOException {
+            return delegate.structuralAnomalies(budget);
         }
 
         @Override
         public void close() {
             delegate.close();
         }
+    }
+
+    /**
+     * Budget charged for hashing, scaled down because hashing streams rather than buffers.
+     *
+     * <p>Charging the full length would make a single large package exhaust the whole budget before
+     * any rule ran, so the cost is sampled: enough that an enormous file still stops the scan, little
+     * enough that an ordinary one does not distort it.
+     */
+    static int hashCost(long length) {
+        long cost = Math.max(length / 64L, 1L);
+        return (int) Math.min(cost, (long) Integer.MAX_VALUE);
     }
 
     static void closeQuietly(java.io.Closeable c) {

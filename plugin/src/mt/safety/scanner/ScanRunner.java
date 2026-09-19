@@ -72,6 +72,8 @@ public final class ScanRunner {
         /** Configuration and limitations, shown after the action widgets. */
         public final List<Row> aboutRows = new ArrayList<Row>();
         public final List<ScanReport> reports = new ArrayList<ScanReport>();
+        /** Plugins found but not reached before the scan's overall deadline. */
+        public int unscanned;
         public String commandOutcome = "";
     }
 
@@ -110,10 +112,21 @@ public final class ScanRunner {
 
         PluginScanner scanner = new PluginScanner(database);
         long totalMs = deep ? DEEP_TOTAL_MS : INTERACTIVE_TOTAL_MS;
-        long slice = candidates.isEmpty() ? totalMs : Math.max(500L, totalMs / candidates.size());
+        long slice = candidates.isEmpty() ? totalMs : Math.max(300L, totalMs / candidates.size());
+        // The per-package slice has a floor so a small scan is not starved, which means the slices can
+        // add up past the total. The overall deadline is what actually keeps the settings screen
+        // responsive: with many plugins installed, the rest are listed as unscanned rather than
+        // freezing MT Manager for a minute and a half.
+        long deadline = System.currentTimeMillis() + totalMs;
+        int scannedCount = 0;
         for (int i = 0; i < candidates.size(); i++) {
+            if (System.currentTimeMillis() >= deadline && scannedCount > 0) {
+                result.unscanned = candidates.size() - scannedCount;
+                break;
+            }
             ScanBudget budget = new ScanBudget(slice, BYTES_PER_PLUGIN);
             result.reports.add(scanner.scan(candidates.get(i).path, budget));
+            scannedCount++;
         }
         scanner.finishSet(result.reports);
 
@@ -136,6 +149,9 @@ public final class ScanRunner {
             rows.add(Row.text(strings.nothingFound(), strings.nothingFoundHelp()));
         } else {
             rows.add(Row.text(ReportFormatter.overview(result.reports), strings.scannedIn(elapsed(result))));
+            if (result.unscanned > 0) {
+                rows.add(Row.text(strings.notReached(result.unscanned), strings.notReachedHelp()));
+            }
         }
 
         // Worst first, so the thing that matters is the first thing on screen.
@@ -276,11 +292,11 @@ public final class ScanRunner {
                 return strings.commandsHelp();
             }
             if (verb.equals("deep")) {
-                host.putConfig(KEY_DEEP, "true");
+                host.putFlag(KEY_DEEP, true);
                 return strings.deepEnabled();
             }
             if (verb.equals("fast")) {
-                host.putConfig(KEY_DEEP, "false");
+                host.putFlag(KEY_DEEP, false);
                 return strings.deepDisabled();
             }
             if (verb.equals("root")) {

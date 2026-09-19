@@ -192,6 +192,17 @@ public final class Fixtures {
         return out;
     }
 
+    /** Bytes that begin with the real PNG signature, so a genuine image can be tested too. */
+    public static byte[] fakePng(int length) {
+        byte[] out = new byte[Math.max(length, 16)];
+        byte[] magic = {(byte) 0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n'};
+        System.arraycopy(magic, 0, out, 0, magic.length);
+        for (int i = magic.length; i < out.length; i++) {
+            out[i] = (byte) ((i * 17 + 3) & 0xFF);
+        }
+        return out;
+    }
+
     /** Near-random bytes, for the packed-payload fixture. */
     public static byte[] highEntropy(int length) {
         byte[] out = new byte[length];
@@ -211,6 +222,16 @@ public final class Fixtures {
         } catch (java.io.UnsupportedEncodingException e) {
             throw new IllegalStateException(e);
         }
+    }
+
+    /** The directory fixtures are built under. */
+    public File root() {
+        return root;
+    }
+
+    /** Writes a file, for tests that need one outside the plugin layout. */
+    public static void write(File file, String content) {
+        writeFile(file, content);
     }
 
     private static void writeFile(File file, String content) {

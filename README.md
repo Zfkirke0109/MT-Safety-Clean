@@ -136,9 +136,13 @@ sources that MT Manager compiles on the device. The `javac` run exists to catch 
 does, using the stubs in `tools/stubs/` to stand in for classes MT Manager provides at runtime. Those
 stubs are never shipped inside the `.mtp`.
 
-The test suite is 49 checks with no test framework, so it builds and runs with nothing but a JDK. It
+The test suite is 64 checks with no test framework, so it builds and runs with nothing but a JDK. It
 checks both directions: hostile fixtures must be caught, and benign ones must come back clean. A scanner
 that flags everything is as useless as one that flags nothing.
+
+A block of those checks are regressions: every defect found in review is kept as a test rather than
+merely fixed. A scanner that quietly stops catching something is worse than one that never caught it,
+because the report still looks reassuring.
 
 ## Layout
 

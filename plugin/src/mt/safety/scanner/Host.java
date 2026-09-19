@@ -22,8 +22,17 @@ public interface Host {
     /** Persisted flag, or {@code fallback}. */
     boolean configFlag(String key, boolean fallback);
 
-    /** Stores a configuration value. Passing null removes it. */
+    /** Stores a configuration value. Passing null removes the key. */
     void putConfig(String key, String value);
+
+    /**
+     * Stores a flag.
+     *
+     * <p>Separate from {@link #putConfig} because the host stores values by type: a switch written as
+     * the string "true" is not a boolean the host can read back, and the widget bound to the same key
+     * fails on it.
+     */
+    void putFlag(String key, boolean value);
 
     /** Two-letter language code, e.g. {@code en} or {@code zh}. */
     String language();

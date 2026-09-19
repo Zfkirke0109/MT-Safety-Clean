@@ -10,6 +10,7 @@ package mt.safety.scanner.core;
  */
 public final class ScanBudget {
 
+    private final long timeLimitMs;
     private final long deadlineMs;
     private final long maxBytes;
     private long bytesUsed;
@@ -31,8 +32,19 @@ public final class ScanBudget {
     }
 
     public ScanBudget(long timeLimitMs, long maxBytes) {
+        this.timeLimitMs = timeLimitMs;
         this.deadlineMs = now() + timeLimitMs;
         this.maxBytes = maxBytes;
+    }
+
+    /**
+     * A new budget with the same limits, its clock starting now.
+     *
+     * <p>Used to give each package in a set its own allowance, so one large plugin cannot consume the
+     * whole scan and leave the rest of the list unexamined.
+     */
+    public ScanBudget fresh() {
+        return new ScanBudget(timeLimitMs, maxBytes);
     }
 
     /** True once the time or byte budget is gone; callers should stop reading and report. */

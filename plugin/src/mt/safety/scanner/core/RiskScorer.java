@@ -24,9 +24,21 @@ public final class RiskScorer {
     private RiskScorer() {
     }
 
-    /** Scores {@code report} in place and sets its verdict. */
+    /** Rule ids this class derives rather than detects, cleared before each scoring pass. */
+    private static final String[] DERIVED_RULES = {
+        "PRV001", "CTX001", "CMB101", "CMB102", "CMB103", "CMB104", "CMB105", "CMB106", "CMB107"
+    };
+
+    /**
+     * Scores {@code report} in place and sets its verdict.
+     *
+     * <p>Idempotent: scoring twice gives the same answer. The set-level pass rescores any package
+     * whose lookalike finding arrived late, and without clearing what a previous pass derived, every
+     * combination finding was added and counted a second time.
+     */
     public static void score(ScanReport report, IocDatabase database) {
         IocDatabase db = database == null ? IocDatabase.empty() : database;
+        removeDerivedSignals(report);
 
         IocDatabase.Record denied = db.deniedRecord(report.contentHash, report.manifest.pluginId);
         if (denied != null) {
@@ -137,6 +149,20 @@ public final class RiskScorer {
                     "Does far more than a plugin needs to",
                     "Capabilities across " + breadth + " unrelated areas. Even if every one had an"
                             + " explanation, the combination does not belong in a file-manager plugin."));
+        }
+    }
+
+    /** Drops the signals a previous scoring pass added, so this one starts from the detected set. */
+    private static void removeDerivedSignals(ScanReport report) {
+        java.util.Iterator<Signal> it = report.signals.iterator();
+        while (it.hasNext()) {
+            String ruleId = it.next().ruleId;
+            for (int i = 0; i < DERIVED_RULES.length; i++) {
+                if (DERIVED_RULES[i].equals(ruleId)) {
+                    it.remove();
+                    break;
+                }
+            }
         }
     }
 

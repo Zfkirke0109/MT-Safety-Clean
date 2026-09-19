@@ -37,7 +37,7 @@ public final class PluginScanner {
             PluginManifest manifest = readManifest(pkg, entries, budget);
             String hash;
             try {
-                hash = pkg.contentHash();
+                hash = pkg.contentHash(budget);
             } catch (IOException e) {
                 hash = "";
             }
@@ -101,7 +101,9 @@ public final class PluginScanner {
     public List<ScanReport> scanAll(List<File> paths, ScanBudget budget) {
         List<ScanReport> reports = new ArrayList<ScanReport>();
         for (int i = 0; i < paths.size(); i++) {
-            reports.add(scan(paths.get(i), budget));
+            // A fresh allowance per package: sharing one budget let the first large plugin consume it
+            // and every package after it came back empty while appearing to have been scanned.
+            reports.add(scan(paths.get(i), budget.fresh()));
         }
         finishSet(reports);
         return reports;
@@ -124,12 +126,23 @@ public final class PluginScanner {
         }
     }
 
+    /**
+     * Reads the manifest, keeping "absent" and "not read" apart.
+     *
+     * <p>An exhausted budget returns no bytes, and reporting that as a missing manifest produced a
+     * false high-severity finding about a package whose manifest was present and perfectly readable.
+     */
     private PluginManifest readManifest(PluginPackage pkg, List<PluginPackage.Entry> entries,
             ScanBudget budget) {
         for (PluginPackage.Entry entry : entries) {
             if (!entry.directory && entry.name.equals("manifest.json")) {
                 try {
-                    return PluginManifest.parse(pkg.read(entry, 512 * 1024, budget));
+                    byte[] data = pkg.read(entry, 512 * 1024, budget);
+                    if (data.length == 0) {
+                        budget.markTruncated();
+                        return PluginManifest.broken("present, but not read within the scan budget");
+                    }
+                    return PluginManifest.parse(data);
                 } catch (IOException e) {
                     return PluginManifest.broken("could not be read: " + e.getMessage());
                 }
