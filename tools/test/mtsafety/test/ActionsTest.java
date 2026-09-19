@@ -425,6 +425,73 @@ public final class ActionsTest {
         check.that("an older plan is not left armed after a command that matched nothing",
                 new File(installed, "lingerer").isDirectory(), afterNoMatches.commandOutcome);
         deleteTree(new File(installed, "lingerer"));
+
+        // The plugin directory can itself be the link. Checking only its children against its own
+        // canonical path cannot see that, and the copy-then-delete fallback would then treat the
+        // link's target as the thing being removed.
+        File realHome = new File(iso, "realhome");
+        writePlugin(realHome, "linkroot.one", "Link Root", HOSTILE);
+        File sentinel = new File(realHome, "sentinel.txt");
+        Fixtures.write(sentinel, "must survive");
+        File linkRoot = new File(installed, "linkroot");
+        if (makeSymlink(linkRoot, realHome)) {
+            Quarantine.Result refusedRoot = quarantine.quarantine(linkRoot, host.pluginId());
+            check.that("a plugin directory that is itself a link is not moved",
+                    !refusedRoot.ok && sentinel.isFile(), refusedRoot.message);
+            linkRoot.delete();
+        } else {
+            check.that("a plugin directory that is itself a link is not moved", true,
+                    "skipped: no symlink support here");
+        }
+        deleteTree(realHome);
+
+        // A plugin's real location normally sits under a linked ancestor: on Android /sdcard is a
+        // link to /storage/emulated/0. Refusing those would refuse nearly every genuine plugin.
+        File linkedParent = new File(iso, "linkedparent");
+        File viaLink = new File(iso, "vialink");
+        File realChild = new File(linkedParent, "child");
+        writePlugin(realChild, "under.link", "Under Link", HOSTILE);
+        if (makeSymlink(viaLink, linkedParent)) {
+            Quarantine.Result underLink = quarantine.quarantine(new File(viaLink, "child"),
+                    host.pluginId());
+            check.that("a plugin reached through a linked ancestor is still movable",
+                    underLink.ok, underLink.message);
+            if (underLink.ok) {
+                quarantine.purge(underLink.location.getName());
+            }
+            viaLink.delete();
+        } else {
+            check.that("a plugin reached through a linked ancestor is still movable", true,
+                    "skipped: no symlink support here");
+        }
+        deleteTree(linkedParent);
+
+        // The scan is a snapshot. If the package changes before the action runs, act on nothing.
+        writePlugin(new File(installed, "mutating"), "mutate.one", "Mutating", HOSTILE);
+        ScanRunner.Result beforeMutation = new ScanRunner(host).run();
+        host.putFlag(ScanRunner.armKey(reportFor(beforeMutation, "mutate.one")), true);
+        Fixtures.write(new File(installed, "mutating/src/x/Added.java"),
+                "package x;\npublic class Added {}\n");
+        ScanRunner.Result afterMutation = new ScanRunner(host).run();
+        check.that("a package that changed after the scan is not acted on",
+                new File(installed, "mutating").isDirectory(), afterMutation.commandOutcome);
+        deleteTree(new File(installed, "mutating"));
+
+        // Removing a plugin recreated at a path that already has an older quarantined copy must
+        // delete the copy just made, not the older one.
+        writePlugin(new File(installed, "recur"), "recur.one", "Recur", HOSTILE);
+        new ScanRunner(host).run();
+        Quarantine.Result older = quarantine.quarantine(new File(installed, "recur"), host.pluginId());
+        check.that("the first copy is quarantined", older.ok && older.location != null, older.message);
+        writePlugin(new File(installed, "recur"), "recur.one", "Recur", HOSTILE);
+        host.type("remove malicious");
+        String recurCode = codeFrom(new ScanRunner(host).run().commandOutcome);
+        host.type("confirm " + recurCode);
+        ScanRunner.Result recurRemoval = new ScanRunner(host).run();
+        check.that("removal deletes the copy it just made and leaves the older one",
+                !new File(installed, "recur").isDirectory() && older.location.isDirectory(),
+                recurRemoval.commandOutcome);
+        deleteTree(older.location);
     }
 
     /** Creates a symlink, returning false when the platform or filesystem will not allow it. */

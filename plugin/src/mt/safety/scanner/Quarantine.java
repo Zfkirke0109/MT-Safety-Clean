@@ -35,10 +35,17 @@ public final class Quarantine {
     public static final class Result {
         public final boolean ok;
         public final String message;
+        /** Where the plugin was moved to, when it was moved. Null otherwise. */
+        public final File location;
 
         public Result(boolean ok, String message) {
+            this(ok, message, null);
+        }
+
+        public Result(boolean ok, String message, File location) {
             this.ok = ok;
             this.message = message;
+            this.location = location;
         }
     }
 
@@ -131,7 +138,7 @@ public final class Quarantine {
 
         writeInfo(target, pluginId, originalPath);
         return new Result(true, "Quarantined " + (pluginId.length() > 0 ? pluginId : pluginDir.getName())
-                + ". Restart MT Manager, then check its plugin list. Use \"restore\" to undo.");
+                + ". Restart MT Manager, then check its plugin list. Use \"restore\" to undo.", target);
     }
 
     /** Puts a quarantined plugin back where it came from. */
@@ -298,11 +305,32 @@ public final class Quarantine {
      */
     private static String findEscapingLink(File root) {
         try {
+            if (isLink(root)) {
+                return root.getName();
+            }
             return walkForEscape(root, root.getCanonicalPath(), 0);
         } catch (IOException e) {
             // If the tree cannot even be resolved, treat it as unsafe to move.
             return root.getName();
         }
+    }
+
+    /**
+     * True when {@code file}'s own last path component is a link.
+     *
+     * <p>Compared against the canonical form of its parent rather than against its own absolute path,
+     * because a plugin's real location routinely sits under a linked ancestor: on Android
+     * {@code /sdcard} is itself a link to {@code /storage/emulated/0}, so rejecting anything whose
+     * canonical path differs from its absolute path would refuse nearly every genuine plugin. What
+     * matters is whether this directory is a door to somewhere else, not whether the road to it was.
+     */
+    private static boolean isLink(File file) throws IOException {
+        File parent = file.getParentFile();
+        if (parent == null) {
+            return false;
+        }
+        String expected = parent.getCanonicalPath() + File.separator + file.getName();
+        return !expected.equals(file.getCanonicalPath());
     }
 
     private static String walkForEscape(File dir, String rootCanonical, int depth) throws IOException {

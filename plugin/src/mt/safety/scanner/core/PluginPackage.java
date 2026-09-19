@@ -293,6 +293,7 @@ public abstract class PluginPackage {
 
         private final File root;
         private List<Entry> cached;
+        private boolean listingTruncated;
         private final List<String> anomalies = new ArrayList<String>();
 
         DirectoryPackage(File root) {
@@ -328,6 +329,7 @@ public abstract class PluginPackage {
         private void walk(File dir, String prefix, int depth, List<Entry> out) {
             if (depth > MAX_DEPTH || out.size() >= MAX_FILES) {
                 if (out.size() >= MAX_FILES) {
+                    listingTruncated = true;
                     anomalies.add("directory holds more than " + MAX_FILES + " files; listing truncated");
                 }
                 return;
@@ -390,6 +392,13 @@ public abstract class PluginPackage {
 
         @Override
         public String contentHash(ScanBudget budget) throws IOException {
+            entries();
+            if (listingTruncated) {
+                // A hash over part of a directory is not an identity for the directory. Reporting none
+                // is what keeps it out of a destructive plan, where a replacement differing only in
+                // the unlisted files would otherwise pass for the package that was confirmed.
+                return "";
+            }
             List<String> lines = new ArrayList<String>();
             for (Entry entry : entries()) {
                 if (budget.reserve(hashCost(entry.size)) <= 0) {

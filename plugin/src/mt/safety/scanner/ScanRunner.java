@@ -12,6 +12,7 @@ import mt.safety.scanner.core.Discovery;
 import mt.safety.scanner.core.Json;
 import mt.safety.scanner.core.IocDatabase;
 import mt.safety.scanner.core.PluginManifest;
+import mt.safety.scanner.core.PluginPackage;
 import mt.safety.scanner.core.PluginScanner;
 import mt.safety.scanner.core.ReportFormatter;
 import mt.safety.scanner.core.ScanBudget;
@@ -238,6 +239,10 @@ public final class ScanRunner {
                 append(done, strings.notInstalled(report.manifest.displayName()));
                 continue;
             }
+            if (!stillMatches(report)) {
+                append(done, strings.changedSinceScan(flatten(report.manifest.displayName())));
+                continue;
+            }
             Quarantine.Result moved = quarantine.quarantine(new File(report.path), host.pluginId());
             if (moved.ok) {
                 result.actioned.put(report.path, "quarantined");
@@ -339,6 +344,10 @@ public final class ScanRunner {
                 append(problems, strings.noSuchPlugin(path));
                 continue;
             }
+            if (!stillMatches(match)) {
+                append(problems, strings.changedSinceScan(flatten(match.manifest.displayName())));
+                continue;
+            }
             Quarantine.Result moved = quarantine.quarantine(new File(match.path), host.pluginId());
             if (!moved.ok) {
                 append(problems, moved.message);
@@ -348,7 +357,7 @@ public final class ScanRunner {
             // behind, so it is a quarantine, and reporting it as deleted would tell the user there is
             // nothing left to recover when there is.
             if (permanent) {
-                Quarantine.Result purged = purgeByOriginalPath(quarantine, match.path);
+                Quarantine.Result purged = purgeExact(quarantine, moved.location, match.path);
                 if (purged.ok) {
                     result.actioned.put(match.path, "removed");
                     removed++;
@@ -370,13 +379,16 @@ public final class ScanRunner {
         return problems.length() == 0 ? summary : summary + "   " + problems;
     }
 
-    /** Deletes the quarantined copy that came from {@code originalPath}. */
-    private Quarantine.Result purgeByOriginalPath(Quarantine quarantine, String originalPath) {
-        List<Quarantine.Item> items = quarantine.list();
-        for (int i = 0; i < items.size(); i++) {
-            if (originalPath.equals(items.get(i).originalPath)) {
-                return quarantine.purge(items.get(i).directory.getName());
-            }
+    /**
+     * Deletes the copy this move just created.
+     *
+     * <p>Identified by the directory the move allocated, not by where it came from: an older copy of
+     * the same plugin can still be in quarantine, and purging that one would leave the new copy behind
+     * while reporting the plugin as permanently deleted.
+     */
+    private Quarantine.Result purgeExact(Quarantine quarantine, File location, String originalPath) {
+        if (location != null) {
+            return quarantine.purge(location.getName());
         }
         return new Quarantine.Result(false, strings.couldNotPurge(originalPath));
     }
@@ -521,6 +533,33 @@ public final class ScanRunner {
         }
         String flat = sb.toString().trim();
         return flat.length() == 0 ? "(unnamed)" : flat;
+    }
+
+    /**
+     * True when the package at a report's path still has the contents the scan saw.
+     *
+     * <p>The scan is a snapshot taken earlier in this build, and MT Manager or a running plugin can
+     * change the filesystem in between. Re-reading costs one more hash per target, which is a small
+     * price on the path that moves and deletes a user's plugins.
+     */
+    private static boolean stillMatches(ScanReport report) {
+        if (report.contentHash == null || report.contentHash.length() == 0) {
+            return false;
+        }
+        PluginPackage pkg = null;
+        try {
+            pkg = PluginPackage.open(new File(report.path));
+            String now = pkg.contentHash(ScanBudget.unlimited());
+            return now.length() > 0 && now.equals(report.contentHash);
+        } catch (java.io.IOException e) {
+            return false;
+        } catch (RuntimeException e) {
+            return false;
+        } finally {
+            if (pkg != null) {
+                pkg.close();
+            }
+        }
     }
 
     private static void append(StringBuilder sb, String message) {

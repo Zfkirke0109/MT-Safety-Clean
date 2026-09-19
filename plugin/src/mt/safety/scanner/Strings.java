@@ -131,6 +131,14 @@ public final class Strings {
                 + "\u9875\u786e\u8ba4\u3002");
     }
 
+    public String changedSinceScan(String name) {
+        return pick(name + " changed since it was scanned, so nothing was done to it. Reopen this"
+                + " screen to scan it again.",
+                name + " \u5728\u626b\u63cf\u540e\u5df2\u53d8\u66f4\uff0c\u672a\u5bf9\u5176"
+                + "\u6267\u884c\u4efb\u4f55\u64cd\u4f5c\u3002\u8bf7\u91cd\u65b0\u6253\u5f00"
+                + "\u672c\u9875\u91cd\u65b0\u626b\u63cf\u3002");
+    }
+
     public String actedOnRemoved() {
         return pick("Deleted just now", "\u521a\u521a\u5df2\u5220\u9664");
     }
@@ -151,11 +159,11 @@ public final class Strings {
 
     public String bulkOfferHelp() {
         return pick("Commands: \"quarantine malicious\" or \"quarantine suspicious\" to move them all"
-                + " aside reversibly, \"remove malicious\" to delete them for good. Each one lists what"
-                + " it will touch and waits for a confirmation code.",
+                + " aside reversibly, \"remove malicious\" or \"remove suspicious\" to delete them for"
+                + " good. Each one lists what it will touch and waits for a confirmation code.",
                 "\u547d\u4ee4\uff1a\"quarantine malicious\" \u6216 \"quarantine suspicious\" "
-                + "\u53ef\u6062\u590d\u5730\u6279\u91cf\u9694\u79bb\uff1b\"remove malicious\" "
-                + "\u5f7b\u5e95\u5220\u9664\u3002\u6267\u884c\u524d\u4f1a\u5148\u5217\u51fa"
+                + "\u53ef\u6062\u590d\u5730\u6279\u91cf\u9694\u79bb\uff1b\"remove malicious\" \u6216 "
+                + "\"remove suspicious\" \u5f7b\u5e95\u5220\u9664\u3002\u6267\u884c\u524d\u4f1a\u5148\u5217\u51fa"
                 + "\u6e05\u5355\u5e76\u7b49\u5f85\u786e\u8ba4\u7801\u3002");
     }
 
