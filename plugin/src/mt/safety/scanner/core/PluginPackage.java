@@ -305,6 +305,9 @@ public abstract class PluginPackage {
         private boolean listingTruncated;
         private final List<String> anomalies = new ArrayList<String>();
 
+        /** Enough anomalies to explain what went wrong, not enough for a hostile tree to fill memory. */
+        private static final int MAX_ANOMALIES = 40;
+
         DirectoryPackage(File root) {
             this.root = root;
         }
@@ -335,23 +338,38 @@ public abstract class PluginPackage {
             return out;
         }
 
+        /**
+         * Lists the tree, recording every point at which it gave up.
+         *
+         * <p>Each cutoff has to mark the listing truncated, not just the file-count cap. A hash over a
+         * listing that quietly omitted a deep subtree or an unreadable folder is not an identity for
+         * the directory: a replacement differing only in the omitted files would hash the same, pass
+         * the re-verification a destructive action does, and be quarantined or deleted in place of the
+         * package that was actually examined.
+         */
         private void walk(File dir, String prefix, int depth, List<Entry> out) {
-            if (depth > MAX_DEPTH || out.size() >= MAX_FILES) {
-                if (out.size() >= MAX_FILES) {
-                    listingTruncated = true;
-                    anomalies.add("directory holds more than " + MAX_FILES + " files; listing truncated");
-                }
+            if (out.size() >= MAX_FILES) {
+                listingTruncated = true;
+                noteAnomaly("directory holds more than " + MAX_FILES + " files; listing truncated");
+                return;
+            }
+            if (depth > MAX_DEPTH) {
+                listingTruncated = true;
+                noteAnomaly("directory nested more than " + MAX_DEPTH + " levels deep; listing truncated");
                 return;
             }
             File[] children = dir.listFiles();
             if (children == null) {
+                listingTruncated = true;
+                noteAnomaly("could not list "
+                        + (prefix.length() == 0 ? "the plugin directory itself" : prefix));
                 return;
             }
             for (int i = 0; i < children.length; i++) {
                 File child = children[i];
                 String name = prefix + child.getName();
                 if (escapesRoot(child)) {
-                    anomalies.add("link pointing outside the plugin directory: " + name);
+                    noteAnomaly("link pointing outside the plugin directory: " + name);
                     continue;
                 }
                 if (child.isDirectory()) {
@@ -370,6 +388,20 @@ public abstract class PluginPackage {
          * <p>{@code java.nio.file} is unavailable on the Android versions this plugin supports, so
          * symlinks are caught by comparing the canonical path with the declared one.
          */
+        /** Records an anomaly once, and stops well short of letting a hostile tree fill memory. */
+        private void noteAnomaly(String message) {
+            if (anomalies.size() >= MAX_ANOMALIES) {
+                return;
+            }
+            if (anomalies.size() == MAX_ANOMALIES - 1) {
+                anomalies.add("more problems than can be listed here");
+                return;
+            }
+            if (!anomalies.contains(message)) {
+                anomalies.add(message);
+            }
+        }
+
         private boolean escapesRoot(File child) {
             try {
                 String canonicalRoot = root.getCanonicalPath();

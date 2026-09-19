@@ -75,9 +75,16 @@ Each plugin gets a verdict and its findings, worst first, with the file and line
 
 ### Removing a flagged plugin
 
-**One at a time:** every flagged plugin has a **Quarantine this plugin** switch under it. Turn it on and
-reopen the screen. The plugin is moved aside and `restore` puts it back. Nothing happens while the screen
-is open, so a switch touched by accident can simply be turned off again.
+**One at a time:** an installed plugin the scan flagged gets a **Quarantine this plugin** switch under
+it. Turn it on and reopen the screen. The plugin is moved aside and `restore` puts it back. Nothing
+happens while the screen is open, so a switch touched by accident can simply be turned off again.
+
+The switch is deliberately absent in three cases, and each is a refusal rather than an oversight: a
+`.mtp` file sitting in a downloads folder is not installed, so there is nothing to move aside; a package
+the scan could not hash has no identity to bind the switch to, and the screen will not arm an action it
+cannot confirm is still pointing at the same files when it runs; and the scanner will not quarantine
+itself. Those are listed with `[ ? ]` or without a switch, and the advice line says to judge them by
+hand.
 
 **All of them at once:** type `quarantine malicious` (or `quarantine suspicious` for the wider net).
 Nothing is moved yet — the screen comes back listing exactly which plugins it would touch and a short

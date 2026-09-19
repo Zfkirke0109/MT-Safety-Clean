@@ -818,6 +818,28 @@ public final class ScannerTest {
         check("a plugin whose assets are real images stays clean",
                 artReport.verdict() == Verdict.CLEAN, summarise(artReport));
 
+        // A hash over a listing that quietly skipped part of the tree is not an identity for the
+        // directory. Only the file-count cap used to say so; the depth cap returned in silence, so a
+        // replacement differing only below that depth would pass the re-verification a destructive
+        // action does and be acted on in place of the package that was examined.
+        File deepPlugin = fixtures.directoryPlugin("deep",
+                Fixtures.manifest("x.deep", "Deep", "demo.A"),
+                Fixtures.sources("src/demo/A.java", benign));
+        StringBuilder nest = new StringBuilder("assets");
+        for (int i = 0; i < 30; i++) {
+            nest.append("/d").append(i);
+        }
+        Fixtures.write(new File(deepPlugin, nest + "/buried.txt"), "past the depth cap");
+        ScanReport deepReport = new PluginScanner(IocDatabase.empty())
+                .scan(deepPlugin, ScanBudget.unlimited());
+        check("a directory too deep to list fully has no verifiable identity",
+                deepReport.contentHash.length() == 0, "got \"" + deepReport.contentHash + "\"");
+        check("and says so, naming the cutoff, rather than reporting a package it did not read",
+                deepReport.hasRule("ARC005")
+                        && ReportFormatter.plainText(deepReport)
+                                .contains("nested more than 24 levels deep"),
+                summarise(deepReport));
+
         // Hashing is charged at a fraction of a file's length so that reserving it does not starve the
         // rules that run afterwards. That discount made a partial grant dangerous: reserve() hands back
         // whatever is left when it cannot meet the request, and the old check only asked for more than

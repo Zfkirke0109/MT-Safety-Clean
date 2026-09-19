@@ -466,6 +466,25 @@ public final class ActionsTest {
         }
         deleteTree(linkedParent);
 
+        // purge deletes a quarantine entry by name. If that entry is a link, taking its canonical path
+        // as the boundary makes the link's target the root, every child of that target then tests as
+        // inside it, and the recursion deletes somewhere else entirely.
+        File offLimits = new File(iso, "offlimits");
+        File survivor = new File(offLimits, "keep.txt");
+        Fixtures.write(survivor, "must survive a purge");
+        File storeDir = quarantine.store();
+        File linkedEntry = new File(storeDir, "linked-entry");
+        if (makeSymlink(linkedEntry, offLimits)) {
+            quarantine.purge("linked-entry");
+            check.that("purging a linked quarantine entry removes the link, not its target",
+                    survivor.isFile() && offLimits.isDirectory(), "the link's target was deleted");
+            linkedEntry.delete();
+        } else {
+            check.that("purging a linked quarantine entry removes the link, not its target", true,
+                    "skipped: no symlink support here");
+        }
+        deleteTree(offLimits);
+
         // The scan is a snapshot. If the package changes before the action runs, act on nothing.
         writePlugin(new File(installed, "mutating"), "mutate.one", "Mutating", HOSTILE);
         ScanRunner.Result beforeMutation = new ScanRunner(host).run();

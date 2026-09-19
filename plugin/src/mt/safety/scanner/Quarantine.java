@@ -399,7 +399,27 @@ public final class Quarantine {
         }
     }
 
+    /**
+     * Deletes a tree, refusing to treat a linked root as the root.
+     *
+     * <p>Taking the canonical path of {@code file} as the boundary is only correct once {@code file} is
+     * known not to be a link itself. If it is, its target becomes the boundary, every child of that
+     * target then tests as inside it, and the recursion deletes somewhere else entirely. A quarantine
+     * entry replaced by a link to {@code /sdcard/DCIM} would have taken the photo library with it. The
+     * link is removed as the link it is; whatever it points at is left alone.
+     */
     private static boolean deleteTree(File file, int depth) {
+        if (file == null) {
+            return false;
+        }
+        try {
+            if (isLink(file)) {
+                return file.delete();
+            }
+        } catch (IOException e) {
+            // Unresolvable means unverifiable. Deleting the name alone is the only safe move left.
+            return file.delete();
+        }
         return deleteTree(file, canonicalOrNull(file), depth);
     }
 

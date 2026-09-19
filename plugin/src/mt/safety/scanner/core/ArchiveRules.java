@@ -195,9 +195,10 @@ public final class ArchiveRules {
                 return;
             }
             Signal signal = new Signal("ARC005", Category.ARCHIVE, Severity.HIGH,
-                    "The package's index disagrees with its contents",
-                    "When an archive lists a member twice, or lists one it does not contain, the file a"
-                            + " reviewer inspects need not be the file that gets installed.");
+                    "The package's contents could not be established",
+                    "When an archive lists a member twice or lists one it does not contain, the file a"
+                            + " reviewer inspects need not be the file that gets installed. When part of"
+                            + " a folder could not be listed, the same is true of whatever was missed.");
             for (int i = 0; i < problems.size() && i < 8; i++) {
                 signal.withEvidence("archive", problems.get(i));
             }
