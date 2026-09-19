@@ -226,13 +226,34 @@ public final class IocDatabase {
                 temporary.delete();
             }
         }
-        if (file.exists() && !file.delete()) {
-            temporary.delete();
-            throw new IOException("could not replace " + file.getAbsolutePath());
+        // Move the old list aside rather than deleting it. Deleting first leaves a window where a
+        // failed rename destroys the user's trust decisions outright, which is the one outcome this
+        // method exists to prevent.
+        File backup = new File(file.getAbsolutePath() + ".bak");
+        backup.delete();
+        boolean hadExisting = file.exists();
+        if (hadExisting && !file.renameTo(backup)) {
+            // Could not set the old copy aside. A direct replace still works on filesystems that
+            // allow renaming onto an existing name, and leaves the old file untouched if it does not.
+            if (!temporary.renameTo(file)) {
+                temporary.delete();
+                throw new IOException("could not replace " + file.getAbsolutePath()
+                        + "; your existing list is unchanged");
+            }
+            return;
         }
         if (!temporary.renameTo(file)) {
+            if (hadExisting && !backup.renameTo(file)) {
+                temporary.delete();
+                throw new IOException("could not write " + file.getAbsolutePath()
+                        + "; the previous list is at " + backup.getAbsolutePath());
+            }
             temporary.delete();
-            throw new IOException("could not move the new list into place at " + file.getAbsolutePath());
+            throw new IOException("could not move the new list into place at " + file.getAbsolutePath()
+                    + "; your existing list is unchanged");
+        }
+        if (hadExisting) {
+            backup.delete();
         }
     }
 }

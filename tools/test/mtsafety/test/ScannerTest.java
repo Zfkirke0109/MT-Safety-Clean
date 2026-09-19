@@ -631,6 +631,55 @@ public final class ScannerTest {
         } catch (java.io.IOException expected) {
             check("a failed save is reported, not swallowed", true, "IOException raised");
         }
+
+        // Replacing the list must never leave the user with nothing, and must not litter the folder
+        // with the temporary and backup files the replacement uses.
+        try {
+            File store = new File(fixtures.root(), "store/indicators.json");
+            IocDatabase first = IocDatabase.empty();
+            first.trust("1111111111111111111111111111111111111111111111111111111111111111", "first");
+            first.save(store);
+            IocDatabase second = IocDatabase.parse(readFile(store));
+            second.trust("2222222222222222222222222222222222222222222222222222222222222222", "second");
+            second.save(store);
+            IocDatabase reloaded = IocDatabase.parse(readFile(store));
+            boolean bothKept = reloaded.trustedCount() == 2;
+            boolean tidy = !new File(store.getAbsolutePath() + ".tmp").exists()
+                    && !new File(store.getAbsolutePath() + ".bak").exists();
+            check("replacing the indicator list keeps its contents and leaves no debris",
+                    bothKept && tidy, "entries=" + reloaded.trustedCount() + " tidy=" + tidy);
+        } catch (java.io.IOException e) {
+            check("replacing the indicator list keeps its contents and leaves no debris", false,
+                    String.valueOf(e));
+        }
+
+        // Stopping the archive walk early must not invent findings: every member not yet streamed
+        // would otherwise look absent from the archive's own data.
+        Map<String, byte[]> wide = new LinkedHashMap<String, byte[]>();
+        wide.put("manifest.json", Fixtures.bytes(Fixtures.manifest("x.wide", "Wide", "demo.A")));
+        wide.put("src/demo/A.java", Fixtures.bytes(benign));
+        for (int i = 0; i < 60; i++) {
+            wide.put("assets/data" + i + ".txt", Fixtures.bytes("padding padding padding padding\n"));
+        }
+        File wideArchive = fixtures.rawArchive("wide.mtp", wide, false);
+        ScanReport starvedArchive = new PluginScanner(IocDatabase.empty())
+                .scan(wideArchive, new ScanBudget(60000L, 256L));
+        check("a budget-limited archive walk does not invent structural findings",
+                !starvedArchive.hasRule("ARC005"), summarise(starvedArchive));
+
+        // ...while a complete walk still catches the real thing.
+        ScanReport completeWalk = scan(wideArchive);
+        check("a complete walk still reports nothing wrong with a sound archive",
+                !completeWalk.hasRule("ARC005"), summarise(completeWalk));
+    }
+
+    private static String readFile(File file) throws java.io.IOException {
+        java.io.InputStream in = new java.io.FileInputStream(file);
+        try {
+            return Bytes.text(Bytes.readAtMost(in, 1 << 20));
+        } finally {
+            in.close();
+        }
     }
 
     private static int countRule(ScanReport report, String ruleId) {

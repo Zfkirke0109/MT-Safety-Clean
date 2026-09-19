@@ -229,11 +229,19 @@ public abstract class PluginPackage {
             List<String> problems = new ArrayList<String>();
             Set<String> seen = new HashSet<String>();
             Set<String> streamed = new HashSet<String>();
+            boolean readWholeArchive = true;
             ZipInputStream zin = new ZipInputStream(new BufferedInputStream(new FileInputStream(file)));
             try {
                 ZipEntry ze;
                 int guard = 0;
-                while ((ze = zin.getNextEntry()) != null && guard++ < 20000) {
+                while ((ze = zin.getNextEntry()) != null) {
+                    // Checked every iteration, not once before the walk: a large archive would
+                    // otherwise stream tens of thousands of members past the deadline, on MT
+                    // Manager's UI thread.
+                    if (guard++ >= 20000 || budget.exhausted()) {
+                        readWholeArchive = false;
+                        break;
+                    }
                     String name = ze.getName();
                     streamed.add(name);
                     if (!seen.add(name)) {
@@ -241,16 +249,24 @@ public abstract class PluginPackage {
                     }
                 }
             } catch (IOException e) {
+                readWholeArchive = false;
                 problems.add("archive stream could not be read end to end: " + e.getMessage());
             } finally {
                 closeQuietly(zin);
             }
-            // A name present in the central directory but absent from the local stream (or the
-            // reverse) means the two views of the archive disagree.
-            for (Entry entry : entries()) {
-                if (!streamed.contains(entry.name)) {
-                    problems.add("member listed in the archive index but missing from its data: " + entry.name);
+            // A name present in the central directory but absent from the local stream means the two
+            // views of the archive disagree. Only a complete walk can say that: stopping early leaves
+            // every unread member looking absent, which would be a serious finding invented out of a
+            // budget limit rather than out of the package.
+            if (readWholeArchive) {
+                for (Entry entry : entries()) {
+                    if (!streamed.contains(entry.name)) {
+                        problems.add("member listed in the archive index but missing from its data: "
+                                + entry.name);
+                    }
                 }
+            } else {
+                budget.markTruncated();
             }
             return problems;
         }
