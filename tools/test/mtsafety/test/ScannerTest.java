@@ -964,6 +964,17 @@ public final class ScannerTest {
         check("the report carries no terminal escape sequences out of a package",
                 rendered.indexOf('\u001b') < 0, "an escape reached the rendered report");
 
+        // Filtering ESC is not enough: to a terminal a lone U+009B is CSI and does the same job.
+        Map<String, byte[]> c1 = new LinkedHashMap<String, byte[]>();
+        c1.put("manifest.json", Fixtures.bytes(Fixtures.manifest("x.c1", "C1", "demo.A")));
+        c1.put("src/demo/A.java", Fixtures.bytes(
+                "package demo;\npublic class A { String u = \"https://api.telegram.org/bot\u009b2J1/x\"; }\n"));
+        ScanReport c1Report = scan(fixtures.rawArchive("c1.mtp", c1, false));
+        String renderedC1 = ReportFormatter.plainText(c1Report);
+        check("the C1 controls a terminal acts on are stripped too",
+                renderedC1.indexOf('\u009b') < 0 && renderedC1.indexOf('\u009d') < 0,
+                "a C1 control reached the rendered report");
+
         // A zip signature is two bytes, not one.
         check("zip detection requires the whole signature",
                 Bytes.looksLikeZip(Fixtures.bytes("PK\u0003\u0004rest"))

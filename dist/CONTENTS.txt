@@ -31,7 +31,7 @@ src/mt/safety/scanner/core/RiskScorer.java  b010eb8563bea4e9f0686416338795358d4e
 src/mt/safety/scanner/core/ScanBudget.java  1f81faaa100077d8ac59089eb2cbd3b6f51cc650a630e9020d479408ffa6f19a
 src/mt/safety/scanner/core/ScanReport.java  5b27fa81f214ffa6e8ac48c53aebed10243c76346c340e31b42f02c37804be80
 src/mt/safety/scanner/core/Severity.java  be62be5333bf38bb76d3986277fd2efec7f8262824c70d3ddb747ddd00211b7c
-src/mt/safety/scanner/core/Signal.java  a8de75c2a16c8a23fa1b49c3b071920ddd04587b0efe928f74eca9a68d30ca51
+src/mt/safety/scanner/core/Signal.java  d945a729e78e6aec1c614714e9440443a98cbe122977e8dc8b4263e218136362
 src/mt/safety/scanner/core/Verdict.java  3ce0e6552a18a12d35c91189667c9728e0e14ffe09c72f99ab798eadf8cf3450
 src/mt/safety/scanner/ui/  (directory)
 src/mt/safety/scanner/ui/ScannerPreference.java  45cae663053ae17bbccf4c23c78393b4f33e01f89458a42273b2974005023fc1

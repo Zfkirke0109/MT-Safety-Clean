@@ -56,10 +56,13 @@ public final class Signal {
         // Every control character goes, not just the line breaks. This text is quoted from the package
         // under examination and ends up on a terminal through the command line report, where an escape
         // sequence could recolour or rewrite what the user is reading about the thing that produced it.
+        // That includes the C1 range: a lone U+009B is CSI to a terminal, doing the same job as ESC [
+        // without needing an ESC to be filtered out first.
         StringBuilder sb = new StringBuilder(snippet.length());
         for (int i = 0; i < snippet.length(); i++) {
             char c = snippet.charAt(i);
-            sb.append(c < 0x20 || c == 0x7F ? ' ' : c);
+            boolean control = c < 0x20 || (c >= 0x7F && c <= 0x9F);
+            sb.append(control ? ' ' : c);
         }
         String flat = sb.toString().trim();
         if (flat.length() > 160) {
