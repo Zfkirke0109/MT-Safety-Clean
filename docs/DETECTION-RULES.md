@@ -92,7 +92,8 @@ the README is exactly this case.
 | `MFT008` | Medium | Claims to be "official" or "verified". MT Manager does not certify plugins. |
 | `MFT009` | High | Zero-width or direction-changing characters in the name or id, so the name you see is not the real one. |
 | `MFT010` | Low | Unusually long description, which can push meaningful text out of view. |
-| `MFT011` | High | Near-identical to another installed plugin, after folding case, separators and lookalike characters. One may be impersonating the other. |
+| `MFT011` | High | Near-identical to another installed plugin, after folding case, separators and lookalike characters. One may be impersonating the other. Two packages claiming exactly the same identity count too: that is the strongest form of it, not a reason to stay quiet. |
+| `MFT012` | Low | `manifest.json` is present but was not read, through an I/O error or an exhausted budget. Nothing in the report rests on what the plugin declares. This is a limit of the scan, not a finding against the package, and is kept separate from `MFT002` for that reason. |
 
 `MFT011` compares the plugins **you actually have** rather than checking against a shipped list of
 known-good names. A built-in list would go stale, and a wrong entry would be worse than none.
