@@ -1,0 +1,41 @@
+name: build
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up a JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Compile and test
+        run: tools/build.sh test
+
+      - name: Package the plugin
+        run: tools/build.sh package
+
+      - name: Check the committed package still matches the sources
+        run: |
+          # The .mtp is committed so it can be downloaded directly, and a zip is not byte-reproducible
+          # because it stores modification times. Comparing the member list catches the drift that
+          # matters: a source file added or removed without rebuilding the artefact.
+          git diff --exit-code -- dist/CONTENTS.txt
+
+      - name: Check the rule reference is up to date
+        run: |
+          tools/build.sh docs
+          git diff --exit-code -- docs/DETECTION-RULES.md
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mt-safety-scanner-mtp
+          path: dist/mt-safety-scanner.mtp

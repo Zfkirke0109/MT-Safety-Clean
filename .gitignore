@@ -1,0 +1,4 @@
+# Build output. dist/ is committed on purpose so the .mtp can be downloaded directly.
+*.class
+/build/
+/out/

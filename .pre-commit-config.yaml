@@ -1,0 +1,26 @@
+# pre-commit.ci is enabled on this repository, so every pull request needs this file to exist.
+# The hooks are deliberately conservative: file hygiene and format validation only, nothing that
+# reformats Java. The project's real checks — compile, tests, packaging, rule-reference drift — run
+# in .github/workflows/ci.yml, because they need a JDK rather than a Python environment.
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+        # The .mtp is a build artefact and CONTENTS.txt is generated beside it.
+        exclude: ^dist/
+      - id: end-of-file-fixer
+        exclude: ^dist/
+      - id: mixed-line-ending
+        args: [--fix=lf]
+        exclude: ^dist/
+      - id: check-yaml
+      - id: check-json
+      - id: check-merge-conflict
+      - id: check-case-conflict
+      - id: check-executables-have-shebangs
+      - id: check-added-large-files
+        args: [--maxkb=512]
+
+ci:
+  autoupdate_schedule: monthly

@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Runs the command line scanner, compiling it on first use.
+#
+#   tools/mtsafety suspicious.mtp
+#   tools/mtsafety --scan-dir /sdcard/Android/data/bin.mt.plus
+set -euo pipefail
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+classes="${TMPDIR:-/tmp}/mt-safety-build/classes"
+# Compared against a marker file rather than the output directory: a directory's mtime does not move
+# when existing class files are overwritten, so comparing against it recompiles on every run once any
+# source is newer than the directory itself.
+marker="$classes/.built"
+if [ ! -f "$marker" ] || [ -n "$(find "$root/plugin/src" "$root/tools/src" -name '*.java' -newer "$marker" 2>/dev/null | head -1)" ]; then
+  mkdir -p "$classes"
+  javac --release 8 -encoding UTF-8 -nowarn -d "$classes" \
+    $(find "$root/plugin/src/mt/safety/scanner/core" "$root/tools/src" -name '*.java')
+  touch "$marker"
+fi
+exec java -cp "$classes" mtsafety.cli.MtSafetyCli "$@"

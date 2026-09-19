@@ -1,0 +1,22 @@
+{
+  "_comment": [
+    "Your own trust decisions and extra indicators. Copied into this plugin's private folder the",
+    "first time it runs; edit the copy, not this one. The path is shown at the bottom of the",
+    "scanner screen.",
+    "",
+    "trusted  - SHA-256 content hashes you have decided are fine. A match sets the verdict to",
+    "           Trusted, unless something critical is found anyway. Get the hash from the report.",
+    "denied   - SHA-256 hashes, or plugin ids, you consider malicious. A match is reported as",
+    "           Known bad. Useful for sharing a list with people you trust.",
+    "patterns - extra regular expressions, matched case-insensitively against every readable file",
+    "           in a package and reported as high severity. Add an endpoint or string from an",
+    "           advisory here rather than waiting for a new build of the scanner.",
+    "",
+    "This file deliberately ships with no hashes. A list of allegedly malicious plugin hashes",
+    "invented by the scanner's author would be worthless, and one fetched from a server would put a",
+    "network dependency in the middle of a security decision. Populate it from sources you trust."
+  ],
+  "trusted": [],
+  "denied": [],
+  "patterns": []
+}
