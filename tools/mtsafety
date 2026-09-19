@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Runs the command line scanner, compiling it on first use.
+#
+#   tools/mtsafety suspicious.mtp
+#   tools/mtsafety --scan-dir /sdcard/Android/data/bin.mt.plus
+set -euo pipefail
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+classes="${TMPDIR:-/tmp}/mt-safety-build/classes"
+if [ ! -d "$classes" ] || [ -n "$(find "$root/plugin/src" "$root/tools/src" -name '*.java' -newer "$classes" 2>/dev/null | head -1)" ]; then
+  mkdir -p "$classes"
+  javac --release 8 -encoding UTF-8 -nowarn -d "$classes" \
+    $(find "$root/plugin/src/mt/safety/scanner/core" "$root/tools/src" -name '*.java')
+fi
+exec java -cp "$classes" mtsafety.cli.MtSafetyCli "$@"
