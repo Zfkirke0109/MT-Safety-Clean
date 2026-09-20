@@ -400,4 +400,63 @@ public final class Strings {
     public String commandFailed(String reason) {
         return pick("The command failed: " + reason, "\u547d\u4ee4\u6267\u884c\u5931\u8d25\uff1a" + reason);
     }
+
+    // ------------------------------------------------------------ v3 button UI
+
+    public String actionsHeader() {
+        return pick("Act on what was found", "\u5904\u7406\u626b\u63cf\u7ed3\u679c");
+    }
+
+    /** Label for a "quarantine/remove all X (N)" button. */
+    public String bulkButton(String action, String scope, int count) {
+        String act = actionWord(action);
+        String kind = scope.equals("malicious")
+                ? pick("malicious", "\u6076\u610f") : pick("suspicious", "\u53ef\u7591");
+        return pick(act + " all " + kind + " (" + count + ")",
+                act + "\u6240\u6709" + kind + "\u63d2\u4ef6\uff08" + count + "\uff09");
+    }
+
+    public String bulkButtonHelp(boolean remove) {
+        return remove
+                ? pick("Tap to review and delete them for good.",
+                        "\u70b9\u51fb\u67e5\u770b\u5e76\u6c38\u4e45\u5220\u9664\u3002")
+                : pick("Tap to review and move them aside. Restore undoes it.",
+                        "\u70b9\u51fb\u67e5\u770b\u5e76\u79fb\u51fa\u3002\u53ef\u901a\u8fc7 restore \u6062\u590d\u3002");
+    }
+
+    public String confirmTitle(String action) {
+        return pick(actionWord(action) + " plugins?", actionWord(action) + "\u63d2\u4ef6\uff1f");
+    }
+
+    public String confirmBody(boolean remove, int count) {
+        String n = String.valueOf(count);
+        return remove
+                ? pick("Delete these " + n + " plugins for good? This cannot be undone.",
+                        "\u6c38\u4e45\u5220\u9664\u8fd9 " + n + " \u4e2a\u63d2\u4ef6\uff1f\u6b64\u64cd\u4f5c\u65e0\u6cd5\u64a4\u9500\u3002")
+                : pick("Move these " + n + " plugins aside? Restore undoes it.",
+                        "\u79fb\u51fa\u8fd9 " + n + " \u4e2a\u63d2\u4ef6\uff1f\u53ef\u901a\u8fc7 restore \u6062\u590d\u3002");
+    }
+
+    public String actOneBody(String verdict) {
+        return pick("This plugin was rated: " + verdict + ". Quarantine moves it aside so restore can"
+                        + " undo it; remove deletes it for good.",
+                "\u8be5\u63d2\u4ef6\u8bc4\u7ea7\uff1a" + verdict + "\u3002\u9694\u79bb\u53ef\u6062\u590d\uff0c"
+                        + "\u5220\u9664\u4e0d\u53ef\u6062\u590d\u3002");
+    }
+
+    public String confirmAct(boolean remove) {
+        return remove ? pick("Remove", "\u5220\u9664") : pick("Quarantine", "\u9694\u79bb");
+    }
+
+    public String cancel() {
+        return pick("Cancel", "\u53d6\u6d88");
+    }
+
+    public String andMore(int count) {
+        return pick("and " + count + " more", "\u7b49\u53e6\u5916 " + count + " \u4e2a");
+    }
+
+    private String actionWord(String action) {
+        return action.equals("remove") ? pick("Remove", "\u5220\u9664") : pick("Quarantine", "\u9694\u79bb");
+    }
 }

@@ -18,15 +18,28 @@ import java.util.zip.ZipInputStream;
 /**
  * A plugin to be examined, in either of the two shapes MT Manager leaves them in.
  *
- * <p>An {@code .mtp} download is a zip; an installed plugin is an unpacked directory containing the
- * same {@code manifest.json}, {@code src/}, {@code assets/} and {@code libs/} layout. Rules are
- * written against this one interface so they apply equally to a file the user is about to install
- * and to one already living in MT Manager's data directory.
+ * <p>An {@code .mtp} download is a zip. An installed plugin is either an unpacked directory with the
+ * same layout, or, as MT Manager actually keeps them, a folder named after the plugin id holding
+ * {@code plugin.mtp} and whatever MT Manager extracted beside it. Rules are written against this one
+ * interface so they apply equally to a file the user is about to install and to one already living
+ * in MT Manager's data directory.
  */
 public abstract class PluginPackage {
 
     /** Largest single member the scanner will pull into memory. */
     public static final int MAX_MEMBER_BYTES = 4 * 1024 * 1024;
+
+    /** The name MT Manager gives the archive it keeps for each installed plugin. */
+    public static final String INSTALLED_ARCHIVE = "plugin.mtp";
+
+    /**
+     * Prefix on the names of files found beside an installed plugin's archive.
+     *
+     * <p>MT Manager installs a plugin as {@code <id>/plugin.mtp} and may extract its compiled code
+     * alongside. Those siblings are searched for indicators like any member, but they are not the
+     * package's own contents, and rules about what a package carries leave them alone.
+     */
+    public static final String BESIDE_PREFIX = "@beside/";
 
     /** How much an archive may claim to inflate to before the structural walk gives up on it. */
 
@@ -72,8 +85,18 @@ public abstract class PluginPackage {
     /** Where it lives on disk. */
     public abstract File location();
 
-    /** True for a {@code .mtp} archive, false for an unpacked installed plugin. */
+    /** True for a {@code .mtp} archive, false for an unpacked directory. This is the format. */
     public abstract boolean archive();
+
+    /**
+     * True when this is a plugin MT Manager has installed, whatever its format.
+     *
+     * <p>An unpacked directory with a manifest is one; so is MT Manager's {@code <id>/plugin.mtp}.
+     * A loose {@code .mtp} in a downloads folder is not.
+     */
+    public boolean installed() {
+        return false;
+    }
 
     /** All members, directories included. */
     public abstract List<Entry> entries() throws IOException;
@@ -134,9 +157,16 @@ public abstract class PluginPackage {
     /** Opens a path as a package, choosing the archive or directory reader. */
     public static PluginPackage open(File file) throws IOException {
         if (file == null || !file.exists()) {
-            throw new IOException("no such path: " + file);
+            throw new IOException("no such path: " + (file == null ? "null" : file.getName()));
         }
         if (file.isDirectory()) {
+            File inner = new File(file, INSTALLED_ARCHIVE);
+            if (!new File(file, "manifest.json").isFile() && inner.isFile()) {
+                // MT Manager's own layout for an installed plugin: a folder named after the plugin
+                // id holding the archive it was installed from, with whatever MT Manager extracted
+                // beside it. The folder is the install unit; the archive is the package.
+                return new InstalledArchivePackage(file, new ArchivePackage(inner));
+            }
             return new DirectoryPackage(file);
         }
         return new ArchivePackage(file);
@@ -174,6 +204,15 @@ public abstract class PluginPackage {
         @Override
         public boolean archive() {
             return true;
+        }
+
+        /** How many members the archive lists, for bounding what may be added beside it. */
+        int entriesCountHint() {
+            try {
+                return entries().size();
+            } catch (IOException e) {
+                return 0;
+            }
         }
 
         @Override
@@ -348,6 +387,11 @@ public abstract class PluginPackage {
         }
 
         @Override
+        public boolean installed() {
+            return true;
+        }
+
+        @Override
         public List<Entry> entries() throws IOException {
             if (cached != null) {
                 return cached;
@@ -501,6 +545,135 @@ public abstract class PluginPackage {
         }
     }
 
+    /**
+     * An installed plugin in MT Manager's own layout: {@code <id>/plugin.mtp} plus whatever MT
+     * Manager extracted beside it.
+     *
+     * <p>Members come from the archive. Regular files found in the folder (up to a small depth and
+     * count) are added under {@link #BESIDE_PREFIX} so their contents are searched too: when MT
+     * Manager unpacks a v3 plugin's dex next to the package, that dex is where the code is. The
+     * package's identity stays the archive's hash; MT Manager rewriting its own extracted artefacts
+     * must not read as the plugin having changed.
+     */
+    static final class InstalledArchivePackage extends PluginPackage {
+        private static final int MAX_SIBLINGS = 400;
+        private static final int MAX_SIBLING_DEPTH = 3;
+
+        private final File dir;
+        private final ArchivePackage delegate;
+        private List<Entry> cached;
+
+        InstalledArchivePackage(File dir, ArchivePackage delegate) {
+            this.dir = dir;
+            this.delegate = delegate;
+        }
+
+        @Override
+        public String label() {
+            return dir.getName();
+        }
+
+        @Override
+        public File location() {
+            return dir;
+        }
+
+        @Override
+        public boolean archive() {
+            return true;
+        }
+
+        @Override
+        public boolean installed() {
+            return true;
+        }
+
+        @Override
+        public List<Entry> entries() throws IOException {
+            if (cached != null) {
+                return cached;
+            }
+            List<Entry> out = new ArrayList<Entry>(delegate.entries());
+            String rootCanonical;
+            try {
+                rootCanonical = dir.getCanonicalPath();
+            } catch (IOException e) {
+                rootCanonical = null;
+            }
+            collectSiblings(dir, "", 0, out, rootCanonical);
+            cached = out;
+            return out;
+        }
+
+        private void collectSiblings(File folder, String prefix, int depth, List<Entry> out, String rootCanonical) {
+            if (depth > MAX_SIBLING_DEPTH || out.size() >= delegate.entriesCountHint() + MAX_SIBLINGS) {
+                return;
+            }
+            File[] children = folder.listFiles();
+            if (children == null) {
+                return;
+            }
+            for (int i = 0; i < children.length; i++) {
+                File child = children[i];
+                String name = prefix + child.getName();
+                if (depth == 0 && child.getName().equals(INSTALLED_ARCHIVE)) {
+                    continue;
+                }
+                if (rootCanonical != null && escapes(child, rootCanonical)) {
+                    continue;
+                }
+                if (child.isDirectory()) {
+                    collectSiblings(child, name + "/", depth + 1, out, rootCanonical);
+                } else if (child.isFile()) {
+                    long size = child.length();
+                    out.add(new Entry(BESIDE_PREFIX + name, size, size, false));
+                }
+            }
+        }
+
+        private static boolean escapes(File child, String rootCanonical) {
+            try {
+                String canonical = child.getCanonicalPath();
+                return !canonical.equals(rootCanonical) && !canonical.startsWith(rootCanonical + File.separator);
+            } catch (IOException e) {
+                return true;
+            }
+        }
+
+        @Override
+        public byte[] read(Entry entry, int limit, ScanBudget budget) throws IOException {
+            if (!entry.name.startsWith(BESIDE_PREFIX)) {
+                return delegate.read(entry, limit, budget);
+            }
+            int granted = budget.reserve(wanted(entry, limit));
+            if (granted <= 0) {
+                return new byte[0];
+            }
+            File target = new File(dir, entry.name.substring(BESIDE_PREFIX.length()));
+            InputStream in = new BufferedInputStream(new FileInputStream(target));
+            try {
+                return Bytes.readAtMost(in, granted);
+            } finally {
+                closeQuietly(in);
+            }
+        }
+
+        @Override
+        public String contentHash(ScanBudget budget) throws IOException {
+            return delegate.contentHash(budget);
+        }
+
+        @Override
+        public List<String> structuralAnomalies(ScanBudget budget) throws IOException {
+            return delegate.structuralAnomalies(budget);
+        }
+
+        @Override
+        public void close() {
+            delegate.close();
+        }
+    }
+
     /** A package seen through a stripped-off wrapping directory. */
     static final class RootedPackage extends PluginPackage {
         private final PluginPackage delegate;
@@ -524,6 +697,11 @@ public abstract class PluginPackage {
         @Override
         public boolean archive() {
             return delegate.archive();
+        }
+
+        @Override
+        public boolean installed() {
+            return delegate.installed();
         }
 
         @Override

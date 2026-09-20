@@ -25,12 +25,19 @@ public final class ArchiveRules {
     private static final double ENTROPY_THRESHOLD = 7.8;
 
     private static final Set<String> EXPECTED_TOP_LEVEL = new HashSet<String>();
+    /** Top-level members an Android build leaves in a v3 package, over and above the v2 layout. */
+    private static final Set<String> COMPILED_TOP_LEVEL = new HashSet<String>();
     private static final Set<String> EXECUTABLE_EXTENSIONS = new HashSet<String>();
 
     static {
         EXPECTED_TOP_LEVEL.add("manifest.json");
         EXPECTED_TOP_LEVEL.add("icon.png");
         EXPECTED_TOP_LEVEL.add("icon.jpg");
+        EXPECTED_TOP_LEVEL.add("icon.webp");
+
+        COMPILED_TOP_LEVEL.add("res");
+        COMPILED_TOP_LEVEL.add("kotlin");
+        COMPILED_TOP_LEVEL.add("META-INF");
         EXPECTED_TOP_LEVEL.add("src");
         EXPECTED_TOP_LEVEL.add("assets");
         EXPECTED_TOP_LEVEL.add("libs");
@@ -101,6 +108,12 @@ public final class ArchiveRules {
             if (entry.directory) {
                 continue;
             }
+            // Files MT Manager placed beside an installed package are its artefacts, not the
+            // package's contents. They are still searched for indicators, but a dex MT Manager
+            // extracted is not the plugin "carrying an executable".
+            if (entry.name.startsWith(PluginPackage.BESIDE_PREFIX)) {
+                continue;
+            }
             String ext = entry.extension();
             String top = entry.topLevel();
 
@@ -139,12 +152,21 @@ public final class ArchiveRules {
                 continue;
             }
 
-            if (!EXPECTED_TOP_LEVEL.contains(top)) {
+            if (!EXPECTED_TOP_LEVEL.contains(top) && !(compiledExpected && COMPILED_TOP_LEVEL.contains(top))) {
                 if (unexpected == null) {
-                    unexpected = new Signal("ARC002", Category.ARCHIVE, Severity.MEDIUM,
+                    // A v2 package has a documented layout and anything outside it is worth a point.
+                    // A v3 package is whatever the Android build put in the APK, minus what MT
+                    // Manager's packager strips: Kotlin metadata, a bundled library's resources, a
+                    // res/ folder. Listing those is useful; scoring them was noise on every plugin.
+                    unexpected = new Signal("ARC002", Category.ARCHIVE,
+                            compiledExpected ? Severity.INFO : Severity.MEDIUM,
                             "Members outside MT Manager's plugin layout",
-                            "A plugin package holds manifest.json, an optional icon, and src, assets and libs."
-                                    + " Other content is not part of the documented format.");
+                            compiledExpected
+                                    ? "A compiled plugin package carries manifest.json, classes.dex, assets and an"
+                                            + " icon. These members are build leftovers or bundled resources; they are"
+                                            + " listed so nothing is hidden, and searched like any other member."
+                                    : "A plugin package holds manifest.json, an optional icon, and src, assets and libs."
+                                            + " Other content is not part of the documented format.");
                     report.add(unexpected);
                 }
                 unexpected.withEvidence(entry.name, Bytes.humanSize(entry.size));

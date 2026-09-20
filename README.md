@@ -51,7 +51,8 @@ Full reference, generated from the rules themselves: **[docs/DETECTION-RULES.md]
 
 ## Install the plugin
 
-1. Download `dist/mt-safety-scanner.mtp` from this repository (or build it with `tools/build.sh`).
+1. Download `dist/mt-safety-scanner.mtp` from this repository (or build it with `tools/build.sh`). It
+   is a plugin SDK v3 package: install it in MT Manager 2.26.3 or newer.
 2. Open it with MT Manager, or use MT Manager's plugin management screen to install it.
 3. Open **plugin management**, tap **Plugin Safety Scanner**.
 
@@ -75,18 +76,24 @@ Each plugin gets a verdict and its findings, worst first, with the file and line
 
 ### Removing a flagged plugin
 
-**One at a time:** an installed plugin the scan flagged gets a **Quarantine this plugin** switch under
-it. Turn it on and reopen the screen. The plugin is moved aside and `restore` puts it back. Nothing
-happens while the screen is open, so a switch touched by accident can simply be turned off again.
+**One at a time:** an installed plugin the scan flagged gets a tappable row under it. Tap it and a
+dialog offers **Quarantine** (move it aside; `restore` puts it back) or **Remove** (delete it for
+good), with Cancel. The action runs when you confirm the dialog, and the screen refreshes so the
+plugin drops off the list. Before it moves anything the scanner re-reads the package and refuses if it
+changed since the scan.
 
-The switch is deliberately absent in three cases, and each is a refusal rather than an oversight: a
+The button is deliberately absent in three cases, and each is a refusal rather than an oversight: a
 `.mtp` file sitting in a downloads folder is not installed, so there is nothing to move aside; a package
-the scan could not hash has no identity to bind the switch to, and the screen will not arm an action it
-cannot confirm is still pointing at the same files when it runs; and the scanner will not quarantine
-itself. Those are listed with `[ ? ]` or without a switch, and the advice line says to judge them by
-hand.
+the scan could not hash has no identity to bind the action to, so the screen will not act on something
+it cannot confirm is still the package it examined; and the scanner will not quarantine itself. Those
+are listed with `[ ? ]` or without a button, and the advice line says to judge them by hand.
 
-**All of them at once:** type `quarantine malicious` (or `quarantine suspicious` for the wider net).
+**Everything malicious at once:** a **Quarantine all malicious (N)** and a **Remove all malicious (N)**
+button sit at the top when the scan found any; a **Quarantine all suspicious (N)** button covers the
+wider net. Each opens a dialog listing exactly the plugins it would touch before it does anything.
+
+**By typed command (the same actions, without the dialogs):** type `quarantine malicious` (or
+`quarantine suspicious` for the wider net).
 Nothing is moved yet — the screen comes back listing exactly which plugins it would touch and a short
 code:
 
@@ -166,11 +173,16 @@ tools/build.sh test     # compile and test only
 tools/build.sh docs     # regenerate the rule reference from the rule catalogue
 ```
 
-Requirements: **JDK 9 or newer** and `zip`. (The scripts pass `javac --release 8`, which produces
-Java 8 bytecode for MT Manager's on-device compiler but is itself a JDK 9+ flag.) **No Android SDK is needed** — a plugin SDK v2 `.mtp` is a zip of Java
-sources that MT Manager compiles on the device. The `javac` run exists to catch errors before the phone
-does, using the stubs in `tools/stubs/` to stand in for classes MT Manager provides at runtime. Those
-stubs are never shipped inside the `.mtp`.
+Requirements for `test`: **JDK 9 or newer** and `zip`, nothing else. The detection core is plain Java
+with no Android or MT types, so it compiles and runs on a desktop JVM; `tools/build.sh test` is the
+build a contributor runs.
+
+`package` builds a plugin SDK **v3** `.mtp`, whose code ships as a compiled `classes.dex`. That step
+additionally downloads, and caches under the build directory, an Android platform jar, a stable
+`r8`/`d8` dexer (Google Maven `com.android.tools:r8`, pinned; the dexer bundled with build-tools r34
+crashes on JDK-21-compiled classes) and MT Manager's published plugin API (`bin.mt.plugin:api`, used
+compile-only and never shipped). It compiles the core plus the one UI file against those, dexes the
+result, and zips `manifest.json` + `classes.dex` + `assets/` + `icon.png`.
 
 The test suite uses no test framework, so it builds and runs with nothing but a JDK. It checks both
 directions: hostile fixtures must be caught, and benign ones must come back clean. A scanner that flags
@@ -184,17 +196,17 @@ because the report still looks reassuring.
 
 ```
 plugin/                     what goes into the .mtp
-  manifest.json             MT plugin metadata (pluginSdkVersion 2)
+  manifest.json             MT plugin metadata (pluginSdkVersion 3, dexMode)
   assets/indicators.json    your trust lists, seeded on first run
+  icon.png                  the plugin's icon
   src/mt/safety/scanner/
     core/                   the detection engine: no Android, no MT, no dependencies
-    ui/ScannerPreference    the only file that touches an MT Manager type
-    ScanRunner, Host        logic and the seam between the two
+    ScanRunner, Host        logic and the seam to the UI
+  ui-v3/...ScannerPreference the v3 UI (buttons + dialogs); the only file that touches an MT type
 tools/
   build.sh, mtsafety        build and run
   src/                      command line scanner and the doc generator
   test/                     fixtures and the test suite
-  stubs/                    compile-only API stubs, never shipped
 docs/DETECTION-RULES.md     generated rule reference
 ```
 
@@ -205,16 +217,18 @@ phone and under test on a desktop JVM, and it is why the tests can be this thoro
 
 - **Findings are capabilities, not intent.** A flagged plugin can be perfectly honest, and code hidden
   carefully enough can stay quiet. Read the evidence before deleting anything.
-- **This targets plugin SDK v2** (`pluginSdkVersion: 2`), the generation whose packages carry Java
-  source. MT Manager also has a v3 SDK, built with Gradle, which ships compiled code; the rules still
-  run there against recovered strings, but without line numbers.
+- **This ships as plugin SDK v3** (`pluginSdkVersion: 3`, `dexMode: true`), whose package carries a
+  compiled `classes.dex` and needs MT Manager 2.26.3 or newer. It still *scans* both generations: a v2
+  package's Java sources and a v3 package's dex are read the same way, and for a v3 package the class a
+  manifest declares is confirmed exactly against the dex string table rather than guessed from file
+  names.
 - **It has not been run on a device by its author.** The engine is covered by the test suite and the
   package layout is verified, but the `bin.mt.plugin.api` signatures come from MT Manager's published
-  documentation plus a real third-party plugin's source, not from an install on a phone. If MT Manager
-  rejects it, the likely cause is an API difference, and the fix is confined to
-  `plugin/src/mt/safety/scanner/ui/ScannerPreference.java` — the only file that mentions an MT type.
-  To port to the v3 SDK, change its import and `onBuild` parameter from `MTPluginContext` to
-  `PluginContext`; nothing else in the scanner refers to either.
+  API (`bin.mt.plugin:api:3.0.0`, downloaded from MT Manager's own Maven) and a real third-party
+  plugin's source, not from an install on a phone. If MT Manager rejects it, the likely cause is an API
+  difference, and the fix is confined to `plugin/ui-v3/mt/safety/scanner/ui/ScannerPreference.java` —
+  the only file that mentions an MT type. The entire detection core underneath it is plain Java,
+  shared with the command-line scanner and covered by the desktop test suite.
 - **Where plugins live on disk is not documented**, and it differs between MT Manager versions and
   between rooted and unrooted devices. Discovery works by content — a folder holding a `manifest.json`,
   or an `.mtp` file — starting from the directory MT Manager hands the plugin itself, which is correct

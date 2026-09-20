@@ -19,6 +19,16 @@ public final class Indicator {
         BINARY,
         /** Plain text members such as assets and configuration. */
         TEXT,
+        /**
+         * Java sources and compiled artefacts: the members that can actually call an API.
+         *
+         * <p>Most indicators name Android or Java APIs, and an API name only means something where
+         * code can invoke it. In a data file it is a word: a syntax highlighter's keyword table lists
+         * {@code chmod} and {@code chown}, a config file's comment says "allow screenshot", a MIME
+         * table names {@code package-archive}. Matching those as capabilities is how a Markdown
+         * previewer came to be rated more dangerous than a root shell.
+         */
+        CODE,
         /** Every kind. */
         ANY
     }
@@ -43,6 +53,9 @@ public final class Indicator {
     }
 
     public boolean appliesTo(Scope memberScope) {
-        return scope == Scope.ANY || scope == memberScope;
+        if (scope == Scope.ANY || scope == memberScope) {
+            return true;
+        }
+        return scope == Scope.CODE && (memberScope == Scope.SOURCE || memberScope == Scope.BINARY);
     }
 }

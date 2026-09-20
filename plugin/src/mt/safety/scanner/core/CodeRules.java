@@ -97,6 +97,12 @@ public final class CodeRules {
             if (entry.directory) {
                 continue;
             }
+            // The manifest is metadata, judged by ManifestRules on what it declares. Searching its
+            // text for indicators reported a plugin for naming its own classes under bin.mt.plugin
+            // and for the dexMode flag every v3 package carries.
+            if (entry.name.equals("manifest.json")) {
+                continue;
+            }
             if (budget.exhausted()) {
                 budget.markTruncated();
                 break;

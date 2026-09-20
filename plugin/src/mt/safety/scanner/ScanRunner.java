@@ -60,21 +60,31 @@ public final class ScanRunner {
         public final String key;
         public final String title;
         public final String summary;
+        /**
+         * The plugin this row acts on, for an actionable row, or null.
+         *
+         * <p>The v2 screen has no callback, so it arms an action with a switch bound to {@link #key}.
+         * The v3 screen has real click callbacks, so it acts on this report directly. One row type
+         * serves both: v2 reads the key, v3 reads the report.
+         */
+        public final ScanReport report;
 
-        private Row(boolean header, boolean toggle, String key, String title, String summary) {
+        private Row(boolean header, boolean toggle, String key, String title, String summary,
+                ScanReport report) {
             this.header = header;
             this.toggle = toggle;
             this.key = key;
             this.title = title;
             this.summary = summary;
+            this.report = report;
         }
 
         public static Row header(String title) {
-            return new Row(true, false, null, title, null);
+            return new Row(true, false, null, title, null, null);
         }
 
         public static Row text(String title, String summary) {
-            return new Row(false, false, null, title, summary);
+            return new Row(false, false, null, title, summary, null);
         }
 
         /**
@@ -84,8 +94,8 @@ public final class ScanRunner {
          * "this one". It is read on the next build, which is also what keeps it safe: nothing happens
          * while the screen is open, and the action is listed before it runs.
          */
-        public static Row toggle(String title, String summary, String key) {
-            return new Row(false, true, key, title, summary);
+        public static Row toggle(String title, String summary, String key, ScanReport report) {
+            return new Row(false, true, key, title, summary, report);
         }
     }
 
@@ -163,7 +173,7 @@ public final class ScanRunner {
         }
 
         buildRows(result, database,
-                MtEnvironment.candidateRoots(host.filesDir(), host.config(KEY_EXTRA_ROOT, "")),
+                MtEnvironment.candidateRoots(host.filesDir(), host.hostPackage(), host.config(KEY_EXTRA_ROOT, "")),
                 result.reports.size() + result.unscanned);
         return result;
     }
@@ -171,7 +181,7 @@ public final class ScanRunner {
     /** Runs the scan itself, filling {@code result.reports}. */
     private void scanInto(Result result, IocDatabase database) {
         boolean deep = host.configFlag(KEY_DEEP, false);
-        List<File> roots = MtEnvironment.candidateRoots(host.filesDir(), host.config(KEY_EXTRA_ROOT, ""));
+        List<File> roots = MtEnvironment.candidateRoots(host.filesDir(), host.hostPackage(), host.config(KEY_EXTRA_ROOT, ""));
         List<Discovery.Candidate> candidates = MtEnvironment.findPlugins(roots, host.pluginId(), host.filesDir());
 
         PluginScanner scanner = new PluginScanner(database);
@@ -234,7 +244,7 @@ public final class ScanRunner {
                 continue;
             }
             host.putFlag(key, false);
-            if (report.archive) {
+            if (!report.installed) {
                 // A file sitting in a downloads folder is not something this plugin should delete.
                 append(done, strings.notInstalled(report.manifest.displayName()));
                 continue;
@@ -340,41 +350,109 @@ public final class ScanRunner {
             // the same pluginID, which the scanner itself reports as impersonation, and matching by id
             // could act on the copy the plan never listed.
             ScanReport match = findByPath(path, sha, result);
-            if (match == null || match.archive) {
+            if (match == null || !match.installed) {
                 append(problems, strings.noSuchPlugin(path));
                 continue;
             }
-            if (!stillMatches(match)) {
-                append(problems, strings.changedSinceScan(flatten(match.manifest.displayName())));
-                continue;
-            }
-            Quarantine.Result moved = quarantine.quarantine(new File(match.path), host.pluginId());
-            if (!moved.ok) {
-                append(problems, moved.message);
-                continue;
-            }
-            // Counted by what actually happened. A removal whose purge failed left a restorable copy
-            // behind, so it is a quarantine, and reporting it as deleted would tell the user there is
-            // nothing left to recover when there is.
-            if (permanent) {
-                Quarantine.Result purged = purgeExact(quarantine, moved.location, match.path);
-                if (purged.ok) {
-                    result.actioned.put(match.path, "removed");
-                    removed++;
-                } else {
-                    result.actioned.put(match.path, "quarantined");
-                    quarantined++;
-                    append(problems, purged.message);
-                }
-            } else {
-                result.actioned.put(match.path, "quarantined");
-                quarantined++;
+            int[] counts = new int[2];
+            String problem = moveTarget(quarantine, match, permanent, result, counts);
+            removed += counts[0];
+            quarantined += counts[1];
+            if (problem.length() > 0) {
+                append(problems, problem);
             }
         }
         String summary = permanent ? strings.bulkDone("remove", removed)
                 : strings.bulkDone("quarantine", quarantined);
         if (permanent && quarantined > 0) {
             summary = summary + "   " + strings.someOnlyQuarantined(quarantined);
+        }
+        return problems.length() == 0 ? summary : summary + "   " + problems;
+    }
+
+    /**
+     * Moves one scanned plugin aside, re-verifying it still matches the scan first.
+     *
+     * <p>The single place a plugin is actually moved, shared by the typed {@code confirm} path and
+     * the v3 button path so the two cannot drift. {@code counts[0]} is incremented for a removal that
+     * completed, {@code counts[1]} for a quarantine (including a removal whose purge failed and so
+     * left a restorable copy). Returns a problem to report, or an empty string on success.
+     */
+    private String moveTarget(Quarantine quarantine, ScanReport match, boolean permanent, Result result,
+            int[] counts) {
+        if (!stillMatches(match)) {
+            return strings.changedSinceScan(flatten(match.manifest.displayName()));
+        }
+        Quarantine.Result moved = quarantine.quarantine(new File(match.path), host.pluginId());
+        if (!moved.ok) {
+            return moved.message;
+        }
+        // Counted by what actually happened. A removal whose purge failed left a restorable copy
+        // behind, so it is a quarantine, and reporting it as deleted would tell the user there is
+        // nothing left to recover when there is.
+        if (permanent) {
+            Quarantine.Result purged = purgeExact(quarantine, moved.location, match.path);
+            if (purged.ok) {
+                result.actioned.put(match.path, "removed");
+                counts[0]++;
+                return "";
+            }
+            result.actioned.put(match.path, "quarantined");
+            counts[1]++;
+            return purged.message;
+        }
+        result.actioned.put(match.path, "quarantined");
+        counts[1]++;
+        return "";
+    }
+
+    /**
+     * The installed plugins a scope covers right now, for a UI that offers a button per action.
+     *
+     * <p>v3 MT Manager gives a plugin real click callbacks and dialogs, so a bulk action can be
+     * confirmed in a dialog rather than by typing a code back. This exposes the same set the typed
+     * plan would cover, so both paths act on exactly the plugins the user was shown.
+     */
+    public List<ScanReport> actionTargets(Result result, String scope) {
+        return verifiable(bulkTargets(scope, result));
+    }
+
+    /**
+     * Quarantines, or removes, one scanned plugin. For the v3 button path, where the dialog the user
+     * confirmed is the confirmation the typed path gets from its code.
+     */
+    public String actOnOne(Result result, ScanReport report, boolean remove) {
+        if (report == null || !report.installed) {
+            return strings.noSuchPlugin(report == null ? "" : report.path);
+        }
+        Quarantine quarantine = new Quarantine(new File(host.filesDir(), "quarantine"));
+        int[] counts = new int[2];
+        String problem = moveTarget(quarantine, report, remove, result, counts);
+        if (problem.length() > 0) {
+            return problem;
+        }
+        return remove ? strings.bulkDone("remove", counts[0]) : strings.bulkDone("quarantine", counts[1]);
+    }
+
+    /** Quarantines, or removes, every installed plugin a scope covers. For the v3 "all" button. */
+    public String actOnScope(Result result, String scope, boolean remove) {
+        List<ScanReport> targets = actionTargets(result, scope);
+        if (targets.isEmpty()) {
+            return strings.nothingMatches(scope);
+        }
+        Quarantine quarantine = new Quarantine(new File(host.filesDir(), "quarantine"));
+        int[] counts = new int[2];
+        StringBuilder problems = new StringBuilder();
+        for (int i = 0; i < targets.size(); i++) {
+            String problem = moveTarget(quarantine, targets.get(i), remove, result, counts);
+            if (problem.length() > 0) {
+                append(problems, problem);
+            }
+        }
+        String summary = remove ? strings.bulkDone("remove", counts[0])
+                : strings.bulkDone("quarantine", counts[1]);
+        if (remove && counts[1] > 0) {
+            summary = summary + "   " + strings.someOnlyQuarantined(counts[1]);
         }
         return problems.length() == 0 ? summary : summary + "   " + problems;
     }
@@ -446,7 +524,7 @@ public final class ScanRunner {
         List<ScanReport> out = new ArrayList<ScanReport>();
         for (int i = 0; i < result.reports.size(); i++) {
             ScanReport report = result.reports.get(i);
-            if (report.archive) {
+            if (!report.installed) {
                 continue;
             }
             // The reports are the scan from before this build acted on anything. A plugin an armed
@@ -613,12 +691,12 @@ public final class ScanRunner {
             // One tap beats typing an id, and only for the installed plugins this can actually move.
             // Offered only when the package was hashed: without one, the switch key is the same for
             // whatever replaces this directory, and reopening would quarantine the replacement.
-            if (!report.archive && report.verdict().actionable()
+            if (report.installed && report.verdict().actionable()
                     && report.contentHash != null && report.contentHash.length() > 0
                     && !host.pluginId().equals(report.manifest.pluginId)
                     && !result.actioned.containsKey(report.path)) {
                 rows.add(Row.toggle(strings.quarantineThis(), strings.quarantineThisHelp(),
-                        armKey(report)));
+                        armKey(report), report));
             }
             if (report.manifest.pluginId.length() > 0) {
                 rows.add(Row.text(report.manifest.pluginId,
@@ -841,7 +919,7 @@ public final class ScanRunner {
         }
         for (int i = 0; i < result.reports.size(); i++) {
             ScanReport report = result.reports.get(i);
-            if (report.archive || result.actioned.containsKey(report.path)) {
+            if (!report.installed || result.actioned.containsKey(report.path)) {
                 continue;
             }
             boolean match = argument.equals(report.manifest.pluginId)
@@ -881,7 +959,7 @@ public final class ScanRunner {
 
     /** Writes the full report next to the plugin's configuration, for opening in MT Manager. */
     private String exportCommand() {
-        List<File> roots = MtEnvironment.candidateRoots(host.filesDir(), host.config(KEY_EXTRA_ROOT, ""));
+        List<File> roots = MtEnvironment.candidateRoots(host.filesDir(), host.hostPackage(), host.config(KEY_EXTRA_ROOT, ""));
         List<Discovery.Candidate> candidates = MtEnvironment.findPlugins(roots, host.pluginId(), host.filesDir());
         IocDatabase database = IocDatabase.load(new File(host.filesDir(), "indicators.json"));
         PluginScanner scanner = new PluginScanner(database);

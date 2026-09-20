@@ -97,6 +97,11 @@ public final class ActionsTest {
             return "mt.safety.scanner";
         }
 
+        @Override
+        public String hostPackage() {
+            return "bin.mt.plus";
+        }
+
         void type(String command) {
             values.put(ScanRunner.KEY_COMMAND, command);
         }

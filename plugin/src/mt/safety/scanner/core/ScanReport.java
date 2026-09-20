@@ -13,7 +13,17 @@ public final class ScanReport {
 
     public final String label;
     public final String path;
+    /** True when the package is a zip file rather than an unpacked directory. This is its format. */
     public final boolean archive;
+    /**
+     * True when this is a plugin MT Manager has installed, as opposed to a download sitting in a
+     * folder. This is its standing, and it is what decides whether the scanner may act on it.
+     *
+     * <p>Kept apart from {@link #archive} because the two used to be conflated, and on a real device
+     * every installed plugin is an archive: MT Manager keeps them as {@code <id>/plugin.mtp}. Gating
+     * actions on "not an archive" hid every switch the user was looking for.
+     */
+    public final boolean installed;
     public final PluginManifest manifest;
     public final String contentHash;
     public final List<Signal> signals = new ArrayList<Signal>();
@@ -33,10 +43,12 @@ public final class ScanReport {
     private long elapsedMs;
     private String verdictReason = "";
 
-    public ScanReport(String label, String path, boolean archive, PluginManifest manifest, String contentHash) {
+    public ScanReport(String label, String path, boolean archive, boolean installed, PluginManifest manifest,
+            String contentHash) {
         this.label = label;
         this.path = path;
         this.archive = archive;
+        this.installed = installed;
         this.manifest = manifest;
         this.contentHash = contentHash;
     }

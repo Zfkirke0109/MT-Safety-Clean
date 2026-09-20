@@ -50,6 +50,7 @@ public final class ScannerTest {
         trustDecisions(fixtures);
         reportRendering(fixtures);
         regressions(fixtures);
+        realDeviceReport(fixtures);
         ActionsTest.run(new ActionsTest.Checker() {
             @Override
             public void that(String description, boolean condition, String context) {
@@ -471,6 +472,151 @@ public final class ScannerTest {
      * as tests rather than just fixed, because a scanner that silently stops catching something is
      * worse than one that never caught it: the report still looks reassuring.
      */
+    /**
+     * The scan of a real device rated all 31 installed plugins, MT Manager's own included, as
+     * suspicious or worse. Installed plugins are v3: a folder holding {@code plugin.mtp} whose code is
+     * a {@code classes.dex}, a {@code {key}} name resolved from an {@code .mtl}, an {@code icon.webp},
+     * and assets that mention API names in passing. These pin the behaviour that report demanded.
+     */
+    private static void realDeviceReport(Fixtures fixtures) {
+        String benign = "package demo;\npublic class A { public int n() { return 1; } }\n";
+
+        // A v3 translator: dexMode, a placeholder name, its engine and preference declared and present
+        // in the dex string table, an icon.webp, and a strings.mtl that names it.
+        java.util.Map<String, byte[]> members = new java.util.LinkedHashMap<String, byte[]>();
+        members.put("manifest.json", Fixtures.bytes(
+                "{\"pluginSdkVersion\": 3, \"dexMode\": true, \"pluginID\": \"bin.plugin.translator.google\","
+                        + " \"versionCode\": 1, \"versionName\": \"v1.5\", \"name\": \"{name}\","
+                        + " \"description\": \"{description}\","
+                        + " \"mainPreference\": \"bin.mt.plugin.GoogleTranslatePreference\","
+                        + " \"interfaces\": [\"bin.mt.plugin.GoogleWebTranslationEngine\"]}"));
+        members.put("classes.dex", Fixtures.dexWithStrings(
+                "Lbin/mt/plugin/GoogleWebTranslationEngine;",
+                "Lbin/mt/plugin/GoogleTranslatePreference;",
+                "Lbin/mt/plugin/api/translation/TranslationEngine;"));
+        members.put("icon.webp", Fixtures.bytes("RIFF____WEBPVP8 realish-image-bytes"));
+        members.put("assets/strings.mtl",
+                Fixtures.bytes("name: Google Translate\ndescription: Translates text via Google.\n"));
+        File translator = fixtures.installedArchive("bin.plugin.translator.google", members, null);
+        ScanReport translatorReport = new PluginScanner(IocDatabase.empty())
+                .scan(translator, ScanBudget.unlimited());
+        check("a real v3 translator is clean, not suspicious",
+                translatorReport.verdict() == Verdict.CLEAN, summarise(translatorReport)
+                        + " :: " + translatorReport.verdict());
+        check("its declared classes are found in the dex, so MFT006 does not fire",
+                !translatorReport.hasRule("MFT006"), summarise(translatorReport));
+        check("a {key} name is resolved from the language file, not shown raw",
+                "Google Translate".equals(translatorReport.manifest.displayName()),
+                translatorReport.manifest.displayName());
+        check("hardcoding a class under bin.mt.plugin is not treated as reaching into MT",
+                !translatorReport.hasRule("XPL001"), summarise(translatorReport));
+        check("the translation-engine trait is recognised from the dex",
+                translatorReport.traits.contains("translation-engine"),
+                String.valueOf(translatorReport.traits));
+        check("a v3 installed plugin is marked installed, so the UI can act on it",
+                translatorReport.installed, "installed=" + translatorReport.installed);
+
+        // A Markdown previewer bundling commonmark and highlight.js: the assets name chmod, chown and
+        // package-archive, and used to score it "likely malicious" for words in a keyword table.
+        java.util.Map<String, byte[]> md = new java.util.LinkedHashMap<String, byte[]>();
+        md.put("manifest.json", Fixtures.bytes(
+                "{\"pluginSdkVersion\": 3, \"dexMode\": true, \"pluginID\": \"com.md.preview\","
+                        + " \"versionCode\": 1, \"versionName\": \"1.0.0\", \"name\": \"Markdown Preview\","
+                        + " \"description\": \"Preview markdown\","
+                        + " \"mainPreference\": \"com.md.preview.FontSettings\","
+                        + " \"interfaces\": [\"com.md.preview.MarkdownPreviewToolMenu\"]}"));
+        md.put("classes.dex", Fixtures.dexWithStrings(
+                "Lcom/md/preview/FontSettings;", "Lcom/md/preview/MarkdownPreviewToolMenu;"));
+        md.put("assets/highlight/highlight.min.js",
+                Fixtures.bytes("chdir chmod chomp chop chown chr chroot close closedir connect continue"));
+        md.put("assets/katex/katex.min.js",
+                Fixtures.bytes("document.createElementNS(\"http://www.w3.org/2000/svg\",\"svg\");"));
+        md.put("org/commonmark/internal/util/entities.properties", Fixtures.bytes("nbsp=160\namp=38\n"));
+        File preview = fixtures.installedArchive("com.md.preview", md, null);
+        ScanReport previewReport = new PluginScanner(IocDatabase.empty())
+                .scan(preview, ScanBudget.unlimited());
+        check("a markdown previewer is not called malicious for a syntax-highlighter word list",
+                previewReport.verdict() == Verdict.CLEAN || previewReport.verdict() == Verdict.REVIEW,
+                summarise(previewReport) + " :: " + previewReport.verdict());
+        check("shell words in a data file do not trip the command-execution rules",
+                !previewReport.hasRule("EXE004") && !previewReport.hasRule("CMB103"),
+                summarise(previewReport));
+        check("an XMP or SVG namespace URL in an asset is not a plain-HTTP finding",
+                !previewReport.hasRule("NET005"), summarise(previewReport));
+
+        // MT Manager keeps a v3 plugin's dex beside the package, not inside it: the manifest declares
+        // classes the scan cannot see, and that absence is MT Manager's layout, not the plugin's.
+        java.util.Map<String, byte[]> extracted = new java.util.LinkedHashMap<String, byte[]>();
+        extracted.put("manifest.json", Fixtures.bytes(
+                "{\"pluginSdkVersion\": 3, \"dexMode\": true, \"pluginID\": \"com.ext.tool\","
+                        + " \"versionCode\": 1, \"versionName\": \"v1\", \"name\": \"Extracted\","
+                        + " \"description\": \"d\", \"mainPreference\": \"com.ext.tool.Pref\","
+                        + " \"interfaces\": [\"com.ext.tool.Menu\"]}"));
+        extracted.put("assets/strings.mtl", Fixtures.bytes("k: v\n"));
+        java.util.Map<String, byte[]> beside = new java.util.LinkedHashMap<String, byte[]>();
+        beside.put("classes.dex", Fixtures.dexWithStrings("Lcom/ext/tool/Pref;", "Lcom/ext/tool/Menu;"));
+        File extractedPlugin = fixtures.installedArchive("com.ext.tool", extracted, beside);
+        ScanReport extractedReport = new PluginScanner(IocDatabase.empty())
+                .scan(extractedPlugin, ScanBudget.unlimited());
+        check("a v3 plugin whose dex MT Manager extracted beside it is not accused of missing classes",
+                !extractedReport.hasRule("MFT006"), summarise(extractedReport));
+
+        // A manifest MT Manager accepts but strict JSON rejects: a comment and a trailing comma.
+        java.util.Map<String, byte[]> lenient = new java.util.LinkedHashMap<String, byte[]>();
+        lenient.put("manifest.json", Fixtures.bytes(
+                "{\n  // the main translation entry\n  \"pluginSdkVersion\": 3, \"dexMode\": true,\n"
+                        + "  \"pluginID\": \"io.lenient.tool\", \"versionCode\": 1, \"versionName\": \"v1\",\n"
+                        + "  \"name\": \"Lenient\", \"description\": \"d\",\n"
+                        + "  \"interfaces\": [\"io.lenient.tool.Engine\",],\n}"));
+        lenient.put("classes.dex", Fixtures.dexWithStrings("Lio/lenient/tool/Engine;"));
+        File lenientPlugin = fixtures.installedArchive("io.lenient.tool", lenient, null);
+        ScanReport lenientReport = new PluginScanner(IocDatabase.empty())
+                .scan(lenientPlugin, ScanBudget.unlimited());
+        check("a manifest with comments MT Manager accepts is read, not called invalid JSON",
+                "io.lenient.tool".equals(lenientReport.manifest.pluginId),
+                lenientReport.manifest.pluginId + " / " + summarise(lenientReport));
+        check("but the non-standard JSON is noted at low severity",
+                lenientReport.manifest.nonStandardJson && lenientReport.verdict() != Verdict.LIKELY_MALICIOUS,
+                summarise(lenientReport) + " :: " + lenientReport.verdict());
+
+        // The whole point still holds: a v3 package whose dex really does name su, a bot endpoint and
+        // /data/data is caught, because the dex strings are searched like any other code.
+        java.util.Map<String, byte[]> evil = new java.util.LinkedHashMap<String, byte[]>();
+        evil.put("manifest.json", Fixtures.bytes(
+                "{\"pluginSdkVersion\": 3, \"dexMode\": true, \"pluginID\": \"evil.v3\","
+                        + " \"versionCode\": 1, \"versionName\": \"v1\", \"name\": \"Helper\","
+                        + " \"description\": \"d\", \"interfaces\": []}"));
+        evil.put("classes.dex", Fixtures.dexWithStrings(
+                "su -c https://api.telegram.org/bot9:AA/sendDocument",
+                "/data/data/com.whatsapp/databases",
+                "Ljava/lang/Runtime;", "Ljava/net/Socket;"));
+        File evilPlugin = fixtures.installedArchive("evil.v3", evil, null);
+        ScanReport evilReport = new PluginScanner(IocDatabase.empty())
+                .scan(evilPlugin, ScanBudget.unlimited());
+        check("a v3 package whose dex hides a real payload is still caught",
+                evilReport.verdict() == Verdict.LIKELY_MALICIOUS, summarise(evilReport)
+                        + " :: " + evilReport.verdict());
+        check("the payload's capabilities are read out of the dex string table",
+                evilReport.hasRule("SEN001") && evilReport.hasRule("NET003") && evilReport.hasRule("EXE001"),
+                summarise(evilReport));
+
+        // Every one of these is a real, distinct plugin; none is a lookalike of another.
+        List<File> all = new ArrayList<File>();
+        all.add(translator);
+        all.add(preview);
+        all.add(extractedPlugin);
+        all.add(lenientPlugin);
+        List<ScanReport> set = new PluginScanner(IocDatabase.empty()).scanAll(all, ScanBudget.unlimited());
+        boolean anyLookalike = false;
+        for (int i = 0; i < set.size(); i++) {
+            if (set.get(i).hasRule("MFT011")) {
+                anyLookalike = true;
+            }
+        }
+        check("distinct plugins sharing a {name} placeholder are not called lookalikes",
+                !anyLookalike, "MFT011 fired across distinct plugins");
+    }
+
     private static void regressions(Fixtures fixtures) {
         String benign = "package demo;\npublic class A { public int n() { return 1; } }\n";
 
