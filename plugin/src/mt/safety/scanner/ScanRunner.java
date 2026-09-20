@@ -44,6 +44,16 @@ public final class ScanRunner {
     public static final String KEY_LAST_RESULT = "last_result";
     /** Prefix for the per-plugin "quarantine this one" switches. */
     public static final String KEY_ARM_PREFIX = "arm_";
+
+    /**
+     * Prefix for the per-plugin "selected" switch.
+     *
+     * <p>Selection is not action. A switch here only marks a plugin for the uninstall button to pick
+     * up, so turning one on does nothing until the button is pressed and its dialog confirmed, and a
+     * switch touched by accident can simply be turned off again. Kept apart from {@link
+     * #KEY_ARM_PREFIX}, whose switches quarantine on the next screen build.
+     */
+    public static final String KEY_SELECT_PREFIX = "sel_";
     /** The bulk action awaiting confirmation. */
     public static final String KEY_PENDING_PLAN = "pending_plan";
 
@@ -214,12 +224,22 @@ public final class ScanRunner {
         // moved the other. And bound to the package that was on screen: if the directory is replaced
         // between arming the switch and reopening, the key changes, the old flag matches nothing, and
         // the replacement is not quarantined on the strength of a switch armed against something else.
+        return KEY_ARM_PREFIX + identityDigest(report);
+    }
+
+    /** A short digest of where a package is and what is in it, shared by both switch kinds. */
+    private static String identityDigest(ScanReport report) {
+        String identity = report.path + "|" + report.contentHash;
         try {
-            String identity = report.path + "|" + report.contentHash;
-            return KEY_ARM_PREFIX + Bytes.sha256(identity.getBytes("UTF-8")).substring(0, 16);
+            return Bytes.sha256(identity.getBytes("UTF-8")).substring(0, 16);
         } catch (java.io.UnsupportedEncodingException e) {
-            return KEY_ARM_PREFIX + Integer.toHexString((report.path + report.contentHash).hashCode());
+            return Integer.toHexString(identity.hashCode());
         }
+    }
+
+    /** The preference key for one plugin's "select for removal" switch. */
+    public static String selectKey(ScanReport report) {
+        return KEY_SELECT_PREFIX + identityDigest(report);
     }
 
     /**
@@ -434,6 +454,94 @@ public final class ScanRunner {
         return remove ? strings.bulkDone("remove", counts[0]) : strings.bulkDone("quarantine", counts[1]);
     }
 
+    /**
+     * The installed plugins whose "select for removal" switch is on.
+     *
+     * <p>A selection is bound to the package it was made against: the key carries a digest of the
+     * path and the contents, so if the directory is replaced between selecting and pressing the
+     * button, the key no longer matches and the replacement is not removed on the strength of a
+     * choice made about something else.
+     */
+    public List<ScanReport> selectedTargets(Result result) {
+        List<ScanReport> out = new ArrayList<ScanReport>();
+        for (int i = 0; i < result.reports.size(); i++) {
+            ScanReport report = result.reports.get(i);
+            if (!report.installed || result.actioned.containsKey(report.path)) {
+                continue;
+            }
+            if (report.contentHash == null || report.contentHash.length() == 0) {
+                continue;
+            }
+            if (host.pluginId().equals(report.manifest.pluginId)) {
+                continue;
+            }
+            if (host.configFlag(selectKey(report), false)) {
+                out.add(report);
+            }
+        }
+        return out;
+    }
+
+    /** Everything the uninstall button would delete: what is selected, plus anything malicious. */
+    public List<ScanReport> uninstallTargets(Result result) {
+        List<ScanReport> out = new ArrayList<ScanReport>(selectedTargets(result));
+        List<ScanReport> malicious = actionTargets(result, "malicious");
+        for (int i = 0; i < malicious.size(); i++) {
+            if (!out.contains(malicious.get(i))) {
+                out.add(malicious.get(i));
+            }
+        }
+        return out;
+    }
+
+    /** How many plugins are sitting in quarantine, which the uninstall button also clears out. */
+    public int quarantinedCount() {
+        return new Quarantine(new File(host.filesDir(), "quarantine")).list().size();
+    }
+
+    /**
+     * Deletes every plugin the user selected, every plugin the scan called malicious, and everything
+     * already sitting in quarantine. This is the uninstall button.
+     *
+     * <p>Permanent by design: quarantine is the reversible action, and this is the one that finishes
+     * the job. Each package is re-read and refused if it changed since the scan, and a selection is
+     * cleared once it has been acted on so it cannot fire twice.
+     */
+    public String uninstallSelection(Result result) {
+        Quarantine quarantine = new Quarantine(new File(host.filesDir(), "quarantine"));
+        List<ScanReport> targets = uninstallTargets(result);
+        List<Quarantine.Item> held = quarantine.list();
+        if (targets.isEmpty() && held.isEmpty()) {
+            return strings.nothingSelected();
+        }
+        int[] counts = new int[2];
+        StringBuilder problems = new StringBuilder();
+        for (int i = 0; i < targets.size(); i++) {
+            ScanReport report = targets.get(i);
+            String problem = moveTarget(quarantine, report, true, result, counts);
+            // Cleared either way: a selection that failed has been reported, and leaving it on would
+            // act again unprompted the next time the button is pressed.
+            host.putFlag(selectKey(report), false);
+            if (problem.length() > 0) {
+                append(problems, problem);
+            }
+        }
+        int purged = 0;
+        for (int i = 0; i < held.size(); i++) {
+            Quarantine.Result result2 = quarantine.purge(held.get(i).directory.getName());
+            if (result2.ok) {
+                purged++;
+            } else {
+                append(problems, result2.message);
+            }
+        }
+        String summary = strings.uninstalled(counts[0], purged);
+        if (counts[1] > 0) {
+            summary = summary + "   " + strings.someOnlyQuarantined(counts[1]);
+        }
+        return problems.length() == 0 ? summary : summary + "   " + problems;
+    }
+
     /** Quarantines, or removes, every installed plugin a scope covers. For the v3 "all" button. */
     public String actOnScope(Result result, String scope, boolean remove) {
         List<ScanReport> targets = actionTargets(result, scope);
@@ -540,7 +648,17 @@ public final class ScanRunner {
             Verdict verdict = report.verdict();
             boolean malicious = verdict == Verdict.LIKELY_MALICIOUS || verdict == Verdict.KNOWN_BAD;
             boolean suspicious = malicious || verdict == Verdict.SUSPICIOUS;
-            if (scope.equals("malicious") ? malicious : suspicious) {
+            boolean matches;
+            if (scope.equals("malicious")) {
+                matches = malicious;
+            } else if (scope.equals("flagged")) {
+                // Everything the scan called out, "worth a look" included. This is the widest scope,
+                // and the one the quarantine-all command uses.
+                matches = verdict.flagged();
+            } else {
+                matches = suspicious;
+            }
+            if (matches) {
                 out.add(report);
             }
         }
@@ -688,15 +806,16 @@ public final class ScanRunner {
             }
             rows.add(Row.text(strings.verdictLabel() + ": " + report.verdict().label()
                     + "  (" + report.score() + ")", report.verdict().advice()));
-            // One tap beats typing an id, and only for the installed plugins this can actually move.
-            // Offered only when the package was hashed: without one, the switch key is the same for
-            // whatever replaces this directory, and reopening would quarantine the replacement.
-            if (report.installed && report.verdict().actionable()
+            // A switch to select this plugin for the uninstall button. Offered for anything the scan
+            // flagged at all, since "worth a look" is exactly what a user wants to sweep, and only for
+            // installed packages that were hashed: without a hash the key is the same for whatever
+            // replaces this directory, and a stale selection would act on the replacement.
+            if (report.installed && report.verdict().flagged()
                     && report.contentHash != null && report.contentHash.length() > 0
                     && !host.pluginId().equals(report.manifest.pluginId)
                     && !result.actioned.containsKey(report.path)) {
-                rows.add(Row.toggle(strings.quarantineThis(), strings.quarantineThisHelp(),
-                        armKey(report), report));
+                rows.add(Row.toggle(strings.selectThis(), strings.selectThisHelp(),
+                        selectKey(report), report));
             }
             if (report.manifest.pluginId.length() > 0) {
                 rows.add(Row.text(report.manifest.pluginId,
@@ -850,10 +969,18 @@ public final class ScanRunner {
             if (verb.equals("trust") || verb.equals("untrust") || verb.equals("deny")) {
                 return trustCommand(verb, argument, database, configFile);
             }
+            // quarantine-all covers everything the scan flagged, "worth a look" included, which is
+            // wider than "suspicious" and is the sweep most people actually want.
+            if (verb.equals("quarantine-all") || verb.equals("remove-all")) {
+                return planBulk(verb.substring(0, verb.indexOf('-')), "flagged", result);
+            }
             if (verb.equals("quarantine") || verb.equals("remove")) {
                 // A scope quarantines or removes everything the scan flagged; anything else names one
                 // plugin, which only quarantine does.
                 String scope = argument.toLowerCase(java.util.Locale.US);
+                if (scope.equals("flagged") || scope.equals("worth-a-look")) {
+                    return planBulk(verb, "flagged", result);
+                }
                 if (scope.equals("malicious") || scope.equals("suspicious") || scope.equals("all")) {
                     return planBulk(verb, scope.equals("all") ? "suspicious" : scope, result);
                 }

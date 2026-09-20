@@ -586,6 +586,68 @@ public final class ActionsTest {
         host.type("");
         deleteTree(new File(installed, "named"));
 
+        // Selection is not action: a switch only marks a plugin for the uninstall button.
+        writePlugin(new File(installed, "picked"), "picked.one", "Picked", RISKY);
+        writePlugin(new File(installed, "unpicked"), "unpicked.one", "Unpicked", RISKY);
+        ScanRunner.Result beforeSelect = new ScanRunner(host).run();
+        ScanReport picked = reportFor(beforeSelect, "picked.one");
+        host.putFlag(ScanRunner.selectKey(picked), true);
+        ScanRunner.Result afterSelect = new ScanRunner(host).run();
+        check.that("turning a selection switch on does not move anything by itself",
+                new File(installed, "picked").isDirectory(), afterSelect.commandOutcome);
+        check.that("the selected plugin is what the uninstall button would act on",
+                new ScanRunner(host).selectedTargets(afterSelect).size() == 1,
+                "selected=" + new ScanRunner(host).selectedTargets(afterSelect).size());
+
+        // Pressing the button deletes the selection, leaves the unselected plugin, and clears the flag.
+        ScanRunner uninstaller = new ScanRunner(host);
+        ScanRunner.Result toUninstall = uninstaller.run();
+        String uninstallOutcome = uninstaller.uninstallSelection(toUninstall);
+        check.that("the uninstall button deletes the selected plugin",
+                !new File(installed, "picked").isDirectory(), uninstallOutcome);
+        check.that("and leaves one that was not selected",
+                new File(installed, "unpicked").isDirectory(), uninstallOutcome);
+        check.that("the selection is cleared, so it cannot fire again",
+                !host.configFlag(ScanRunner.selectKey(picked), false), "flag still set");
+        deleteTree(new File(installed, "unpicked"));
+
+        // The same button also clears out whatever is already sitting in quarantine.
+        writePlugin(new File(installed, "held"), "held.one", "Held", RISKY);
+        ScanRunner holder = new ScanRunner(host);
+        ScanRunner.Result heldResult = holder.run();
+        Quarantine.Result parked = quarantine.quarantine(new File(installed, "held"), host.pluginId());
+        check.that("a plugin can be parked in quarantine first", parked.ok, parked.message);
+        ScanRunner sweeper = new ScanRunner(host);
+        ScanRunner.Result sweepResult = sweeper.run();
+        String swept = sweeper.uninstallSelection(sweepResult);
+        check.that("the uninstall button empties the quarantine store",
+                quarantine.list().isEmpty() && !parked.location.isDirectory(), swept);
+
+        // quarantine-all reaches "worth a look", which the narrower scopes do not.
+        writePlugin(new File(installed, "mild"), "mild.one", "Mild", RISKY);
+        ScanRunner allRunner = new ScanRunner(host);
+        ScanRunner.Result allResult = allRunner.run();
+        ScanReport mild = reportFor(allResult, "mild.one");
+        check.that("the fixture really does sit at worth-a-look or above",
+                mild != null && mild.verdict().flagged(),
+                mild == null ? "no report" : String.valueOf(mild.verdict()));
+        check.that("quarantine-all covers everything flagged",
+                allRunner.actionTargets(allResult, "flagged").size()
+                        >= allRunner.actionTargets(allResult, "suspicious").size(),
+                "flagged=" + allRunner.actionTargets(allResult, "flagged").size()
+                        + " suspicious=" + allRunner.actionTargets(allResult, "suspicious").size());
+        host.type("quarantine-all");
+        ScanRunner.Result allPlanned = new ScanRunner(host).run();
+        check.that("quarantine-all plans rather than acting immediately",
+                new File(installed, "mild").isDirectory(), allPlanned.commandOutcome);
+        String allCode = codeFrom(allPlanned.commandOutcome);
+        check.that("quarantine-all issues a confirmation code",
+                allCode != null && allCode.length() > 0, allPlanned.commandOutcome);
+        host.type("confirm " + allCode);
+        ScanRunner.Result allConfirmed = new ScanRunner(host).run();
+        check.that("confirming quarantine-all moves the worth-a-look plugin aside",
+                !new File(installed, "mild").isDirectory(), allConfirmed.commandOutcome);
+
         // The scan is a snapshot. If the package changes before the action runs, act on nothing.
         writePlugin(new File(installed, "mutating"), "mutate.one", "Mutating", HOSTILE);
         ScanRunner.Result beforeMutation = new ScanRunner(host).run();

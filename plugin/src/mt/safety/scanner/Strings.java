@@ -272,7 +272,8 @@ public final class Strings {
     }
 
     public String commandsHelp() {
-        return pick("quarantine malicious / quarantine suspicious - move every flagged plugin aside,"
+        return pick("quarantine-all - move every flagged plugin aside, worth-a-look included."
+                + "quarantine malicious / quarantine suspicious - move every flagged plugin aside,"
                 + " reversibly.   remove malicious / remove suspicious - delete them for good."
                 + "   confirm CODE / cancel - go ahead with, or drop, the listed action."
                 + "   deep / fast - thorough or quick scanning."
@@ -401,6 +402,52 @@ public final class Strings {
         return pick("The command failed: " + reason, "\u547d\u4ee4\u6267\u884c\u5931\u8d25\uff1a" + reason);
     }
 
+    public String selectThis() {
+        return pick("Select for removal", "选中以便删除");
+    }
+
+    public String selectThisHelp() {
+        return pick("Nothing happens until you press the uninstall button.",
+                "在按下卸载按钮前不会执行任何操作。");
+    }
+
+    public String selectedOn() {
+        return pick("Selected. The uninstall button will delete this.",
+                "已选中，卸载按钮将删除它。");
+    }
+
+    public String uninstallButton(int count) {
+        return pick("Uninstall selected, quarantined and malicious (" + count + ")",
+                "卸载已选中、已隔离和恶意插件（" + count + "）");
+    }
+
+    public String uninstallButtonHelp() {
+        return pick("Deletes them for good. Quarantine first if you want it reversible.",
+                "永久删除。如需可恢复，请先隔离。");
+    }
+
+    public String uninstallTitle() {
+        return pick("Uninstall plugins?", "卸载插件？");
+    }
+
+    public String uninstallBody(int targets, int held) {
+        return pick("This deletes " + targets + " installed plugin(s) and clears " + held
+                        + " already in quarantine. It cannot be undone.",
+                "将删除 " + targets + " 个已安装插件，并清空隔离区的 "
+                        + held + " 个。此操作无法撤销。");
+    }
+
+    public String uninstalled(int removed, int purged) {
+        return pick("Uninstalled " + removed + ", cleared " + purged + " from quarantine. Restart MT Manager.",
+                "已卸载 " + removed + " 个，清理隔离区 " + purged
+                        + " 个。请重启 MT 管理器。");
+    }
+
+    public String nothingSelected() {
+        return pick("Nothing is selected, malicious or quarantined, so nothing was done.",
+                "没有已选中、恶意或已隔离的插件，未执行操作。");
+    }
+
     // ------------------------------------------------------------ v3 button UI
 
     public String actionsHeader() {
@@ -410,8 +457,14 @@ public final class Strings {
     /** Label for a "quarantine/remove all X (N)" button. */
     public String bulkButton(String action, String scope, int count) {
         String act = actionWord(action);
-        String kind = scope.equals("malicious")
-                ? pick("malicious", "\u6076\u610f") : pick("suspicious", "\u53ef\u7591");
+        String kind;
+        if (scope.equals("malicious")) {
+            kind = pick("malicious", "\u6076\u610f");
+        } else if (scope.equals("flagged")) {
+            kind = pick("flagged", "\u88ab\u6807\u8bb0\u7684");
+        } else {
+            kind = pick("suspicious", "\u53ef\u7591");
+        }
         return pick(act + " all " + kind + " (" + count + ")",
                 act + "\u6240\u6709" + kind + "\u63d2\u4ef6\uff08" + count + "\uff09");
     }

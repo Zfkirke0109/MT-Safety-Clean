@@ -280,6 +280,12 @@ public final class ArchiveRules {
             if (entry.directory || entry.size < ENTROPY_MIN_BYTES || budget.exhausted()) {
                 continue;
             }
+            // MT Manager compiles an installed plugin and writes the result beside the package,
+            // encrypted. High entropy there is MT Manager's own doing and says nothing about the
+            // plugin, so reporting it told every user their editor helper looked packed.
+            if (entry.name.startsWith(PluginPackage.BESIDE_PREFIX)) {
+                continue;
+            }
             try {
                 byte[] sample = pkg.read(entry, 128 * 1024, budget);
                 if (sample.length < ENTROPY_MIN_BYTES) {

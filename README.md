@@ -76,24 +76,24 @@ Each plugin gets a verdict and its findings, worst first, with the file and line
 
 ### Removing a flagged plugin
 
-**One at a time:** an installed plugin the scan flagged gets a tappable row under it. Tap it and a
-dialog offers **Quarantine** (move it aside; `restore` puts it back) or **Remove** (delete it for
-good), with Cancel. The action runs when you confirm the dialog, and the screen refreshes so the
-plugin drops off the list. Before it moves anything the scanner re-reads the package and refuses if it
-changed since the scan.
+**Pick and uninstall:** every plugin the scan flagged — "worth a look" included — gets a **Select for
+removal** switch under it. Turning one on does nothing by itself; it only marks the plugin. The
+**Uninstall selected, quarantined and malicious (N)** button at the top then deletes, in one go,
+everything you selected, everything the scan called malicious, and anything already sitting in
+quarantine. It confirms in a dialog listing exactly what it will delete, and before it touches
+anything it re-reads each package and refuses if it changed since the scan.
 
-The button is deliberately absent in three cases, and each is a refusal rather than an oversight: a
+Deleting is permanent. **Quarantine all flagged (N)** is the reversible version: it moves the same set
+aside so `restore` can put it back.
+
+The switch is deliberately absent in three cases, and each is a refusal rather than an oversight: a
 `.mtp` file sitting in a downloads folder is not installed, so there is nothing to move aside; a package
 the scan could not hash has no identity to bind the action to, so the screen will not act on something
 it cannot confirm is still the package it examined; and the scanner will not quarantine itself. Those
-are listed with `[ ? ]` or without a button, and the advice line says to judge them by hand.
+are listed with `[ ? ]` or without a switch, and the advice line says to judge them by hand.
 
-**Everything malicious at once:** a **Quarantine all malicious (N)** and a **Remove all malicious (N)**
-button sit at the top when the scan found any; a **Quarantine all suspicious (N)** button covers the
-wider net. Each opens a dialog listing exactly the plugins it would touch before it does anything.
-
-**By typed command (the same actions, without the dialogs):** type `quarantine malicious` (or
-`quarantine suspicious` for the wider net).
+**By typed command (the same actions, without the dialogs):** type `quarantine-all` to sweep
+everything flagged, or `quarantine malicious` / `quarantine suspicious` for the narrower sets.
 Nothing is moved yet — the screen comes back listing exactly which plugins it would touch and a short
 code:
 

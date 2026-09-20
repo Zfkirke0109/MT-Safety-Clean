@@ -153,12 +153,13 @@ Long Base64 runs are decoded and examined, one level deep:
 ## Acting on what is found
 
 Findings are only useful if something can be done with them, and the settings screen has no buttons, so
-acting happens through real controls. A tappable row under an installed plugin the scan flagged opens a
-dialog offering Quarantine, Remove or Cancel; a "Quarantine all malicious" / "Remove all malicious"
-button (and a "Quarantine all suspicious" one for the wider net) opens a dialog listing exactly the
-plugins it would touch. Before it moves anything the scanner re-reads the package and refuses if it
-changed since the scan. The same actions are available as typed commands (`quarantine malicious`,
-`remove suspicious`, ...) for anyone who prefers them.
+acting happens through real controls. Every plugin the scan flagged, "worth a look" included, gets a
+"Select for removal" switch, which only marks it. An "Uninstall selected, quarantined and malicious"
+button then deletes everything selected, everything malicious and anything already in quarantine, after
+confirming in a dialog that lists exactly what it will delete; a "Quarantine all flagged" button is the
+reversible version of the same sweep. Before it moves anything the scanner re-reads each package and
+refuses if it changed since the scan. The same actions are available as typed commands
+(`quarantine-all`, `quarantine malicious`, `remove suspicious`, ...) for anyone who prefers them.
 
 A control appears only where it can be honoured: not for a `.mtp` file in a downloads folder, which is
 not installed; not for a package the scan could not hash, because the action is bound to the contents it

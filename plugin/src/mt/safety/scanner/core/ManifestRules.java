@@ -81,10 +81,10 @@ public final class ManifestRules {
                     .withEvidence("manifest.json", "pluginID = " + manifest.pluginId));
         }
 
-        if (manifest.sdkVersion != 2 && manifest.sdkVersion != 3) {
+        if (manifest.sdkVersion < 1 || manifest.sdkVersion > 3) {
             report.add(new Signal("MFT005", Category.MANIFEST, Severity.LOW,
                     "Unrecognised pluginSdkVersion",
-                    "Known plugin SDK versions are 2 and 3. An unknown value may simply be newer than this"
+                    "Known plugin SDK versions are 1, 2 and 3. An unknown value may simply be newer than this"
                             + " scanner.")
                     .withEvidence("manifest.json", "pluginSdkVersion = " + manifest.sdkVersion));
         }
@@ -135,8 +135,13 @@ public final class ManifestRules {
                 }
             }
         }
-        boolean compiled = manifest.dexMode;
         boolean codeInView = hasSource || dexFiles > 0 || hasJar;
+        // MT Manager compiles a plugin on install and keeps the result beside the package, as an
+        // encrypted file it calls "code"; the installed plugin.mtp is left holding only the manifest
+        // and assets. That is true of v1 and v2 source plugins as much as v3 ones, so for any
+        // installed package with no code in view, the absence is MT Manager's layout and not the
+        // plugin's. A loose download with declared classes and no code at all is a different matter.
+        boolean codeKeptByHost = !codeInView && pkg.installed();
 
         List<String> missing = new java.util.ArrayList<String>();
         List<String> unverifiable = new java.util.ArrayList<String>();
@@ -155,9 +160,8 @@ public final class ManifestRules {
             if (dexFiles > 0 && dexStrings.contains("L" + className.replace('.', '/') + ";")) {
                 continue;
             }
-            if (compiled && dexFiles == 0) {
-                // Nothing to check against: MT Manager installs a v3 plugin's dex beside the
-                // package rather than inside it. Not a finding.
+            if (codeKeptByHost) {
+                // Nothing to check against, and nothing to hold against the plugin.
                 continue;
             }
             if (dexFiles == 0 && hasJar && !hasSource) {
@@ -192,12 +196,12 @@ public final class ManifestRules {
             }
             report.add(signal);
         }
-        if (compiled && dexFiles == 0 && !manifest.declaredClasses().isEmpty()) {
+        if (codeKeptByHost && !manifest.declaredClasses().isEmpty()) {
             report.add(new Signal("MFT013", Category.MANIFEST, Severity.INFO,
                     "Compiled code is kept outside the package",
-                    "This is a compiled (v3) plugin, and MT Manager keeps its code beside the installed"
-                            + " package rather than inside it. The code was not in view of this scan, so"
-                            + " findings here rest on the manifest and assets."));
+                    "MT Manager compiles an installed plugin and keeps the result beside the package"
+                            + " rather than inside it, encrypted. The code was not in view of this scan,"
+                            + " so findings here rest on the manifest and assets."));
         }
 
         if (manifest.declaredClasses().isEmpty() && codeInView) {

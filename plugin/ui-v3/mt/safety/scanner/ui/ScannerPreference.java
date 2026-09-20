@@ -67,15 +67,19 @@ public class ScannerPreference implements PluginPreference {
         });
 
         int malicious = runner.actionTargets(result, "malicious").size();
-        int suspicious = runner.actionTargets(result, "suspicious").size();
-        if (malicious > 0 || suspicious > 0) {
+        int flagged = runner.actionTargets(result, "flagged").size();
+        int pending = runner.uninstallTargets(result).size();
+        int held = runner.quarantinedCount();
+        if (flagged > 0 || pending > 0 || held > 0) {
             builder.addHeader(safe(strings.actionsHeader()));
+            // The button the switches below feed into. Shown even at zero, so the count is visible
+            // as switches are turned on and it is obvious what they are for.
+            addUninstallButton(builder, pending, held);
+            if (flagged > 0) {
+                addBulkButton(builder, "flagged", false, flagged);
+            }
             if (malicious > 0) {
                 addBulkButton(builder, "malicious", true, malicious);
-                addBulkButton(builder, "malicious", false, malicious);
-            }
-            if (suspicious > malicious) {
-                addBulkButton(builder, "suspicious", false, suspicious);
             }
         }
 
@@ -90,6 +94,50 @@ public class ScannerPreference implements PluginPreference {
         builder.addText(safe(strings.commandsHelpTitle())).summary(safe(strings.commandsHelp()));
 
         renderRows(builder, result.aboutRows);
+    }
+
+    /**
+     * The uninstall button: deletes everything selected by a switch, everything the scan called
+     * malicious, and everything already sitting in quarantine.
+     */
+    private void addUninstallButton(Builder builder, final int targets, final int held) {
+        builder.addText(safe(strings.uninstallButton(targets + held)))
+                .summary(safe(strings.uninstallButtonHelp()))
+                .onClick(new OnTextItemClickListener() {
+                    @Override
+                    public void onClick(PluginUI ui, PreferenceItem item) {
+                        confirmUninstall(ui, targets, held);
+                    }
+                });
+    }
+
+    private void confirmUninstall(final PluginUI ui, int targets, int held) {
+        StringBuilder names = new StringBuilder();
+        java.util.List<ScanReport> list = runner.uninstallTargets(result);
+        for (int i = 0; i < list.size() && i < 12; i++) {
+            if (names.length() > 0) {
+                names.append('\n');
+            }
+            names.append("\u2022 ").append(safe(list.get(i).manifest.displayName()));
+        }
+        if (list.size() > 12) {
+            names.append('\n').append(safe(strings.andMore(list.size() - 12)));
+        }
+        String body = strings.uninstallBody(targets, held);
+        if (names.length() > 0) {
+            body = body + "\n\n" + names;
+        }
+        ui.buildDialog()
+                .setTitle(safe(strings.uninstallTitle()))
+                .setMessage(safe(body))
+                .setPositiveButton(safe(strings.confirmAct(true)), new PluginDialog.OnClickListener() {
+                    @Override
+                    public void onClick(PluginDialog dialog, int which) {
+                        finishAction(ui, runner.uninstallSelection(result));
+                    }
+                })
+                .setNegativeButton(safe(strings.cancel()), null)
+                .show();
     }
 
     /** A "Quarantine/Remove all X (N)" button that confirms in a dialog before acting. */
@@ -130,32 +178,6 @@ public class ScannerPreference implements PluginPreference {
                 .show();
     }
 
-    /** One flagged plugin's row: a button that opens a Quarantine / Remove / Cancel dialog. */
-    private void addPluginButton(Builder builder, final ScanReport report, String title, String summary) {
-        builder.addText(safe(title)).summary(safe(summary)).onClick(new OnTextItemClickListener() {
-            @Override
-            public void onClick(PluginUI ui, PreferenceItem item) {
-                ui.buildDialog()
-                        .setTitle(safe(report.manifest.displayName()))
-                        .setMessage(safe(strings.actOneBody(report.verdict().label())))
-                        .setPositiveButton(safe(strings.confirmAct(false)), new PluginDialog.OnClickListener() {
-                            @Override
-                            public void onClick(PluginDialog dialog, int which) {
-                                finishAction(ui, runner.actOnOne(result, report, false));
-                            }
-                        })
-                        .setNeutralButton(safe(strings.confirmAct(true)), new PluginDialog.OnClickListener() {
-                            @Override
-                            public void onClick(PluginDialog dialog, int which) {
-                                finishAction(ui, runner.actOnOne(result, report, true));
-                            }
-                        })
-                        .setNegativeButton(safe(strings.cancel()), null)
-                        .show();
-            }
-        });
-    }
-
     /** Reports the outcome and rebuilds the screen so acted-on plugins drop off the list. */
     private void finishAction(PluginUI ui, String outcome) {
         if (outcome != null && outcome.length() > 0) {
@@ -179,8 +201,13 @@ public class ScannerPreference implements PluginPreference {
             ScanRunner.Row row = rows.get(i);
             if (row.header) {
                 builder.addHeader(safe(row.title));
-            } else if (row.toggle && row.report != null) {
-                addPluginButton(builder, row.report, row.title, row.summary);
+            } else if (row.toggle && row.key != null) {
+                // A switch, not an action: it marks this plugin for the uninstall button. Nothing
+                // happens while the screen is open, so one touched by accident can be turned off.
+                builder.addSwitch(safe(row.title), row.key)
+                        .defaultValue(false)
+                        .summaryOn(safe(strings.selectedOn()))
+                        .summaryOff(safe(row.summary));
             } else {
                 builder.addText(safe(row.title)).summary(safe(row.summary));
             }

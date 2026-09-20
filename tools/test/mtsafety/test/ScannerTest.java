@@ -600,6 +600,82 @@ public final class ScannerTest {
                 evilReport.hasRule("SEN001") && evilReport.hasRule("NET003") && evilReport.hasRule("EXE001"),
                 summarise(evilReport));
 
+        // The second device report: 22 clean, but eight plugins sat at "worth a look" for reasons
+        // that were all MT Manager's own doing rather than the plugin's. Each is pinned here.
+
+        // Six of the eight: an installed package MT Manager compiled, keeping the result beside it.
+        // The manifest still declares its classes and the package no longer contains them.
+        java.util.Map<String, byte[]> hostKept = new java.util.LinkedHashMap<String, byte[]>();
+        hostKept.put("manifest.json", Fixtures.bytes(
+                "{\"pluginSdkVersion\": 2, \"pluginID\": \"com.hand.mtplugin\", \"versionCode\": 1,"
+                        + " \"versionName\": \"v1.0\", \"name\": \"Unicode\", \"description\": \"d\","
+                        + " \"mainPreference\": \"com.hand.mtplugin.Preference\","
+                        + " \"interfaces\": [\"com.hand.mtplugin.UnicodeTranslationEngine\"]}"));
+        hostKept.put("assets/strings.mtl", Fixtures.bytes("k: v\n"));
+        java.util.Map<String, byte[]> compiledBeside = new java.util.LinkedHashMap<String, byte[]>();
+        compiledBeside.put("code", Fixtures.highEntropy(190 * 1024));
+        File hostKeptPlugin = fixtures.installedArchive("com.hand.mtplugin", hostKept, compiledBeside);
+        ScanReport hostKeptReport = new PluginScanner(IocDatabase.empty())
+                .scan(hostKeptPlugin, ScanBudget.unlimited());
+        check("a plugin whose code MT Manager keeps beside the package is clean, not worth a look",
+                hostKeptReport.verdict() == Verdict.CLEAN,
+                hostKeptReport.verdict() + " :: " + summarise(hostKeptReport));
+        check("its declared classes are not reported as missing",
+                !hostKeptReport.hasRule("MFT006"), summarise(hostKeptReport));
+        check("and MT Manager's own encrypted output is not called a packed member",
+                !hostKeptReport.hasRule("ARC007"), summarise(hostKeptReport));
+
+        // A loose download that declares classes and ships no code at all is still reported: there
+        // the absence is the package's own, not the host's.
+        java.util.Map<String, byte[]> hollow = new java.util.LinkedHashMap<String, byte[]>();
+        hollow.put("manifest.json", Fixtures.bytes(
+                "{\"pluginSdkVersion\": 2, \"pluginID\": \"x.hollow\", \"versionCode\": 1,"
+                        + " \"versionName\": \"v1\", \"name\": \"Hollow\", \"description\": \"d\","
+                        + " \"interfaces\": [\"x.hollow.Engine\"]}"));
+        hollow.put("assets/note.txt", Fixtures.bytes("nothing here"));
+        ScanReport hollowReport = scan(fixtures.rawArchive("hollow.mtp", hollow, false));
+        check("a download that declares a class and ships no code is still reported",
+                hollowReport.hasRule("MFT006"), summarise(hollowReport));
+
+        // JavaSmali declares pluginSdkVersion 1, which is a real MT generation, not an unknown one.
+        check("plugin SDK version 1 is recognised",
+                !hostKeptReport.hasRule("MFT005"), summarise(hostKeptReport));
+
+        // Markdown Preview bundles mermaid.min.js: an inline data: URI image and an XML namespace URL.
+        java.util.Map<String, byte[]> bundled = new java.util.LinkedHashMap<String, byte[]>();
+        StringBuilder blob = new StringBuilder("var logo=\"data:image/png;base64,");
+        for (int i = 0; i < 700; i++) {
+            blob.append("iVBORw0KGgoAAAANSUhEUg".charAt(i % 22));
+        }
+        blob.append("\";var ns=\"http://www.eclipse.org/elk/ElkGraph\";");
+        bundled.put("manifest.json", Fixtures.bytes(
+                "{\"pluginSdkVersion\": 3, \"dexMode\": true, \"pluginID\": \"com.md.preview\","
+                        + " \"versionCode\": 1, \"versionName\": \"1.0.0\", \"name\": \"Markdown Preview\","
+                        + " \"description\": \"d\", \"interfaces\": []}"));
+        java.util.Map<String, byte[]> mermaid = new java.util.LinkedHashMap<String, byte[]>();
+        mermaid.put("files/mermaid-v10.min.js", Fixtures.bytes(blob.toString()));
+        File bundledPlugin = fixtures.installedArchive("com.md.preview.v2", bundled, mermaid);
+        ScanReport bundledReport = new PluginScanner(IocDatabase.empty())
+                .scan(bundledPlugin, ScanBudget.unlimited());
+        check("an inline data: URI image in a bundled library is not an encoded payload",
+                !bundledReport.hasRule("OBF002"), summarise(bundledReport));
+        check("an XML namespace URL is not a plain-HTTP finding",
+                !bundledReport.hasRule("NET005"), summarise(bundledReport));
+
+        // The exception is narrow: a bare Base64 blob with no data: URI in front of it still reports.
+        java.util.Map<String, byte[]> bare = new java.util.LinkedHashMap<String, byte[]>();
+        StringBuilder raw = new StringBuilder("String payload = \"");
+        for (int i = 0; i < 700; i++) {
+            raw.append("QUJDREVGR0hJSktMTU5PUFFSU1RVVld".charAt(i % 31));
+        }
+        raw.append("\";");
+        bare.put("manifest.json",
+                Fixtures.bytes(Fixtures.manifest("x.bareblob", "Bare", "demo.A")));
+        bare.put("src/demo/A.java", Fixtures.bytes("package demo;\npublic class A { " + raw + " }\n"));
+        ScanReport bareReport = scan(fixtures.rawArchive("bare-blob.mtp", bare, false));
+        check("a Base64 blob that is not part of a data: URI is still reported",
+                bareReport.hasRule("OBF002"), summarise(bareReport));
+
         // Every one of these is a real, distinct plugin; none is a lookalike of another.
         List<File> all = new ArrayList<File>();
         all.add(translator);

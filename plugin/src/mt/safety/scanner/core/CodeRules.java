@@ -300,7 +300,14 @@ public final class CodeRules {
                 continue;
             }
             Matcher matcher = indicator.pattern.matcher(text);
-            if (!matcher.find()) {
+            boolean found = false;
+            while (matcher.find()) {
+                if (!indicator.excludedAt(text, matcher.start())) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
                 continue;
             }
             Signal signal = signalFor(report, byRule, indicator.ruleId, indicator.category,

@@ -47,6 +47,11 @@ public final class CodePatterns {
         INDICATORS.add(new Indicator(id, category, severity, title, detail, regex, scope));
     }
 
+    private static void add(String id, Category category, Severity severity, String title, String detail,
+            String regex, Scope scope, String notPrecededBy) {
+        INDICATORS.add(new Indicator(id, category, severity, title, detail, regex, scope, notPrecededBy));
+    }
+
     private static void pair(String id, Category category, Severity severity, String title, String detail,
             String first, String second, Scope scope) {
         PAIRS.add(new PairIndicator(id, category, severity, title, detail, first, second, scope));
@@ -162,7 +167,7 @@ public final class CodePatterns {
                 "Unencrypted transport, so anything sent is readable on the network path.",
                 "\"http://(?!localhost|127\\.0\\.0\\.1|(www\\.)?w3\\.org|schemas\\.|purl\\.org|ns\\.adobe\\.com|xml\\.|xmlns\\."
                         + "|java\\.sun\\.com|(www\\.)?apache\\.org|(www\\.)?iptc\\.org|xmlpull\\.org|creativecommons\\.org"
-                        + "|(www\\.)?gnu\\.org|opensource\\.org|(www\\.)?ietf\\.org|json-schema\\.org|namespaces\\.)",
+                        + "|(www\\.)?gnu\\.org|opensource\\.org|(www\\.)?ietf\\.org|json-schema\\.org|namespaces\\.|(www\\.)?eclipse\\.org)",
                 Scope.ANY);
 
         add("NET006", Category.NETWORK, Severity.MEDIUM,
@@ -281,7 +286,10 @@ public final class CodePatterns {
                 "Embeds a long encoded blob",
                 "A large Base64 or hex blob in source is usually a payload rather than data.",
                 "[A-Za-z0-9+/]{512,}={0,2}|(\\\\u00[0-9a-f]{2}){12,}|(0x[0-9a-f]{2}\\s*,\\s*){24,}",
-                Scope.ANY);
+                Scope.ANY,
+                // An inline data: URI is an embedded image or font, not a hidden payload. Minified
+                // libraries carry dozens, and reporting them made a Markdown previewer look packed.
+                ";base64,\\s*$");
 
         add("OBF003", Category.OBFUSCATION, Severity.HIGH,
                 "Uses bidirectional or invisible Unicode in source",
