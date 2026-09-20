@@ -26,6 +26,17 @@ public final class ScanBudget {
         return new ScanBudget(20000L, 256L * 1024 * 1024);
     }
 
+    /**
+     * A budget for walking files rather than plugin packages.
+     *
+     * <p>Wider than a plugin scan because there are more files and they are larger; still bounded,
+     * because it runs on MT Manager's UI thread and the folders it walks are whatever the device
+     * holds. The deep variant is for when the user has asked to wait.
+     */
+    public static ScanBudget files(boolean deep) {
+        return deep ? new ScanBudget(90000L, 1024L * 1024 * 1024) : new ScanBudget(6000L, 64L * 1024 * 1024);
+    }
+
     /** An effectively unlimited budget, for offline command line use and tests. */
     public static ScanBudget unlimited() {
         return new ScanBudget(Long.MAX_VALUE / 4, Long.MAX_VALUE / 4);

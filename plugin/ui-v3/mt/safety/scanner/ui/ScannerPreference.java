@@ -86,6 +86,9 @@ public class ScannerPreference implements PluginPreference {
         renderRows(builder, result.rows);
 
         builder.addHeader(safe(strings.commandsHeader()));
+        // The file scan: the same signatures the plugin scan uses, run over the folders MT Manager
+        // can read. Offered here rather than under Actions because it changes nothing; it reports.
+        addFileScanButton(builder);
         builder.addSwitch(safe(strings.deepSwitchTitle()), ScanRunner.KEY_DEEP)
                 .defaultValue(false)
                 .summaryOn(safe(strings.deepOn()))
@@ -175,6 +178,82 @@ public class ScannerPreference implements PluginPreference {
                     }
                 })
                 .setNegativeButton(safe(strings.cancel()), null)
+                .show();
+    }
+
+    /**
+     * A button that checks the files this plugin can read against the loaded malware signatures.
+     *
+     * <p>With no signatures loaded the row still appears, saying what it needs: a button that only
+     * shows up once the user has done the thing it depends on is a button they never find.
+     */
+    private void addFileScanButton(Builder builder) {
+        final int signatures = runner.signatureCount();
+        builder.addText(safe(strings.filesButton()))
+                .summary(safe(strings.filesButtonHelp(signatures)))
+                .onClick(new OnTextItemClickListener() {
+                    @Override
+                    public void onClick(PluginUI ui, PreferenceItem item) {
+                        if (signatures == 0) {
+                            ui.showToast(safe(strings.noSignatures()));
+                            return;
+                        }
+                        confirmFileScan(ui, signatures);
+                    }
+                });
+    }
+
+    private void confirmFileScan(final PluginUI ui, int signatures) {
+        StringBuilder roots = new StringBuilder();
+        java.util.List<File> list = runner.fileScanRoots();
+        for (int i = 0; i < list.size() && i < 8; i++) {
+            if (roots.length() > 0) {
+                roots.append('\n');
+            }
+            roots.append("\u2022 ").append(list.get(i).getAbsolutePath());
+        }
+        if (list.size() > 8) {
+            roots.append('\n').append(safe(strings.andMore(list.size() - 8)));
+        }
+        boolean deep = false;
+        try {
+            SharedPreferences prefs = context.getPreferences();
+            deep = prefs != null && prefs.getBoolean(ScanRunner.KEY_DEEP, false);
+        } catch (RuntimeException e) {
+            // A missing preference store means the quick scan, which is the safe default.
+        }
+        ui.buildDialog()
+                .setTitle(safe(strings.filesConfirmTitle()))
+                .setMessage(safe(strings.filesConfirmBody(roots.toString(), signatures, deep)))
+                .setPositiveButton(safe(strings.scanAction()), new PluginDialog.OnClickListener() {
+                    @Override
+                    public void onClick(PluginDialog dialog, int which) {
+                        runFileScan(ui);
+                    }
+                })
+                .setNegativeButton(safe(strings.cancel()), null)
+                .show();
+    }
+
+    /** Runs the scan and shows what it found in a dialog; the screen itself needs no rebuild. */
+    private void runFileScan(PluginUI ui) {
+        java.util.List<String> hits = new java.util.ArrayList<String>();
+        String outcome;
+        try {
+            outcome = runner.scanFiles("", hits);
+        } catch (RuntimeException e) {
+            context.log("file scan failed", e);
+            outcome = strings.commandFailed(String.valueOf(e.getMessage()));
+        }
+        context.log("file scan: " + outcome);
+        StringBuilder body = new StringBuilder(outcome);
+        for (int i = 0; i < hits.size(); i++) {
+            body.append("\n\n").append(hits.get(i));
+        }
+        ui.buildDialog()
+                .setTitle(safe(strings.filesResultTitle()))
+                .setMessage(safe(body.toString()))
+                .setPositiveButton(safe(strings.dismiss()), null)
                 .show();
     }
 

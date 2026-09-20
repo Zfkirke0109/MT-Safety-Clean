@@ -52,12 +52,14 @@ public final class ScannerTest {
         regressions(fixtures);
         realDeviceReport(fixtures);
         definitionProvenance();
-        ActionsTest.run(new ActionsTest.Checker() {
+        ActionsTest.Checker checker = new ActionsTest.Checker() {
             @Override
             public void that(String description, boolean condition, String context) {
                 check(description, condition, context);
             }
-        });
+        };
+        SignatureTest.run(checker, fixtures);
+        ActionsTest.run(checker);
 
         System.out.println();
         System.out.println(passed + " checks passed, " + failures.size() + " failed");

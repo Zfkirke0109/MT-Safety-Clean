@@ -2,10 +2,10 @@
   "minAndroidVersion": 24,
   "pluginSdkVersion": 3,
   "pluginID": "mt.safety.scanner",
-  "versionCode": 2,
-  "versionName": "v2.0",
+  "versionCode": 3,
+  "versionName": "v2.1",
   "name": "Plugin Safety Scanner / 插件安全扫描",
-  "description": "Scans the MT Manager plugins installed on this device and reports what each one is able to do, then lets you quarantine or remove the malicious ones with a tap. Open this plugin's settings screen to scan. / 扫描本机已安装的 MT 管理器插件，报告每个插件的实际能力，并可一键隔离或删除恶意插件。打开本插件设置页即开始扫描。",
+  "description": "Scans the MT Manager plugins installed on this device and reports what each one is able to do, checks them and the files MT Manager can read against ClamAV-format malware signatures you load, then lets you quarantine or remove the malicious ones with a tap. Open this plugin's settings screen to scan. / 扫描本机已安装的 MT 管理器插件，报告每个插件的实际能力，用您导入的 ClamAV 格式特征库检查插件及 MT 管理器可读取的文件，并可一键隔离或删除恶意插件。打开本插件设置页即开始扫描。",
   "interfaces": [],
   "mainPreference": "mt.safety.scanner.ui.ScannerPreference",
   "dexMode": true

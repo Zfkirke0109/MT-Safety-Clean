@@ -63,4 +63,42 @@ public final class Dates {
         }
         return Math.floorDiv(nowMillis, 86400000L) - then;
     }
+
+    /**
+     * The ISO {@code yyyy-MM-dd} date of an instant, in UTC.
+     *
+     * <p>The inverse of {@link #epochDay}, for showing when a signature file was last written. UTC
+     * rather than the device zone, because a date that shifts by a day depending on where the phone
+     * is would be a strange thing to compare against a report.
+     */
+    public static String isoDate(long epochMillis) {
+        long z = Math.floorDiv(epochMillis, 86400000L) + 719468;
+        long era = (z >= 0 ? z : z - 146096) / 146097;
+        long dayOfEra = z - era * 146097;
+        long yearOfEra = (dayOfEra - dayOfEra / 1460 + dayOfEra / 36524 - dayOfEra / 146096) / 365;
+        long year = yearOfEra + era * 400;
+        long dayOfYear = dayOfEra - (365 * yearOfEra + yearOfEra / 4 - yearOfEra / 100);
+        long mp = (5 * dayOfYear + 2) / 153;
+        long day = dayOfYear - (153 * mp + 2) / 5 + 1;
+        long month = mp < 10 ? mp + 3 : mp - 9;
+        if (month <= 2) {
+            year++;
+        }
+        StringBuilder sb = new StringBuilder(10);
+        sb.append(year).append('-');
+        if (month < 10) {
+            sb.append('0');
+        }
+        sb.append(month).append('-');
+        if (day < 10) {
+            sb.append('0');
+        }
+        sb.append(day);
+        return sb.toString();
+    }
+
+    /** Whole days from one instant to another. */
+    public static long daysBetween(long thenMillis, long nowMillis) {
+        return Math.floorDiv(nowMillis, 86400000L) - Math.floorDiv(thenMillis, 86400000L);
+    }
 }

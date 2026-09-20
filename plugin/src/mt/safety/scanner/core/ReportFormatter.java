@@ -118,6 +118,11 @@ public final class ReportFormatter {
 
     /** The full set of reports as text, for export or sharing. */
     public static String plainText(List<ScanReport> reports) {
+        return plainText(reports, null);
+    }
+
+    /** As {@link #plainText(List)}, also stating which signature database the scan ran with. */
+    public static String plainText(List<ScanReport> reports, SignatureDatabase signatures) {
         StringBuilder sb = new StringBuilder();
         sb.append("MT Manager plugin safety report\n");
         // Which rules produced this. A report read months later, or by someone else, is only
@@ -125,6 +130,7 @@ public final class ReportFormatter {
         sb.append("Rules   : catalogue v").append(CodePatterns.CATALOGUE_VERSION)
                 .append(" of ").append(CodePatterns.CATALOGUE_DATE)
                 .append(" (").append(CodePatterns.ruleCount()).append(" rules)\n");
+        sb.append("Signatures: ").append(signatureLine(signatures)).append('\n');
         sb.append(overview(reports)).append("\n\n");
         for (int i = 0; i < reports.size(); i++) {
             sb.append(plainText(reports.get(i))).append('\n');
@@ -136,11 +142,22 @@ public final class ReportFormatter {
 
     /** Machine-readable form, for keeping a record or diffing across scans. */
     public static String json(List<ScanReport> reports) {
+        return json(reports, null);
+    }
+
+    /** As {@link #json(List)}, also recording the signature database the scan ran with. */
+    public static String json(List<ScanReport> reports, SignatureDatabase signatures) {
         StringBuilder sb = new StringBuilder();
         sb.append("{\n  \"catalogue\": {\"version\": ")
                 .append(CodePatterns.CATALOGUE_VERSION)
                 .append(", \"date\": ").append(Json.quote(CodePatterns.CATALOGUE_DATE))
                 .append(", \"rules\": ").append(CodePatterns.ruleCount()).append("},\n");
+        SignatureDatabase db = signatures == null ? SignatureDatabase.empty() : signatures;
+        sb.append("  \"signatures\": {\"files\": ").append(db.fileCount())
+                .append(", \"hashes\": ").append(db.hashCount())
+                .append(", \"patterns\": ").append(db.patternCount())
+                .append(", \"newest\": ").append(Json.quote(db.fileCount() == 0 ? "" : Dates.isoDate(db.newestMillis())))
+                .append("},\n");
         sb.append("  \"reports\": [\n");
         for (int i = 0; i < reports.size(); i++) {
             appendReport(sb, reports.get(i));
@@ -183,6 +200,75 @@ public final class ReportFormatter {
             sb.append(i + 1 < signals.size() ? ",\n" : "\n");
         }
         sb.append("      ]\n    }");
+    }
+
+    /** One line saying what signature database, if any, a scan ran with. */
+    public static String signatureLine(SignatureDatabase signatures) {
+        if (signatures == null || signatures.fileCount() == 0) {
+            return "none loaded";
+        }
+        StringBuilder sb = new StringBuilder();
+        sb.append(signatures.fileCount()).append(signatures.fileCount() == 1 ? " file, " : " files, ")
+                .append(signatures.hashCount()).append(" hash signatures, ")
+                .append(signatures.patternCount()).append(" byte patterns, newest dated ")
+                .append(Dates.isoDate(signatures.newestMillis()));
+        if (signatures.unsupportedCount() > 0) {
+            sb.append(", ").append(signatures.unsupportedCount()).append(" entries unsupported");
+        }
+        if (signatures.cappedCount() > 0) {
+            sb.append(", ").append(signatures.cappedCount()).append(" entries over the cap");
+        }
+        return sb.toString();
+    }
+
+    /** The full text of a file scan: what was walked, how far it got, and every hit. */
+    public static String fileScanText(FileScanner.Result scan, SignatureDatabase signatures) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("MT Manager file scan\n");
+        sb.append("Signatures: ").append(signatureLine(signatures)).append('\n');
+        sb.append("Folders : ");
+        for (int i = 0; i < scan.roots.size(); i++) {
+            sb.append(i > 0 ? "  " : "").append(scan.roots.get(i));
+        }
+        sb.append('\n');
+        sb.append("Checked : ").append(scan.filesScanned).append(" of ").append(scan.filesSeen)
+                .append(" files, ").append(Bytes.humanSize(scan.bytesRead)).append(" read, ")
+                .append(scan.archivesOpened).append(" archives opened, ")
+                .append(scan.elapsedMs).append(" ms");
+        switch (scan.stoppedBecause) {
+            case BUDGET:
+                sb.append(" (stopped: scan budget exhausted)");
+                break;
+            case COUNT:
+                sb.append(" (stopped: more files than the walk will visit)");
+                break;
+            case HITS:
+                sb.append(" (stopped: hit limit reached)");
+                break;
+            default:
+                break;
+        }
+        sb.append('\n');
+        if (scan.hits.isEmpty()) {
+            sb.append("\nNo file matched a signature.\n");
+        } else {
+            sb.append("\nMatches (").append(scan.hits.size()).append("):\n");
+            for (int i = 0; i < scan.hits.size(); i++) {
+                FileScanner.Hit hit = scan.hits.get(i);
+                sb.append(hit.pua ? "[!! ] " : "[!!!] ").append(hit.signature)
+                        .append(hit.hash ? "  (hash)  " : "  (pattern)  ")
+                        .append(hit.location()).append("  ").append(Bytes.humanSize(hit.size)).append('\n');
+            }
+        }
+        if (!scan.problems.isEmpty()) {
+            sb.append("\nProblems during the scan:\n");
+            for (int i = 0; i < scan.problems.size(); i++) {
+                sb.append("  - ").append(scan.problems.get(i)).append('\n');
+            }
+        }
+        sb.append("\nA signature match names a file that a database you loaded classifies as malicious"
+                + " or unwanted. Nothing has been deleted; the path above is where to look.\n");
+        return sb.toString();
     }
 
     private static String nonEmpty(String value, String fallback) {

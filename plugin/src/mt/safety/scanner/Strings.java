@@ -272,8 +272,10 @@ public final class Strings {
     }
 
     public String commandsHelp() {
-        return pick("definitions - where the rules came from and how old they are."
-                + " import PATH - fold in an indicator list you obtained yourself."
+        return pick("definitions - where the rules and signatures came from and how old they are."
+                + "   import PATH - fold in an indicator list, or add a ClamAV-format signature file"
+                + " (.hdb, .hsb, .ndb)."
+                + "   files [PATH] - check the files this plugin can read against the loaded signatures."
                 + "   "
                 + "quarantine-all - move every flagged plugin aside, worth-a-look included."
                 + "quarantine malicious / quarantine suspicious - move every flagged plugin aside,"
@@ -286,7 +288,11 @@ public final class Strings {
                 + "   quarantine ID - move an installed plugin aside, reversibly."
                 + "   restore ID, purge ID, quarantined - manage what was moved."
                 + "   root PATH - also search a folder.",
-                "quarantine malicious / quarantine suspicious - \u53ef\u6062\u590d\u5730\u6279"
+                "definitions - 规则与特征库的来源及时效。"
+                + "   import 路径 - 导入指标清单，或添加 ClamAV 格式特征库文件（.hdb、.hsb、.ndb）。"
+                + "   files [路径] - 用已加载的特征库检查本插件可读取的文件。"
+                + "   quarantine-all - 隔离所有被标记的插件，包括“值得一看”。"
+                + "   quarantine malicious / quarantine suspicious - \u53ef\u6062\u590d\u5730\u6279"
                 + "\u91cf\u9694\u79bb\u6240\u6709\u88ab\u6807\u8bb0\u7684\u63d2\u4ef6\u3002"
                 + "   remove malicious / remove suspicious - \u5f7b\u5e95\u5220\u9664\u3002"
                 + "   confirm CODE / cancel - \u786e\u8ba4\u6216\u53d6\u6d88\u5df2\u5217\u51fa"
@@ -588,5 +594,150 @@ public final class Strings {
 
     private String actionWord(String action) {
         return action.equals("remove") ? pick("Remove", "\u5220\u9664") : pick("Quarantine", "\u9694\u79bb");
+    }
+
+    // ------------------------------------------------------------- signatures and file scans
+
+    public String signatureTitle() {
+        return pick("Malware signatures (ClamAV format)", "恶意软件特征库（ClamAV 格式）");
+    }
+
+    /** What is loaded and how old it is; or, with no files, how to get some. */
+    public String signatureLine(int files, int hashes, int patterns, String newest, long ageDays,
+            int unsupported, int capped) {
+        if (files == 0) {
+            return pick("None loaded. Import a ClamAV-format .hdb, .hsb or .ndb file with \"import PATH\";"
+                            + " the README says where to get one and how to keep it small enough for a phone.",
+                    "未加载。可用 \"import 路径\" 导入 ClamAV 格式的 .hdb、.hsb 或 .ndb 文件；"
+                            + "README 说明了获取方式，以及如何精简到手机可承受的大小。");
+        }
+        StringBuilder en = new StringBuilder();
+        en.append(files).append(files == 1 ? " file: " : " files: ").append(hashes)
+                .append(" hash signatures, ").append(patterns).append(" byte patterns. Newest file dated ")
+                .append(newest).append(" (").append(age(ageDays)).append(").");
+        StringBuilder zh = new StringBuilder();
+        zh.append(files).append(" 个文件：").append(hashes).append(" 条哈希特征、").append(patterns)
+                .append(" 条字节模式。最新文件日期 ").append(newest).append("（").append(age(ageDays)).append("）。");
+        if (unsupported > 0) {
+            en.append(' ').append(unsupported).append(" entries use syntax this scanner does not read.");
+            zh.append(' ').append(unsupported).append(" 条使用了本扫描器不支持的语法。");
+        }
+        if (capped > 0) {
+            en.append(' ').append(capped).append(" entries were not loaded because a cap was reached.");
+            zh.append(' ').append(capped).append(" 条因超出上限未加载。");
+        }
+        return pick(en.toString(), zh.toString());
+    }
+
+    public String signatureFolder() {
+        return pick("Signature folder (drop ClamAV-format files here, or use import)",
+                "特征库目录（可将 ClamAV 格式文件放入此处，或使用 import）");
+    }
+
+    public String signatureProblems(int count, String first) {
+        return pick("Problems loading signatures (" + count + "): " + first,
+                "加载特征库时出现 " + count + " 个问题：" + first);
+    }
+
+    public String signaturesImported(String name, int hashes, int patterns, int unsupported, boolean replaced) {
+        String en = (replaced ? "Updated " : "Added ") + name + ": " + hashes + " hash signatures, "
+                + patterns + " byte patterns" + (unsupported > 0 ? ", " + unsupported + " entries skipped" : "")
+                + ". Reopen this screen to scan with it.";
+        String zh = (replaced ? "已更新 " : "已添加 ") + name + "：" + hashes + " 条哈希特征、"
+                + patterns + " 条字节模式" + (unsupported > 0 ? "，跳过 " + unsupported + " 条" : "")
+                + "。重新打开本页即可用它扫描。";
+        return pick(en, zh);
+    }
+
+    public String signaturesEmptyImport(String name) {
+        return pick("No usable signatures in " + name + ". It should be a ClamAV-format .hdb, .hsb or .ndb"
+                        + " text file; a packed .cvd must be unpacked first with sigtool.",
+                name + " 中没有可用的特征。应为 ClamAV 格式的 .hdb、.hsb 或 .ndb 文本文件；"
+                        + "打包的 .cvd 需先用 sigtool 解包。");
+    }
+
+    public String noSignatures() {
+        return pick("No signature files are loaded, so there is nothing to check files against. Import a"
+                        + " ClamAV-format .hdb, .hsb or .ndb file first.",
+                "尚未加载任何特征库，无法检查文件。请先导入 ClamAV 格式的 .hdb、.hsb 或 .ndb 文件。");
+    }
+
+    public String filesHeader() {
+        return pick("Files matching a signature", "命中特征的文件");
+    }
+
+    public String filesSummary(int scanned, int seen, String bytes, long ms, int hits) {
+        return pick("Checked " + scanned + " of " + seen + " files (" + bytes + ") in " + ms + " ms: "
+                        + hits + (hits == 1 ? " match." : " matches."),
+                "已检查 " + scanned + " / " + seen + " 个文件（" + bytes + "），用时 " + ms + " 毫秒："
+                        + "命中 " + hits + " 项。");
+    }
+
+    public String filesStoppedBudget() {
+        return pick("Stopped early: the scan budget ran out. Turn on deep scanning for a longer run, or"
+                        + " point the files command at one folder.",
+                "提前停止：扫描预算已用尽。可开启深度扫描以延长时间，或用 files 命令指定单个目录。");
+    }
+
+    public String filesStoppedCount() {
+        return pick("Stopped early: more files than one scan will visit. Point the files command at a"
+                        + " smaller folder.",
+                "提前停止：文件数量超过单次扫描上限。请用 files 命令指定较小的目录。");
+    }
+
+    public String filesStoppedHits() {
+        return pick("Stopped early: enough matches to stop counting.", "提前停止：命中数量已达上限。");
+    }
+
+    public String fileReportWritten(String path) {
+        return pick("Full list: " + path, "完整列表：" + path);
+    }
+
+    public String noFileHits() {
+        return pick("No file matched a signature.", "没有文件命中特征。");
+    }
+
+    public String filesNeedsPath(String path) {
+        return pick("Not a readable file or folder: " + path, "不是可读取的文件或目录：" + path);
+    }
+
+    public String filesButton() {
+        return pick("Scan files for known malware", "扫描文件中的已知恶意软件");
+    }
+
+    public String filesButtonHelp(int signatures) {
+        if (signatures == 0) {
+            return pick("Needs a signature file first: see Malware signatures under About.",
+                    "需要先导入特征库：见“关于”中的恶意软件特征库。");
+        }
+        return pick("Checks every readable file under the folders this plugin searches (Download, MT2, MT"
+                        + " Manager's own storage, any root you added) against the " + signatures
+                        + " loaded signatures. Nothing is changed or deleted.",
+                "用已加载的 " + signatures + " 条特征检查本插件搜索的目录（Download、MT2、MT 管理器自身存储、"
+                        + "以及您添加的目录）下的所有可读文件。不会修改或删除任何内容。");
+    }
+
+    public String filesConfirmTitle() {
+        return pick("Scan files?", "扫描文件？");
+    }
+
+    public String filesConfirmBody(String roots, int signatures, boolean deep) {
+        return pick("Every readable file under:\n\n" + roots + "\n\nwill be checked against " + signatures
+                        + " signatures. MT Manager will be busy for up to " + (deep ? 90 : 6)
+                        + " seconds. Nothing is changed or deleted.",
+                "将用 " + signatures + " 条特征检查以下目录中的所有可读文件：\n\n" + roots
+                        + "\n\nMT 管理器最多会忙碌 " + (deep ? 90 : 6) + " 秒。不会修改或删除任何内容。");
+    }
+
+    public String filesResultTitle() {
+        return pick("File scan", "文件扫描");
+    }
+
+    public String scanAction() {
+        return pick("Scan", "扫描");
+    }
+
+    public String dismiss() {
+        return pick("Close", "关闭");
     }
 }

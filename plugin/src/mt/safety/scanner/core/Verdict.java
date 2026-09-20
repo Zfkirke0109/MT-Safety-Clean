@@ -13,8 +13,8 @@ public enum Verdict {
     SUSPICIOUS("Suspicious", "Remove it unless you trust the author and know why it needs this."),
     /** Behaviour with no benign reading. */
     LIKELY_MALICIOUS("Likely malicious", "Remove this now, then change any password or key you opened on this device."),
-    /** Hash or indicator matches the local denylist. */
-    KNOWN_BAD("Known bad", "This matches an entry in your denylist. Remove it now."),
+    /** Matches the local denylist, or a known-malware signature the user loaded. */
+    KNOWN_BAD("Known bad", "This matches a known-malware signature or an entry in your denylist. Remove it now."),
     /** The package could not be read. */
     UNREADABLE("Could not scan", "The package could not be read. Inspect it by hand before trusting it.");
 

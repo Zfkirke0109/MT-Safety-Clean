@@ -187,6 +187,12 @@ public final class RiskScorer {
         if (denylisted) {
             return Verdict.KNOWN_BAD;
         }
+        // A malware signature names a file that has been seen and classified before, which is what
+        // "known bad" means. A PUA signature (SIG003) is high severity and scored like any other
+        // finding: unwanted is not the same as hostile.
+        if (report.hasRule("SIG001") || report.hasRule("SIG002")) {
+            return Verdict.KNOWN_BAD;
+        }
         boolean critical = false;
         for (Signal signal : report.signals) {
             if (signal.severity == Severity.CRITICAL && !excused.contains(signal.ruleId)) {

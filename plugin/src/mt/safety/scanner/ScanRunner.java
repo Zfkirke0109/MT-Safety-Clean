@@ -11,6 +11,7 @@ import mt.safety.scanner.core.Bytes;
 import mt.safety.scanner.core.CodePatterns;
 import mt.safety.scanner.core.Dates;
 import mt.safety.scanner.core.Discovery;
+import mt.safety.scanner.core.FileScanner;
 import mt.safety.scanner.core.Json;
 import mt.safety.scanner.core.IocDatabase;
 import mt.safety.scanner.core.PluginManifest;
@@ -21,6 +22,7 @@ import mt.safety.scanner.core.ScanBudget;
 import mt.safety.scanner.core.ScanReport;
 import mt.safety.scanner.core.Severity;
 import mt.safety.scanner.core.Signal;
+import mt.safety.scanner.core.SignatureDatabase;
 import mt.safety.scanner.core.Verdict;
 
 /**
@@ -58,6 +60,24 @@ public final class ScanRunner {
     public static final String KEY_SELECT_PREFIX = "sel_";
     /** The bulk action awaiting confirmation. */
     public static final String KEY_PENDING_PLAN = "pending_plan";
+
+    /** The folder, inside this plugin's own directory, holding imported signature files. */
+    public static final String SIGNATURE_DIR = "signatures";
+    /** Where the last file scan's full list is written. */
+    public static final String FILE_REPORT = "files-report.txt";
+
+    /** How many matched files the screen lists before pointing at the report file. */
+    private static final int MAX_FILE_HIT_ROWS = 20;
+
+    /**
+     * The last signature database loaded, kept while its folder is unchanged.
+     *
+     * <p>Loading a large database is the slowest thing the plugin does, and the settings screen is
+     * rebuilt on every open and after every action. The folder's stamp, which covers the files'
+     * names, sizes and modification times, decides whether the cached copy still stands.
+     */
+    private static SignatureDatabase cachedSignatures;
+    private static String cachedSignatureStamp;
 
     /** Total interactive time budget shared out across the plugins found. */
     private static final long INTERACTIVE_TOTAL_MS = 6000L;
@@ -129,6 +149,8 @@ public final class ScanRunner {
          */
         public final java.util.Map<String, String> actioned = new java.util.HashMap<String, String>();
         public String commandOutcome = "";
+        /** Files a {@code files} command in this build found matching a signature, one line each. */
+        public final List<String> fileHitLines = new ArrayList<String>();
     }
 
     private final Host host;
@@ -154,8 +176,9 @@ public final class ScanRunner {
         Result result = new Result();
         File configFile = new File(host.filesDir(), "indicators.json");
         IocDatabase database = IocDatabase.load(configFile);
+        SignatureDatabase signatures = loadSignatures(new File(host.filesDir(), SIGNATURE_DIR));
 
-        scanInto(result, database);
+        scanInto(result, database, signatures);
 
         // Acting comes after scanning, because a bulk action has to know what the scan found: which
         // plugins are malicious, and which of those are installed rather than a download sitting in a
@@ -170,7 +193,7 @@ public final class ScanRunner {
         if (pending != null && pending.trim().length() > 0) {
             // Cleared first: a command that somehow crashes must not run again on every open.
             host.putConfig(KEY_COMMAND, "");
-            String commandResult = runCommand(pending.trim(), database, configFile, result);
+            String commandResult = runCommand(pending.trim(), database, signatures, configFile, result);
             host.log("command: " + pending.trim() + " -> " + commandResult);
             if (outcome.length() > 0) {
                 outcome.append("   ");
@@ -184,19 +207,32 @@ public final class ScanRunner {
             result.commandOutcome = host.config(KEY_LAST_RESULT, "");
         }
 
-        buildRows(result, database,
+        // Reloaded rather than reused: an import in this build changed the folder.
+        buildRows(result, database, loadSignatures(new File(host.filesDir(), SIGNATURE_DIR)),
                 MtEnvironment.candidateRoots(host.filesDir(), host.hostPackage(), host.config(KEY_EXTRA_ROOT, "")),
                 result.reports.size() + result.unscanned);
         return result;
     }
 
+    /** Loads the signature folder, reusing the previous load while the folder is unchanged. */
+    static synchronized SignatureDatabase loadSignatures(File folder) {
+        String stamp = SignatureDatabase.stamp(folder);
+        if (cachedSignatures != null && stamp.equals(cachedSignatureStamp)) {
+            return cachedSignatures;
+        }
+        SignatureDatabase loaded = SignatureDatabase.load(folder);
+        cachedSignatures = loaded;
+        cachedSignatureStamp = stamp;
+        return loaded;
+    }
+
     /** Runs the scan itself, filling {@code result.reports}. */
-    private void scanInto(Result result, IocDatabase database) {
+    private void scanInto(Result result, IocDatabase database, SignatureDatabase signatures) {
         boolean deep = host.configFlag(KEY_DEEP, false);
         List<File> roots = MtEnvironment.candidateRoots(host.filesDir(), host.hostPackage(), host.config(KEY_EXTRA_ROOT, ""));
         List<Discovery.Candidate> candidates = MtEnvironment.findPlugins(roots, host.pluginId(), host.filesDir());
 
-        PluginScanner scanner = new PluginScanner(database);
+        PluginScanner scanner = new PluginScanner(database, signatures);
         long totalMs = deep ? DEEP_TOTAL_MS : INTERACTIVE_TOTAL_MS;
         long slice = candidates.isEmpty() ? totalMs : Math.max(300L, totalMs / candidates.size());
         // The per-package slice has a floor so a small scan is not starved, which means the slices can
@@ -772,12 +808,19 @@ public final class ScanRunner {
 
     // ------------------------------------------------------------------ display
 
-    private void buildRows(Result result, IocDatabase database, List<File> roots, int candidateCount) {
+    private void buildRows(Result result, IocDatabase database, SignatureDatabase signatures, List<File> roots,
+            int candidateCount) {
         List<Row> rows = result.rows;
 
         if (result.commandOutcome != null && result.commandOutcome.length() > 0) {
             rows.add(Row.header(strings.lastAction()));
             rows.add(Row.text(result.commandOutcome, ""));
+        }
+        if (!result.fileHitLines.isEmpty()) {
+            rows.add(Row.header(strings.filesHeader()));
+            for (int i = 0; i < result.fileHitLines.size(); i++) {
+                rows.add(Row.text(result.fileHitLines.get(i), ""));
+            }
         }
 
         rows.add(Row.header(strings.summaryHeader()));
@@ -866,9 +909,26 @@ public final class ScanRunner {
                         database.undated() ? Dates.UNKNOWN : Dates.daysSince(database.updated(), now))));
         about.add(Row.text(strings.trustCounts(database.trustedCount(), database.deniedCount()),
                 new File(host.filesDir(), "indicators.json").getAbsolutePath()));
+        about.add(Row.text(strings.signatureTitle(), signatureLine(signatures, now)));
+        about.add(Row.text(strings.signatureFolder(),
+                new File(host.filesDir(), SIGNATURE_DIR).getAbsolutePath()));
+        if (!signatures.problems().isEmpty()) {
+            about.add(Row.text(strings.signatureProblems(signatures.problems().size(),
+                    signatures.problems().get(0)), ""));
+        }
         about.add(Row.text(strings.rootsSearched(roots.size()), describeRoots(roots)));
         about.add(Row.text(strings.selfExcluded(), host.pluginId()));
         about.add(Row.text(strings.limitsTitle(), strings.limits()));
+    }
+
+    /** The signature database's state as one sentence, for the About section and definitions. */
+    private String signatureLine(SignatureDatabase signatures, long now) {
+        String newest = signatures.fileCount() == 0 ? "" : Dates.isoDate(signatures.newestMillis());
+        long age = signatures.fileCount() == 0 ? Dates.UNKNOWN
+                : Dates.daysBetween(signatures.newestMillis(), now);
+        return strings.signatureLine(signatures.fileCount(), signatures.hashCount(),
+                signatures.patternCount(), newest, age, signatures.unsupportedCount(),
+                signatures.cappedCount());
     }
 
     private String elapsed(Result result) {
@@ -948,7 +1008,8 @@ public final class ScanRunner {
     // ------------------------------------------------------------------ commands
 
     /** Executes one typed command and returns a sentence describing what happened. */
-    private String runCommand(String command, IocDatabase database, File configFile, Result result) {
+    private String runCommand(String command, IocDatabase database, SignatureDatabase signatures,
+            File configFile, Result result) {
         String[] parts = command.split("\\s+", 2);
         String verb = parts[0].toLowerCase(java.util.Locale.US);
         String argument = parts.length > 1 ? parts[1].trim() : "";
@@ -1015,10 +1076,13 @@ public final class ScanRunner {
                 return quarantine.purge(argument).message;
             }
             if (verb.equals("definitions") || verb.equals("defs")) {
-                return describeDefinitions(database);
+                return describeDefinitions(database, signatures);
             }
             if (verb.equals("import")) {
                 return importCommand(argument, database, configFile);
+            }
+            if (verb.equals("files")) {
+                return scanFiles(argument, result.fileHitLines);
             }
             if (verb.equals("quarantined")) {
                 return describeQuarantine(quarantine);
@@ -1093,7 +1157,7 @@ public final class ScanRunner {
      * plugin, so it moves when the plugin is updated. The indicator file is the user's own, and moves
      * when they edit or import one.
      */
-    private String describeDefinitions(IocDatabase database) {
+    private String describeDefinitions(IocDatabase database, SignatureDatabase signatures) {
         long now = System.currentTimeMillis();
         StringBuilder sb = new StringBuilder();
         sb.append(strings.rulesLine(CodePatterns.CATALOGUE_VERSION, CodePatterns.CATALOGUE_DATE,
@@ -1104,6 +1168,11 @@ public final class ScanRunner {
                 database.undated() ? Dates.UNKNOWN : Dates.daysSince(database.updated(), now)));
         if (database.source().length() > 0) {
             sb.append("   ").append(strings.indicatorSource(database.source()));
+        }
+        sb.append("   ").append(strings.signatureTitle()).append(": ").append(signatureLine(signatures, now));
+        if (!signatures.problems().isEmpty()) {
+            sb.append("   ").append(strings.signatureProblems(signatures.problems().size(),
+                    signatures.problems().get(0)));
         }
         return sb.toString();
     }
@@ -1124,6 +1193,13 @@ public final class ScanRunner {
         if (!source.isFile()) {
             return strings.noSuchFile(argument);
         }
+        if (SignatureDatabase.isPackedBundle(source.getName())) {
+            return strings.importFailed(source.getName()
+                    + " is a packed ClamAV bundle; unpack it first with sigtool --unpack");
+        }
+        if (SignatureDatabase.isSignatureFile(source.getName())) {
+            return importSignatures(source, database);
+        }
         IocDatabase incoming = IocDatabase.load(source);
         if (!incoming.loadErrors().isEmpty()) {
             return strings.importFailed(incoming.loadErrors().get(0));
@@ -1135,7 +1211,147 @@ public final class ScanRunner {
             return strings.couldNotSave(e.getMessage());
         }
         return strings.imported(added[0], added[1], added[2])
-                + "   " + describeDefinitions(database);
+                + "   " + describeDefinitions(database, loadSignatures(new File(host.filesDir(), SIGNATURE_DIR)));
+    }
+
+    /**
+     * Copies a ClamAV-format signature file into the plugin's signature folder.
+     *
+     * <p>Parsed first, so a file that is not what it claims is refused rather than left in the
+     * folder to be reported as a problem on every open. Copying a file of the same name replaces
+     * it, which is how a newer version of the same list is installed.
+     */
+    private String importSignatures(File source, IocDatabase database) {
+        SignatureDatabase incoming = SignatureDatabase.load(source);
+        if (incoming.hashCount() + incoming.patternCount() + incoming.cleanCount() == 0) {
+            String why = strings.signaturesEmptyImport(source.getName());
+            return incoming.problems().isEmpty() ? why : why + "   " + incoming.problems().get(0);
+        }
+        File folder = new File(host.filesDir(), SIGNATURE_DIR);
+        File target = new File(folder, source.getName());
+        boolean replaced = target.exists();
+        try {
+            copy(source, target);
+        } catch (IOException e) {
+            return strings.couldNotSave(e.getMessage());
+        }
+        synchronized (ScanRunner.class) {
+            // The stamp would notice the change on its own; this makes sure of it even when the
+            // copy lands within the same second as the file it replaced.
+            cachedSignatureStamp = null;
+        }
+        return strings.signaturesImported(source.getName(), incoming.hashCount(), incoming.patternCount(),
+                incoming.unsupportedCount(), replaced)
+                + "   " + describeDefinitions(database, loadSignatures(folder));
+    }
+
+    /**
+     * Checks the files this plugin can read against the loaded signatures.
+     *
+     * <p>Shared by the typed {@code files} command and the v3 button. Returns the outcome as one
+     * paragraph; up to a screenful of matched files is appended to {@code hitLines}, and the full
+     * list is written next to the plugin's other reports. Nothing is deleted: a signature hit on a
+     * file in a download folder is something to show the user, not something to act on for them.
+     *
+     * @param argument a file or folder to check instead of the usual roots, or empty
+     */
+    public String scanFiles(String argument, List<String> hitLines) {
+        SignatureDatabase signatures = loadSignatures(new File(host.filesDir(), SIGNATURE_DIR));
+        if (signatures.isEmpty()) {
+            return strings.noSignatures();
+        }
+        List<File> roots;
+        if (argument != null && argument.trim().length() > 0) {
+            File target = new File(argument.trim());
+            if (!target.exists() || !target.canRead()) {
+                return strings.filesNeedsPath(argument.trim());
+            }
+            roots = new ArrayList<File>();
+            roots.add(target);
+        } else {
+            roots = fileScanRoots();
+        }
+        boolean deep = host.configFlag(KEY_DEEP, false);
+        FileScanner.Result scan = new FileScanner(signatures).scan(roots, host.filesDir(), ScanBudget.files(deep));
+
+        StringBuilder sb = new StringBuilder();
+        sb.append(strings.filesSummary(scan.filesScanned, scan.filesSeen, Bytes.humanSize(scan.bytesRead),
+                scan.elapsedMs, scan.hits.size()));
+        switch (scan.stoppedBecause) {
+            case BUDGET:
+                sb.append("   ").append(strings.filesStoppedBudget());
+                break;
+            case COUNT:
+                sb.append("   ").append(strings.filesStoppedCount());
+                break;
+            case HITS:
+                sb.append("   ").append(strings.filesStoppedHits());
+                break;
+            default:
+                break;
+        }
+        if (scan.hits.isEmpty()) {
+            sb.append("   ").append(strings.noFileHits());
+        }
+        for (int i = 0; i < scan.hits.size() && i < MAX_FILE_HIT_ROWS; i++) {
+            FileScanner.Hit hit = scan.hits.get(i);
+            hitLines.add((hit.pua ? Severity.HIGH.marker() : Severity.CRITICAL.marker()) + " "
+                    + flatten(hit.signature) + "  |  " + hit.location());
+        }
+        if (scan.hits.size() > MAX_FILE_HIT_ROWS) {
+            hitLines.add(strings.andMore(scan.hits.size() - MAX_FILE_HIT_ROWS));
+        }
+        File reportFile = new File(host.filesDir(), FILE_REPORT);
+        try {
+            write(reportFile, ReportFormatter.fileScanText(scan, signatures));
+            sb.append("   ").append(strings.fileReportWritten(reportFile.getAbsolutePath()));
+        } catch (IOException e) {
+            sb.append("   ").append(strings.couldNotSave(e.getMessage()));
+        }
+        host.log("files: " + sb);
+        return sb.toString();
+    }
+
+    /** The folders a file scan walks by default: the same places the plugin scan searches. */
+    public List<File> fileScanRoots() {
+        return MtEnvironment.candidateRoots(host.filesDir(), host.hostPackage(), host.config(KEY_EXTRA_ROOT, ""));
+    }
+
+    /** How many signatures are loaded, for the button that offers a file scan. */
+    public int signatureCount() {
+        SignatureDatabase signatures = loadSignatures(new File(host.filesDir(), SIGNATURE_DIR));
+        return signatures.hashCount() + signatures.patternCount();
+    }
+
+    private static void copy(File from, File to) throws IOException {
+        File parent = to.getParentFile();
+        if (parent != null && !parent.isDirectory() && !parent.mkdirs()) {
+            throw new IOException("could not create " + parent.getAbsolutePath());
+        }
+        File temporary = new File(to.getAbsolutePath() + ".tmp");
+        java.io.InputStream in = new java.io.FileInputStream(from);
+        try {
+            OutputStream out = new FileOutputStream(temporary);
+            try {
+                byte[] buffer = new byte[1 << 16];
+                int n;
+                while ((n = in.read(buffer)) > 0) {
+                    out.write(buffer, 0, n);
+                }
+            } finally {
+                out.close();
+            }
+        } finally {
+            in.close();
+        }
+        if (to.exists() && !to.delete()) {
+            temporary.delete();
+            throw new IOException("could not replace " + to.getAbsolutePath());
+        }
+        if (!temporary.renameTo(to)) {
+            temporary.delete();
+            throw new IOException("could not move the file into place at " + to.getAbsolutePath());
+        }
     }
 
     private String describeQuarantine(Quarantine quarantine) {
@@ -1159,7 +1375,8 @@ public final class ScanRunner {
         List<File> roots = MtEnvironment.candidateRoots(host.filesDir(), host.hostPackage(), host.config(KEY_EXTRA_ROOT, ""));
         List<Discovery.Candidate> candidates = MtEnvironment.findPlugins(roots, host.pluginId(), host.filesDir());
         IocDatabase database = IocDatabase.load(new File(host.filesDir(), "indicators.json"));
-        PluginScanner scanner = new PluginScanner(database);
+        SignatureDatabase signatures = loadSignatures(new File(host.filesDir(), SIGNATURE_DIR));
+        PluginScanner scanner = new PluginScanner(database, signatures);
         List<ScanReport> reports = new ArrayList<ScanReport>();
         for (int i = 0; i < candidates.size(); i++) {
             reports.add(scanner.scan(candidates.get(i).path, ScanBudget.deep()));
@@ -1169,8 +1386,8 @@ public final class ScanRunner {
         File textFile = new File(host.filesDir(), "scan-report.txt");
         File jsonFile = new File(host.filesDir(), "scan-report.json");
         try {
-            write(textFile, ReportFormatter.plainText(reports));
-            write(jsonFile, ReportFormatter.json(reports));
+            write(textFile, ReportFormatter.plainText(reports, signatures));
+            write(jsonFile, ReportFormatter.json(reports, signatures));
         } catch (IOException e) {
             return strings.couldNotSave(e.getMessage());
         }

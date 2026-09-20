@@ -111,6 +111,24 @@ No hashes ship with this tool. A list of allegedly malicious plugin hashes inven
 be worthless, and one fetched from a server would put a network dependency in the middle of a security
 decision. `assets/indicators.json` is an empty, documented template you fill from sources you trust.
 
+## Known-malware signatures
+
+These are the antivirus half of the scanner: signatures in ClamAV's published text formats, which you
+obtain and import yourself. They run against every member of every package, inside archived libraries
+too, and against ordinary files when you ask for a file scan.
+
+| Rule | Severity | What it means |
+| --- | --- | --- |
+| `SIG001` | Critical | A member's whole-file hash (MD5, SHA-1 or SHA-256) is listed in an `.hdb` or `.hsb` file you loaded. This identifies one exact file that has been classified before, and the verdict is **Known bad**. |
+| `SIG002` | Critical | A byte pattern from an `.ndb` file you loaded appears in a member. The signature's name is the evidence; patterns can occasionally match an innocent file, so read it. The verdict is **Known bad**. |
+| `SIG003` | High | A signature whose name starts `PUA.` matched: adware, riskware or a tool that is unwanted rather than hostile. Scored like any other high finding, not treated as a conviction. |
+
+A file on a `.fp` or `.sfp` clean list is never reported, and a name in an `.ign2` file switches that
+signature off. Pattern syntax support covers literal bytes, `??` and nibble wildcards, `*`, `{n}`,
+`{n-m}` and `(aa|bb)` alternatives, with `*`, `n`, `n,m` and `EOF-n` offsets and the target types this
+scanner can recognise a file as. Anything else in a file is counted as unsupported and shown, never
+loaded to silently match nothing.
+
 ## Code and content patterns
 
 These run against Java sources, plain-text members, and strings recovered from compiled members. Each
@@ -218,12 +236,20 @@ uninstaller.
 
 - **Heuristics, not proof.** Rules describe capability. A flagged plugin can be entirely honest, and
   sufficiently careful code can stay quiet. Read the evidence.
+- **A file scan is bounded.** Walking storage is unbounded work on a device with thousands of photos,
+  so the scan stops at a time and byte budget, a file count and a hit count, and says which. Nothing
+  found in a folder it did not reach is a limit it reported, not a folder it cleared.
 - **Obfuscation beyond one layer.** Decoding goes one level deep. A payload encrypted with a key
   computed at runtime will show up as `OBF001`/`ARC007`, without the scanner knowing what it contains.
 - **Compiled packages read less well.** A v3 package ships compiled code, so findings there rest on
   recovered strings and carry no line numbers.
-- **No signature checking.** MT plugin packages are not signed, so there is no publisher to verify.
-  Identity rests on the content hash and on your own trusted list.
+- **Packages are not signed.** MT plugin packages carry no publisher signature, so there is no author
+  to verify. Identity rests on the content hash and on your own trusted list. (Malware signatures, the
+  `SIG` rules above, are a different thing: they name known files, not who made them.)
+- **Signatures know what has been seen.** ClamAV's corpus is overwhelmingly Windows and email malware;
+  its Android coverage is real but small, and MT plugins specifically have none. A signature match is
+  strong evidence, an absence of matches is not evidence of anything, and the capability rules remain
+  the main defence against a plugin nobody has classified yet.
 - **The scanner skips itself.** Its catalogue contains every string it searches for, so scanning itself
   would produce a page of findings about the tool doing its job. Use `--include-self` on the command
   line to override this.
