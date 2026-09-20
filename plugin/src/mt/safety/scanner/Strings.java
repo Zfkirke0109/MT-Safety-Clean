@@ -78,7 +78,7 @@ public final class Strings {
     }
 
     public String hashLabel() {
-        return pick("SHA-256 (first 16)", "SHA-256 \u524d16\u4f4d");
+        return pick("SHA-256 (for the trust command)", "SHA-256\uff08\u7528\u4e8e trust \u547d\u4ee4\uff09");
     }
 
     public String moreFindings(int count) {
@@ -104,6 +104,156 @@ public final class Strings {
                 + "\u626b\u63cf\u5168\u90e8\u3002");
     }
 
+    public String quarantineThis() {
+        return pick("Quarantine this plugin", "\u9694\u79bb\u6b64\u63d2\u4ef6");
+    }
+
+    public String quarantineThisHelp() {
+        return pick("Turn this on, then reopen this screen. The plugin is moved aside and can be put"
+                + " back with the restore command.",
+                "\u6253\u5f00\u540e\u91cd\u65b0\u6253\u5f00\u672c\u9875\u5373\u53ef\u3002"
+                + "\u63d2\u4ef6\u5c06\u88ab\u79fb\u8d70\uff0c\u53ef\u7528 restore \u6062\u590d\u3002");
+    }
+
+    public String armedOn() {
+        return pick("Armed. Reopen this screen to carry it out, or turn this off to call it off.",
+                "\u5df2\u5c31\u7eea\u3002\u91cd\u65b0\u6253\u5f00\u672c\u9875\u5373\u6267"
+                + "\u884c\uff0c\u5173\u95ed\u5219\u53d6\u6d88\u3002");
+    }
+
+    public String actedOn() {
+        return pick("Moved to quarantine just now", "\u521a\u521a\u5df2\u9694\u79bb");
+    }
+
+    public String actedOnHelp() {
+        return pick("Restart MT Manager, then reopen this screen to confirm it is gone.",
+                "\u8bf7\u91cd\u542f MT \u7ba1\u7406\u5668\u540e\u91cd\u65b0\u6253\u5f00\u672c"
+                + "\u9875\u786e\u8ba4\u3002");
+    }
+
+    public String changedSinceScan(String name) {
+        return pick(name + " changed since it was scanned, so nothing was done to it. Reopen this"
+                + " screen to scan it again.",
+                name + " \u5728\u626b\u63cf\u540e\u5df2\u53d8\u66f4\uff0c\u672a\u5bf9\u5176"
+                + "\u6267\u884c\u4efb\u4f55\u64cd\u4f5c\u3002\u8bf7\u91cd\u65b0\u6253\u5f00"
+                + "\u672c\u9875\u91cd\u65b0\u626b\u63cf\u3002");
+    }
+
+    public String actedOnRemoved() {
+        return pick("Deleted just now", "\u521a\u521a\u5df2\u5220\u9664");
+    }
+
+    public String actedOnRemovedHelp() {
+        return pick("Permanently removed, so there is no quarantined copy to restore. Restart MT"
+                + " Manager, then reopen this screen to confirm.",
+                "\u5df2\u6c38\u4e45\u5220\u9664\uff0c\u65e0\u53ef\u6062\u590d\u7684\u526f"
+                + "\u672c\u3002\u8bf7\u91cd\u542f MT \u7ba1\u7406\u5668\u540e\u91cd\u65b0"
+                + "\u6253\u5f00\u672c\u9875\u786e\u8ba4\u3002");
+    }
+
+    public String bulkOffer(int malicious, int suspicious) {
+        return pick(malicious + " to remove, " + suspicious + " flagged in total",
+                "\u5efa\u8bae\u79fb\u9664 " + malicious + " \u4e2a\uff0c\u5171\u6807\u8bb0 "
+                        + suspicious + " \u4e2a");
+    }
+
+    public String bulkOfferHelp() {
+        return pick("Commands: \"quarantine malicious\" or \"quarantine suspicious\" to move them all"
+                + " aside reversibly, \"remove malicious\" or \"remove suspicious\" to delete them for"
+                + " good. Each one lists what it will touch and waits for a confirmation code.",
+                "\u547d\u4ee4\uff1a\"quarantine malicious\" \u6216 \"quarantine suspicious\" "
+                + "\u53ef\u6062\u590d\u5730\u6279\u91cf\u9694\u79bb\uff1b\"remove malicious\" \u6216 "
+                + "\"remove suspicious\" \u5f7b\u5e95\u5220\u9664\u3002\u6267\u884c\u524d\u4f1a\u5148\u5217\u51fa"
+                + "\u6e05\u5355\u5e76\u7b49\u5f85\u786e\u8ba4\u7801\u3002");
+    }
+
+    public String planned(String action, int count, String names, String code) {
+        String verb = action.equals("remove") ? "permanently delete" : "quarantine";
+        String zhVerb = action.equals("remove") ? "\u5f7b\u5e95\u5220\u9664" : "\u9694\u79bb";
+        return pick("This will " + verb + " " + count + " plugin(s): " + names
+                + ".  Type \"confirm " + code + "\" to go ahead, or \"cancel\" to drop it.",
+                "\u5c06" + zhVerb + " " + count + " \u4e2a\u63d2\u4ef6\uff1a" + names
+                + "\u3002\u8f93\u5165 \"confirm " + code + "\" \u786e\u8ba4\uff0c\u6216 \"cancel\" "
+                + "\u53d6\u6d88\u3002");
+    }
+
+    public String bulkDone(String action, int count) {
+        String verb = action.equals("remove") ? "Deleted" : "Quarantined";
+        String zhVerb = action.equals("remove") ? "\u5df2\u5220\u9664" : "\u5df2\u9694\u79bb";
+        return pick(verb + " " + count + " plugin(s). Restart MT Manager.",
+                zhVerb + " " + count + " \u4e2a\u63d2\u4ef6\u3002\u8bf7\u91cd\u542f MT \u7ba1\u7406\u5668\u3002");
+    }
+
+    public String someOnlyQuarantined(int count) {
+        return pick(count + " could not be deleted and were left in quarantine, so they can still be"
+                + " restored or purged.",
+                "\u5176\u4e2d " + count + " \u4e2a\u65e0\u6cd5\u5220\u9664\uff0c\u5df2\u7559"
+                + "\u5728\u9694\u79bb\u533a\uff0c\u4ecd\u53ef\u6062\u590d\u6216\u6e05\u9664\u3002");
+    }
+
+    public String nothingMatches(String scope) {
+        return pick("Nothing matches \"" + scope + "\".",
+                "\u6ca1\u6709\u5339\u914d \"" + scope + "\" \u7684\u9879\u3002");
+    }
+
+    public String noneVerifiable(int count) {
+        return pick(count + " flagged plugin(s) could not be read completely enough to act on safely."
+                + " Run \"deep\", reopen this screen, then try again.",
+                "\u6709 " + count + " \u4e2a\u88ab\u6807\u8bb0\u7684\u63d2\u4ef6\u672a\u80fd"
+                + "\u5b8c\u6574\u8bfb\u53d6\uff0c\u65e0\u6cd5\u5b89\u5168\u5904\u7406\u3002"
+                + "\u8bf7\u5148\u6267\u884c \"deep\" \u5e76\u91cd\u65b0\u6253\u5f00\u672c\u9875\u3002");
+    }
+
+    public String someUnverifiable(int count) {
+        return pick("(" + count + " more could not be read completely enough to include; run \"deep\""
+                + " to cover them.)",
+                "\uff08\u53e6\u6709 " + count + " \u4e2a\u672a\u80fd\u5b8c\u6574\u8bfb\u53d6"
+                + "\u800c\u672a\u5217\u5165\uff0c\u53ef\u6267\u884c \"deep\" \u540e\u91cd\u8bd5\u3002\uff09");
+    }
+
+    public String nothingToConfirm() {
+        return pick("There is nothing waiting to be confirmed.",
+                "\u6ca1\u6709\u5f85\u786e\u8ba4\u7684\u64cd\u4f5c\u3002");
+    }
+
+    public String wrongCode(String expected) {
+        return pick("That code does not match. Type \"confirm " + expected + "\", or \"cancel\".",
+                "\u786e\u8ba4\u7801\u4e0d\u5339\u914d\u3002\u8bf7\u8f93\u5165 \"confirm "
+                        + expected + "\" \u6216 \"cancel\"\u3002");
+    }
+
+    public String planStale() {
+        return pick("The plugins changed since that list was made, so nothing was done. Run the command"
+                + " again to see the current list.",
+                "\u81ea\u751f\u6210\u6e05\u5355\u540e\u63d2\u4ef6\u5df2\u53d8\u5316\uff0c"
+                + "\u672a\u6267\u884c\u4efb\u4f55\u64cd\u4f5c\u3002\u8bf7\u91cd\u65b0\u8fd0"
+                + "\u884c\u547d\u4ee4\u3002");
+    }
+
+    public String planCancelled() {
+        return pick("Cancelled. Nothing was changed.",
+                "\u5df2\u53d6\u6d88\uff0c\u672a\u505a\u4efb\u4f55\u66f4\u6539\u3002");
+    }
+
+    public String removeNeedsScope() {
+        return pick("\"remove\" works on a group: try \"remove malicious\" or \"remove suspicious\"."
+                + " To delete one plugin, quarantine it first, then use \"purge\".",
+                "\"remove\" \u7528\u4e8e\u6279\u91cf\uff1a\u8bf7\u7528 \"remove malicious\" "
+                + "\u6216 \"remove suspicious\"\u3002\u5220\u9664\u5355\u4e2a\u63d2\u4ef6\u8bf7"
+                + "\u5148\u9694\u79bb\u518d\u7528 \"purge\"\u3002");
+    }
+
+    public String notInstalled(String name) {
+        return pick(name + " is a package file, not an installed plugin, so it was left alone.",
+                name + " \u662f\u5b89\u88c5\u5305\u6587\u4ef6\u800c\u975e\u5df2\u5b89\u88c5"
+                        + "\u63d2\u4ef6\uff0c\u5df2\u8df3\u8fc7\u3002");
+    }
+
+    public String couldNotPurge(String path) {
+        return pick("Quarantined, but the copy could not be deleted: " + path,
+                "\u5df2\u9694\u79bb\uff0c\u4f46\u526f\u672c\u5220\u9664\u5931\u8d25\uff1a" + path);
+    }
+
     public String problem() {
         return pick("Problem", "\u95ee\u9898");
     }
@@ -122,14 +272,22 @@ public final class Strings {
     }
 
     public String commandsHelp() {
-        return pick("deep / fast - thorough or quick scanning."
+        return pick("quarantine malicious / quarantine suspicious - move every flagged plugin aside,"
+                + " reversibly.   remove malicious / remove suspicious - delete them for good."
+                + "   confirm CODE / cancel - go ahead with, or drop, the listed action."
+                + "   deep / fast - thorough or quick scanning."
                 + "   export - write the full report to this plugin's folder."
                 + "   trust HASH - accept a package by its SHA-256."
                 + "   untrust HASH, deny HASH_OR_ID - undo, or mark as bad."
                 + "   quarantine ID - move an installed plugin aside, reversibly."
                 + "   restore ID, purge ID, quarantined - manage what was moved."
                 + "   root PATH - also search a folder.",
-                "deep / fast - \u6df1\u5ea6\u6216\u5feb\u901f\u626b\u63cf\u3002"
+                "quarantine malicious / quarantine suspicious - \u53ef\u6062\u590d\u5730\u6279"
+                + "\u91cf\u9694\u79bb\u6240\u6709\u88ab\u6807\u8bb0\u7684\u63d2\u4ef6\u3002"
+                + "   remove malicious / remove suspicious - \u5f7b\u5e95\u5220\u9664\u3002"
+                + "   confirm CODE / cancel - \u786e\u8ba4\u6216\u53d6\u6d88\u5df2\u5217\u51fa"
+                + "\u7684\u64cd\u4f5c\u3002"
+                + "   deep / fast - \u6df1\u5ea6\u6216\u5feb\u901f\u626b\u63cf\u3002"
                 + "   export - \u5bfc\u51fa\u5b8c\u6574\u62a5\u544a\u5230\u672c\u63d2\u4ef6\u76ee\u5f55\u3002"
                 + "   trust HASH - \u6309 SHA-256 \u6807\u8bb0\u4e3a\u53ef\u4fe1\u3002"
                 + "   untrust HASH\u3001deny HASH_OR_ID - \u6492\u9500\u6216\u6807\u8bb0\u4e3a\u6076\u610f\u3002"

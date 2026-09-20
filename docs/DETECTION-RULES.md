@@ -117,10 +117,11 @@ These run against Java sources, plain-text members, and strings recovered from c
 regular expression matches both the source spelling (`Runtime.getRuntime`) and the form that survives
 in a compiled constant pool (`Ljava/lang/Runtime;`).
 
-Media members are skipped only when their magic bytes positively identify them as the format their
-name claims. An image whose header cannot be read, or whose contents are not recognisable as any
-format, is searched rather than skipped: scanning an ordinary image costs a little time, and skipping
-a disguised one costs the whole point of the scan.
+No member is exempt on the strength of its name or its first few bytes, media included. Image decoders
+tolerate trailing junk, so a genuine PNG header followed by an appended payload would satisfy any
+magic-byte check and then bypass every rule below it. Binary members are searched for printable runs
+rather than decoded whole, so real image data contributes nothing to match against; a package that
+ships enough media to exhaust the byte allowance is reported as truncated rather than as clean.
 
 | Rule | Severity | Category | What it means |
 | --- | --- | --- | --- |
@@ -185,6 +186,29 @@ Long Base64 runs are decoded and examined, one level deep:
   is how a plugin passes a read-through looking harmless and then runs something else.
 - Decoding to text that itself trips a medium-or-worse rule is `OBF006`, **high**: something the
   plugin would rather you did not read is stored encoded.
+
+## Acting on what is found
+
+Findings are only useful if something can be done with them, and the settings screen has no buttons, so
+acting happens in two ways. A switch under an installed plugin the scan flagged arms a quarantine that
+runs the next time the screen is opened. A typed `quarantine malicious`, `quarantine suspicious`,
+`remove malicious` or `remove suspicious` covers everything the scan flagged.
+
+The switch appears only where it can be honoured: not for a `.mtp` file in a downloads folder, which is
+not installed; not for a package the scan could not hash, because the switch is bound to the contents it
+was armed against and there is nothing to bind it to; and not for the scanner itself. Those findings are
+reported without a switch and have to be judged by hand.
+
+A bulk action never runs when it is typed. It lists the plugins it would touch and issues a short code
+derived from that exact set; only `confirm CODE` carries it out, and only while the set is unchanged. A
+code that no longer matches the installed plugins is refused rather than applied to a different list
+than the one that was read. Bulk actions cover installed plugins only, never a package file sitting in a
+downloads folder, and never the scanner itself.
+
+Quarantine moves a plugin into the scanner's own storage and records where it came from, so `restore`
+puts it back; `remove` deletes it outright. MT Manager's own plugin management screen remains the clean
+way to uninstall, since it keeps the record of what is installed, and no plugin can call that
+uninstaller.
 
 ## Known limits
 

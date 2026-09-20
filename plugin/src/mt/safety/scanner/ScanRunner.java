@@ -7,9 +7,12 @@ import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.List;
 
+import mt.safety.scanner.core.Bytes;
 import mt.safety.scanner.core.Discovery;
+import mt.safety.scanner.core.Json;
 import mt.safety.scanner.core.IocDatabase;
 import mt.safety.scanner.core.PluginManifest;
+import mt.safety.scanner.core.PluginPackage;
 import mt.safety.scanner.core.PluginScanner;
 import mt.safety.scanner.core.ReportFormatter;
 import mt.safety.scanner.core.ScanBudget;
@@ -39,6 +42,10 @@ public final class ScanRunner {
     public static final String KEY_DEEP = "deep_scan";
     public static final String KEY_EXTRA_ROOT = "extra_root";
     public static final String KEY_LAST_RESULT = "last_result";
+    /** Prefix for the per-plugin "quarantine this one" switches. */
+    public static final String KEY_ARM_PREFIX = "arm_";
+    /** The bulk action awaiting confirmation. */
+    public static final String KEY_PENDING_PLAN = "pending_plan";
 
     /** Total interactive time budget shared out across the plugins found. */
     private static final long INTERACTIVE_TOTAL_MS = 6000L;
@@ -48,21 +55,37 @@ public final class ScanRunner {
     /** One line of the settings screen. */
     public static final class Row {
         public final boolean header;
+        /** True for a switch row; {@link #key} then holds the preference it is bound to. */
+        public final boolean toggle;
+        public final String key;
         public final String title;
         public final String summary;
 
-        private Row(boolean header, String title, String summary) {
+        private Row(boolean header, boolean toggle, String key, String title, String summary) {
             this.header = header;
+            this.toggle = toggle;
+            this.key = key;
             this.title = title;
             this.summary = summary;
         }
 
         public static Row header(String title) {
-            return new Row(true, title, null);
+            return new Row(true, false, null, title, null);
         }
 
         public static Row text(String title, String summary) {
-            return new Row(false, title, summary);
+            return new Row(false, false, null, title, summary);
+        }
+
+        /**
+         * A switch that arms an action on one plugin.
+         *
+         * <p>The settings screen has no buttons, so a switch is the only thing a user can tap to mean
+         * "this one". It is read on the next build, which is also what keeps it safe: nothing happens
+         * while the screen is open, and the action is listed before it runs.
+         */
+        public static Row toggle(String title, String summary, String key) {
+            return new Row(false, true, key, title, summary);
         }
     }
 
@@ -75,6 +98,14 @@ public final class ScanRunner {
         public final List<ScanReport> reports = new ArrayList<ScanReport>();
         /** Plugins found but not reached before the scan's overall deadline. */
         public int unscanned;
+        /**
+         * What happened to each package acted on during this build, keyed by path.
+         *
+         * <p>Values are {@code quarantined} or {@code removed}. Kept apart because a row that says
+         * "moved to quarantine" after a permanent delete promises a copy the user could restore, and
+         * there is none.
+         */
+        public final java.util.Map<String, String> actioned = new java.util.HashMap<String, String>();
         public String commandOutcome = "";
     }
 
@@ -90,26 +121,58 @@ public final class ScanRunner {
         return strings;
     }
 
-    /** Runs any pending command, then scans, then builds the rows to display. */
+    /**
+     * Scans, then acts, then builds the rows to display.
+     *
+     * <p>The order is part of the safety contract rather than an implementation detail. Acting comes
+     * after scanning because a bulk action has to know what the scan found, and every action is judged
+     * against what is installed once the earlier actions in the same build have run.
+     */
     public Result run() {
         Result result = new Result();
         File configFile = new File(host.filesDir(), "indicators.json");
         IocDatabase database = IocDatabase.load(configFile);
 
+        scanInto(result, database);
+
+        // Acting comes after scanning, because a bulk action has to know what the scan found: which
+        // plugins are malicious, and which of those are installed rather than a download sitting in a
+        // folder. Settings that shape the scan itself take effect on the next open, which is how this
+        // screen has always worked.
+        StringBuilder outcome = new StringBuilder();
+        String armed = runArmedSwitches(result);
+        if (armed.length() > 0) {
+            outcome.append(armed);
+        }
         String pending = host.config(KEY_COMMAND, "");
         if (pending != null && pending.trim().length() > 0) {
             // Cleared first: a command that somehow crashes must not run again on every open.
             host.putConfig(KEY_COMMAND, "");
-            result.commandOutcome = runCommand(pending.trim(), database, configFile);
+            String commandResult = runCommand(pending.trim(), database, configFile, result);
+            host.log("command: " + pending.trim() + " -> " + commandResult);
+            if (outcome.length() > 0) {
+                outcome.append("   ");
+            }
+            outcome.append(commandResult);
+        }
+        if (outcome.length() > 0) {
+            result.commandOutcome = outcome.toString();
             host.putConfig(KEY_LAST_RESULT, result.commandOutcome);
-            host.log("command: " + pending.trim() + " -> " + result.commandOutcome);
         } else {
             result.commandOutcome = host.config(KEY_LAST_RESULT, "");
         }
 
+        buildRows(result, database,
+                MtEnvironment.candidateRoots(host.filesDir(), host.config(KEY_EXTRA_ROOT, "")),
+                result.reports.size() + result.unscanned);
+        return result;
+    }
+
+    /** Runs the scan itself, filling {@code result.reports}. */
+    private void scanInto(Result result, IocDatabase database) {
         boolean deep = host.configFlag(KEY_DEEP, false);
         List<File> roots = MtEnvironment.candidateRoots(host.filesDir(), host.config(KEY_EXTRA_ROOT, ""));
-        List<Discovery.Candidate> candidates = MtEnvironment.findPlugins(roots, host.pluginId());
+        List<Discovery.Candidate> candidates = MtEnvironment.findPlugins(roots, host.pluginId(), host.filesDir());
 
         PluginScanner scanner = new PluginScanner(database);
         long totalMs = deep ? DEEP_TOTAL_MS : INTERACTIVE_TOTAL_MS;
@@ -130,9 +193,383 @@ public final class ScanRunner {
             scannedCount++;
         }
         scanner.finishSet(result.reports);
+    }
 
-        buildRows(result, database, roots, candidates.size());
-        return result;
+    // ------------------------------------------------------------------ actions
+
+    /** The preference key for one plugin's "quarantine this one" switch. */
+    public static String armKey(ScanReport report) {
+        // A digest of the location and the contents, for two reasons. Collision-free, because
+        // sanitizing an id mapped "foo.bar" and "foo_bar" onto one key and toggling either would have
+        // moved the other. And bound to the package that was on screen: if the directory is replaced
+        // between arming the switch and reopening, the key changes, the old flag matches nothing, and
+        // the replacement is not quarantined on the strength of a switch armed against something else.
+        try {
+            String identity = report.path + "|" + report.contentHash;
+            return KEY_ARM_PREFIX + Bytes.sha256(identity.getBytes("UTF-8")).substring(0, 16);
+        } catch (java.io.UnsupportedEncodingException e) {
+            return KEY_ARM_PREFIX + Integer.toHexString((report.path + report.contentHash).hashCode());
+        }
+    }
+
+    /**
+     * Quarantines the plugins whose switch was left on, then clears those switches.
+     *
+     * <p>This is the one-tap path: turn on the switch under a plugin, reopen the screen, it is gone.
+     * Nothing happens while the screen is open, so a switch touched by accident can be turned off
+     * again before it does anything.
+     */
+    private String runArmedSwitches(Result result) {
+        Quarantine quarantine = new Quarantine(new File(host.filesDir(), "quarantine"));
+        StringBuilder done = new StringBuilder();
+        for (int i = 0; i < result.reports.size(); i++) {
+            ScanReport report = result.reports.get(i);
+            if (report.contentHash == null || report.contentHash.length() == 0) {
+                // The key is not package-bound without a hash, so an armed flag here could belong to
+                // whatever used to be at this path. Never act on it.
+                continue;
+            }
+            String key = armKey(report);
+            if (!host.configFlag(key, false)) {
+                continue;
+            }
+            host.putFlag(key, false);
+            if (report.archive) {
+                // A file sitting in a downloads folder is not something this plugin should delete.
+                append(done, strings.notInstalled(report.manifest.displayName()));
+                continue;
+            }
+            if (!stillMatches(report)) {
+                append(done, strings.changedSinceScan(flatten(report.manifest.displayName())));
+                continue;
+            }
+            Quarantine.Result moved = quarantine.quarantine(new File(report.path), host.pluginId());
+            if (moved.ok) {
+                result.actioned.put(report.path, "quarantined");
+            }
+            append(done, moved.message);
+        }
+        return done.toString();
+    }
+
+    /**
+     * Works out which plugins a bulk action would touch, and asks for confirmation first.
+     *
+     * <p>The confirmation code is derived from the action and the exact set of plugins it covers, so a
+     * code confirms the list the user was shown and nothing else. If the set changes before it is
+     * typed, the code no longer matches and the action is refused rather than applied to a different
+     * set of plugins.
+     */
+    private String planBulk(String action, String scope, Result result) {
+        List<ScanReport> all = bulkTargets(scope, result);
+        List<ScanReport> targets = verifiable(all);
+        int unverifiable = all.size() - targets.size();
+        if (targets.isEmpty()) {
+            // Clearing matters here: leaving an older plan armed after telling the user nothing
+            // matches means a later confirm still carries out an action they were just told was not
+            // pending.
+            host.putConfig(KEY_PENDING_PLAN, "");
+            return unverifiable > 0 ? strings.noneVerifiable(unverifiable) : strings.nothingMatches(scope);
+        }
+        StringBuilder names = new StringBuilder();
+        for (int i = 0; i < targets.size(); i++) {
+            if (i > 0) {
+                names.append(", ");
+            }
+            names.append(flatten(targets.get(i).manifest.displayName()));
+        }
+        String ids = targetIds(scope, result);
+        String code = confirmationCode(action, scope, ids);
+        StringBuilder plan = new StringBuilder();
+        plan.append("{\"action\": ").append(Json.quote(action));
+        plan.append(", \"scope\": ").append(Json.quote(scope));
+        plan.append(", \"targets\": ").append(ids);
+        plan.append(", \"code\": ").append(Json.quote(code)).append("}");
+        host.putConfig(KEY_PENDING_PLAN, plan.toString());
+
+        String message = strings.planned(action, targets.size(), names.toString(), code);
+        return unverifiable > 0 ? message + "   " + strings.someUnverifiable(unverifiable) : message;
+    }
+
+    /** Executes a plan once its code is typed back. */
+    private String confirmBulk(String code, Result result) {
+        String stored = host.config(KEY_PENDING_PLAN, "");
+        if (stored == null || stored.trim().length() == 0) {
+            return strings.nothingToConfirm();
+        }
+        String action;
+        String scope;
+        String ids;
+        String expected;
+        List<java.util.Map<String, Object>> targets;
+        try {
+            java.util.Map<String, Object> plan = Json.parseObject(stored);
+            action = Json.str(plan, "action", "");
+            scope = Json.str(plan, "scope", "");
+            expected = Json.str(plan, "code", "");
+            targets = Json.objectList(plan, "targets");
+            ids = rebuildTargetList(targets);
+        } catch (Json.JsonException e) {
+            host.putConfig(KEY_PENDING_PLAN, "");
+            return strings.nothingToConfirm();
+        }
+        if (expected.length() == 0 || !expected.equalsIgnoreCase(code.trim())) {
+            return strings.wrongCode(expected);
+        }
+        // Compare the stored list against the plugins that match right now. Recomputing the code from
+        // the stored ids would only prove the plan agrees with itself; what matters is that the set
+        // has not changed since the user read it, so a confirmation applies to the list they saw.
+        if (!ids.equals(targetIds(scope, result))) {
+            host.putConfig(KEY_PENDING_PLAN, "");
+            return strings.planStale();
+        }
+        host.putConfig(KEY_PENDING_PLAN, "");
+
+        Quarantine quarantine = new Quarantine(new File(host.filesDir(), "quarantine"));
+        boolean permanent = action.equals("remove");
+        int removed = 0;
+        int quarantined = 0;
+        StringBuilder problems = new StringBuilder();
+        for (int i = 0; i < targets.size(); i++) {
+            String path = Json.str(targets.get(i), "path", "");
+            String sha = Json.str(targets.get(i), "sha", "");
+            if (path.length() == 0) {
+                continue;
+            }
+            // Matched on the package's location, not its declared id. Two installed plugins can carry
+            // the same pluginID, which the scanner itself reports as impersonation, and matching by id
+            // could act on the copy the plan never listed.
+            ScanReport match = findByPath(path, sha, result);
+            if (match == null || match.archive) {
+                append(problems, strings.noSuchPlugin(path));
+                continue;
+            }
+            if (!stillMatches(match)) {
+                append(problems, strings.changedSinceScan(flatten(match.manifest.displayName())));
+                continue;
+            }
+            Quarantine.Result moved = quarantine.quarantine(new File(match.path), host.pluginId());
+            if (!moved.ok) {
+                append(problems, moved.message);
+                continue;
+            }
+            // Counted by what actually happened. A removal whose purge failed left a restorable copy
+            // behind, so it is a quarantine, and reporting it as deleted would tell the user there is
+            // nothing left to recover when there is.
+            if (permanent) {
+                Quarantine.Result purged = purgeExact(quarantine, moved.location, match.path);
+                if (purged.ok) {
+                    result.actioned.put(match.path, "removed");
+                    removed++;
+                } else {
+                    result.actioned.put(match.path, "quarantined");
+                    quarantined++;
+                    append(problems, purged.message);
+                }
+            } else {
+                result.actioned.put(match.path, "quarantined");
+                quarantined++;
+            }
+        }
+        String summary = permanent ? strings.bulkDone("remove", removed)
+                : strings.bulkDone("quarantine", quarantined);
+        if (permanent && quarantined > 0) {
+            summary = summary + "   " + strings.someOnlyQuarantined(quarantined);
+        }
+        return problems.length() == 0 ? summary : summary + "   " + problems;
+    }
+
+    /**
+     * Deletes the copy this move just created.
+     *
+     * <p>Identified by the directory the move allocated, not by where it came from: an older copy of
+     * the same plugin can still be in quarantine, and purging that one would leave the new copy behind
+     * while reporting the plugin as permanently deleted.
+     */
+    private Quarantine.Result purgeExact(Quarantine quarantine, File location, String originalPath) {
+        if (location != null) {
+            return quarantine.purge(location.getName());
+        }
+        return new Quarantine.Result(false, strings.couldNotPurge(originalPath));
+    }
+
+    /**
+     * The identities a scope covers right now, in a stable order.
+     *
+     * <p>Sorted so that a plan and its later confirmation compare equal whenever the same plugins are
+     * present, regardless of the order the scan happened to return them in.
+     */
+    private String targetIds(String scope, Result result) {
+        List<ScanReport> targets = verifiable(bulkTargets(scope, result));
+        List<String> entries = new ArrayList<String>();
+        for (int i = 0; i < targets.size(); i++) {
+            ScanReport report = targets.get(i);
+            entries.add("{\"path\": " + Json.quote(report.path)
+                    + ", \"sha\": " + Json.quote(report.contentHash) + "}");
+        }
+        // Sorted so a plan and its confirmation compare equal whenever the same plugins are present,
+        // and written as JSON rather than joined with a delimiter: plugin ids come from an untrusted
+        // manifest, and one containing a newline used to split into several identities, which could
+        // match packages the plan never listed.
+        java.util.Collections.sort(entries);
+        StringBuilder sb = new StringBuilder("[");
+        for (int i = 0; i < entries.size(); i++) {
+            if (i > 0) {
+                sb.append(", ");
+            }
+            sb.append(entries.get(i));
+        }
+        return sb.append("]").toString();
+    }
+
+    /**
+     * The subset whose contents the scan managed to hash.
+     *
+     * <p>A package with no hash cannot be re-identified when the confirmation arrives, so it is left
+     * out of both the displayed list and the stored plan. Those two have to agree: a plan that
+     * silently covers something the user was not shown is exactly what the confirmation exists to
+     * prevent.
+     */
+    private static List<ScanReport> verifiable(List<ScanReport> reports) {
+        List<ScanReport> out = new ArrayList<ScanReport>();
+        for (int i = 0; i < reports.size(); i++) {
+            ScanReport report = reports.get(i);
+            if (report.contentHash != null && report.contentHash.length() > 0) {
+                out.add(report);
+            }
+        }
+        return out;
+    }
+
+    /** The installed plugins a scope covers, never including this scanner. */
+    private List<ScanReport> bulkTargets(String scope, Result result) {
+        List<ScanReport> out = new ArrayList<ScanReport>();
+        for (int i = 0; i < result.reports.size(); i++) {
+            ScanReport report = result.reports.get(i);
+            if (report.archive) {
+                continue;
+            }
+            // The reports are the scan from before this build acted on anything. A plugin an armed
+            // switch has just moved is no longer installed, and counting it here would let a pending
+            // confirmation validate against a set that no longer exists: the check would pass, then
+            // the action would fail on the moved plugin while still processing the rest.
+            if (result.actioned.containsKey(report.path)) {
+                continue;
+            }
+            if (host.pluginId().equals(report.manifest.pluginId)) {
+                continue;
+            }
+            Verdict verdict = report.verdict();
+            boolean malicious = verdict == Verdict.LIKELY_MALICIOUS || verdict == Verdict.KNOWN_BAD;
+            boolean suspicious = malicious || verdict == Verdict.SUSPICIOUS;
+            if (scope.equals("malicious") ? malicious : suspicious) {
+                out.add(report);
+            }
+        }
+        return out;
+    }
+
+    /** Finds the report for an exact package location whose contents still match the plan. */
+    private static ScanReport findByPath(String path, String sha, Result result) {
+        for (int i = 0; i < result.reports.size(); i++) {
+            ScanReport report = result.reports.get(i);
+            if (result.actioned.containsKey(report.path)) {
+                continue;
+            }
+            // No wildcard: a report whose hash could not be computed, or a plan that recorded none,
+            // cannot prove the package here is the one that was listed, and this deletes things.
+            if (report.path.equals(path) && sha.length() > 0 && sha.equals(report.contentHash)) {
+                return report;
+            }
+        }
+        return null;
+    }
+
+    /** Rebuilds the canonical target list from a stored plan, for comparison with the current one. */
+    private static String rebuildTargetList(List<java.util.Map<String, Object>> targets) {
+        List<String> entries = new ArrayList<String>();
+        for (int i = 0; i < targets.size(); i++) {
+            entries.add("{\"path\": " + Json.quote(Json.str(targets.get(i), "path", ""))
+                    + ", \"sha\": " + Json.quote(Json.str(targets.get(i), "sha", "")) + "}");
+        }
+        java.util.Collections.sort(entries);
+        StringBuilder sb = new StringBuilder("[");
+        for (int i = 0; i < entries.size(); i++) {
+            if (i > 0) {
+                sb.append(", ");
+            }
+            sb.append(entries.get(i));
+        }
+        return sb.append("]").toString();
+    }
+
+    /** Short code binding a confirmation to one action over one exact set of plugins. */
+    private static String confirmationCode(String action, String scope, String ids) {
+        try {
+            String digest = Bytes.sha256((action + "|" + scope + "|" + ids).getBytes("UTF-8"));
+            return digest.substring(0, 4);
+        } catch (java.io.UnsupportedEncodingException e) {
+            return "0000";
+        }
+    }
+
+    /**
+     * Makes an untrusted display name safe to put in a prompt.
+     *
+     * <p>Names come from manifest.json, where an escaped newline is perfectly valid JSON. Left as they
+     * are, a plugin could break the confirmation message across lines or write a convincing fake
+     * "confirm ..." instruction into the list of things about to be deleted. The prompt is the one
+     * place the user is asked to trust what they read, so control characters are flattened and the
+     * name is bounded.
+     */
+    static String flatten(String name) {
+        if (name == null) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder(name.length());
+        for (int i = 0; i < name.length() && sb.length() < 60; i++) {
+            char c = name.charAt(i);
+            sb.append(c < 0x20 || (c >= 0x7F && c <= 0x9F) ? ' ' : c);
+        }
+        String flat = sb.toString().trim();
+        return flat.length() == 0 ? "(unnamed)" : flat;
+    }
+
+    /**
+     * True when the package at a report's path still has the contents the scan saw.
+     *
+     * <p>The scan is a snapshot taken earlier in this build, and MT Manager or a running plugin can
+     * change the filesystem in between. Re-reading costs one more hash per target, which is a small
+     * price on the path that moves and deletes a user's plugins.
+     */
+    private static boolean stillMatches(ScanReport report) {
+        if (report.contentHash == null || report.contentHash.length() == 0) {
+            return false;
+        }
+        PluginPackage pkg = null;
+        try {
+            pkg = PluginPackage.open(new File(report.path));
+            String now = pkg.contentHash(ScanBudget.unlimited());
+            return now.length() > 0 && now.equals(report.contentHash);
+        } catch (java.io.IOException e) {
+            return false;
+        } catch (RuntimeException e) {
+            return false;
+        } finally {
+            if (pkg != null) {
+                pkg.close();
+            }
+        }
+    }
+
+    private static void append(StringBuilder sb, String message) {
+        if (message == null || message.length() == 0) {
+            return;
+        }
+        if (sb.length() > 0) {
+            sb.append("   ");
+        }
+        sb.append(message);
     }
 
     // ------------------------------------------------------------------ display
@@ -153,6 +590,11 @@ public final class ScanRunner {
             if (result.unscanned > 0) {
                 rows.add(Row.text(strings.notReached(result.unscanned), strings.notReachedHelp()));
             }
+            int malicious = bulkTargets("malicious", result).size();
+            int suspicious = bulkTargets("suspicious", result).size();
+            if (suspicious > 0) {
+                rows.add(Row.text(strings.bulkOffer(malicious, suspicious), strings.bulkOfferHelp()));
+            }
         }
 
         // Worst first, so the thing that matters is the first thing on screen.
@@ -160,8 +602,24 @@ public final class ScanRunner {
         for (int i = 0; i < ordered.size(); i++) {
             ScanReport report = ordered.get(i);
             rows.add(Row.header(verdictMarker(report) + " " + report.manifest.displayName()));
+            String happened = result.actioned.get(report.path);
+            if (happened != null) {
+                boolean removed = "removed".equals(happened);
+                rows.add(Row.text(removed ? strings.actedOnRemoved() : strings.actedOn(),
+                        removed ? strings.actedOnRemovedHelp() : strings.actedOnHelp()));
+            }
             rows.add(Row.text(strings.verdictLabel() + ": " + report.verdict().label()
                     + "  (" + report.score() + ")", report.verdict().advice()));
+            // One tap beats typing an id, and only for the installed plugins this can actually move.
+            // Offered only when the package was hashed: without one, the switch key is the same for
+            // whatever replaces this directory, and reopening would quarantine the replacement.
+            if (!report.archive && report.verdict().actionable()
+                    && report.contentHash != null && report.contentHash.length() > 0
+                    && !host.pluginId().equals(report.manifest.pluginId)
+                    && !result.actioned.containsKey(report.path)) {
+                rows.add(Row.toggle(strings.quarantineThis(), strings.quarantineThisHelp(),
+                        armKey(report)));
+            }
             if (report.manifest.pluginId.length() > 0) {
                 rows.add(Row.text(report.manifest.pluginId,
                         strings.versionLabel() + ": "
@@ -190,7 +648,9 @@ public final class ScanRunner {
                 rows.add(Row.text(strings.problem(), report.errors.get(j)));
             }
             rows.add(Row.text(strings.pathLabel(), report.path));
-            rows.add(Row.text(strings.hashLabel(), shortHash(report.contentHash)));
+            // Shown in full: this is the value the trust command takes, and a truncated one cannot be
+            // used for anything the screen offers.
+            rows.add(Row.text(strings.hashLabel(), fullHash(report.contentHash)));
         }
 
         List<Row> about = result.aboutRows;
@@ -258,11 +718,8 @@ public final class ScanRunner {
         return sb.toString();
     }
 
-    private static String shortHash(String hash) {
-        if (hash == null || hash.length() < 16) {
-            return "(none)";
-        }
-        return hash.substring(0, 16);
+    private static String fullHash(String hash) {
+        return hash == null || hash.length() == 0 ? "(none)" : hash;
     }
 
     private static String describeRoots(List<File> roots) {
@@ -282,7 +739,7 @@ public final class ScanRunner {
     // ------------------------------------------------------------------ commands
 
     /** Executes one typed command and returns a sentence describing what happened. */
-    private String runCommand(String command, IocDatabase database, File configFile) {
+    private String runCommand(String command, IocDatabase database, File configFile, Result result) {
         String[] parts = command.split("\\s+", 2);
         String verb = parts[0].toLowerCase(java.util.Locale.US);
         String argument = parts.length > 1 ? parts[1].trim() : "";
@@ -315,16 +772,30 @@ public final class ScanRunner {
             if (verb.equals("trust") || verb.equals("untrust") || verb.equals("deny")) {
                 return trustCommand(verb, argument, database, configFile);
             }
-            if (verb.equals("quarantine")) {
-                return quarantineCommand(argument, quarantine);
+            if (verb.equals("quarantine") || verb.equals("remove")) {
+                // A scope quarantines or removes everything the scan flagged; anything else names one
+                // plugin, which only quarantine does.
+                String scope = argument.toLowerCase(java.util.Locale.US);
+                if (scope.equals("malicious") || scope.equals("suspicious") || scope.equals("all")) {
+                    return planBulk(verb, scope.equals("all") ? "suspicious" : scope, result);
+                }
+                if (verb.equals("remove")) {
+                    return strings.removeNeedsScope();
+                }
+                return quarantineCommand(argument, quarantine, result);
+            }
+            if (verb.equals("confirm")) {
+                return confirmBulk(argument, result);
+            }
+            if (verb.equals("cancel")) {
+                host.putConfig(KEY_PENDING_PLAN, "");
+                return strings.planCancelled();
             }
             if (verb.equals("restore")) {
-                Quarantine.Result result = quarantine.restore(argument);
-                return result.message;
+                return quarantine.restore(argument).message;
             }
             if (verb.equals("purge")) {
-                Quarantine.Result result = quarantine.purge(argument);
-                return result.message;
+                return quarantine.purge(argument).message;
             }
             if (verb.equals("quarantined")) {
                 return describeQuarantine(quarantine);
@@ -364,26 +835,29 @@ public final class ScanRunner {
      * <p>Resolved against the plugins actually discovered rather than against a path the user types, so
      * a typo cannot move an unrelated directory.
      */
-    private String quarantineCommand(String argument, Quarantine quarantine) {
+    private String quarantineCommand(String argument, Quarantine quarantine, Result result) {
         if (argument.length() == 0) {
             return strings.needsArgument("quarantine");
         }
-        List<File> roots = MtEnvironment.candidateRoots(host.filesDir(), host.config(KEY_EXTRA_ROOT, ""));
-        List<Discovery.Candidate> candidates = MtEnvironment.findPlugins(roots, host.pluginId());
-        for (int i = 0; i < candidates.size(); i++) {
-            Discovery.Candidate candidate = candidates.get(i);
-            if (!candidate.installed) {
+        for (int i = 0; i < result.reports.size(); i++) {
+            ScanReport report = result.reports.get(i);
+            if (report.archive || result.actioned.containsKey(report.path)) {
                 continue;
             }
-            // Only the plugin's identity is needed here. Scanning each candidate in full would cost
-            // pattern matching, archive rules and hashing to learn one string, on the UI thread.
-            PluginManifest manifest = PluginManifest.readFrom(candidate.path);
-            boolean match = argument.equals(manifest.pluginId)
-                    || argument.equals(candidate.path.getName())
-                    || argument.equalsIgnoreCase(manifest.displayName());
+            boolean match = argument.equals(report.manifest.pluginId)
+                    || argument.equals(new File(report.path).getName())
+                    || argument.equalsIgnoreCase(report.manifest.displayName());
             if (match) {
-                Quarantine.Result result = quarantine.quarantine(candidate.path, host.pluginId());
-                return result.message;
+                if (!stillMatches(report)) {
+                    return strings.changedSinceScan(flatten(report.manifest.displayName()));
+                }
+                Quarantine.Result moved = quarantine.quarantine(new File(report.path), host.pluginId());
+                if (moved.ok) {
+                    // Recorded so the rebuilt screen shows this as moved rather than still installed
+                    // with a live switch: the scan ran before this command did.
+                    result.actioned.put(report.path, "quarantined");
+                }
+                return moved.message;
             }
         }
         return strings.noSuchPlugin(argument);
@@ -408,7 +882,7 @@ public final class ScanRunner {
     /** Writes the full report next to the plugin's configuration, for opening in MT Manager. */
     private String exportCommand() {
         List<File> roots = MtEnvironment.candidateRoots(host.filesDir(), host.config(KEY_EXTRA_ROOT, ""));
-        List<Discovery.Candidate> candidates = MtEnvironment.findPlugins(roots, host.pluginId());
+        List<Discovery.Candidate> candidates = MtEnvironment.findPlugins(roots, host.pluginId(), host.filesDir());
         IocDatabase database = IocDatabase.load(new File(host.filesDir(), "indicators.json"));
         PluginScanner scanner = new PluginScanner(database);
         List<ScanReport> reports = new ArrayList<ScanReport>();

@@ -132,6 +132,19 @@ public final class PluginScanner {
      * <p>An exhausted budget returns no bytes, and reporting that as a missing manifest produced a
      * false high-severity finding about a package whose manifest was present and perfectly readable.
      */
+    /** True when every member of the package sits under {@code prefix}. */
+    private static boolean allUnder(List<PluginPackage.Entry> entries, String prefix) {
+        for (PluginPackage.Entry entry : entries) {
+            if (entry.directory) {
+                continue;
+            }
+            if (!entry.name.startsWith(prefix)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     private PluginManifest readManifest(PluginPackage pkg, List<PluginPackage.Entry> entries,
             ScanBudget budget) {
         for (PluginPackage.Entry entry : entries) {
@@ -165,7 +178,10 @@ public final class PluginScanner {
             }
             String prefix = name.substring(0, name.length() - "manifest.json".length());
             // Only a single wrapping level; deeper nesting is not a repackaged plugin.
-            if (prefix.indexOf('/') == prefix.length() - 1) {
+            // Every member has to live under it as well: treating "A/manifest.json" as the root of a
+            // package that also contains "B/..." would hide everything under B from the scan
+            // entirely, which is a way to carry code past a reviewer.
+            if (prefix.indexOf('/') == prefix.length() - 1 && allUnder(entries, prefix)) {
                 return prefix;
             }
         }

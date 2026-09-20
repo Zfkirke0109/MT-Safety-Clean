@@ -26,8 +26,9 @@ jobs:
       - name: Check the committed package still matches the sources
         run: |
           # The .mtp is committed so it can be downloaded directly, and a zip is not byte-reproducible
-          # because it stores modification times. Comparing the member list catches the drift that
-          # matters: a source file added or removed without rebuilding the artefact.
+          # because it stores modification times. CONTENTS.txt records a hash per member, so this
+          # compares what is actually inside the artefact rather than only which files are in it: a
+          # changed source file whose name did not change is the stale-artefact case that matters.
           git diff --exit-code -- dist/CONTENTS.txt
 
       - name: Check the rule reference is up to date

@@ -11,6 +11,7 @@ import mt.safety.scanner.core.PluginScanner;
 import mt.safety.scanner.core.ReportFormatter;
 import mt.safety.scanner.core.ScanBudget;
 import mt.safety.scanner.core.ScanReport;
+import mt.safety.scanner.core.Verdict;
 
 /**
  * Command line front end to the same detection engine the plugin uses.
@@ -105,13 +106,21 @@ public final class MtSafetyCli {
         System.out.print(json ? ReportFormatter.json(reports) : ReportFormatter.plainText(reports));
 
         boolean actionNeeded = false;
+        boolean unreadable = false;
         for (int i = 0; i < reports.size(); i++) {
-            if (reports.get(i).verdict().actionable()) {
+            Verdict verdict = reports.get(i).verdict();
+            if (verdict.actionable()) {
                 actionNeeded = true;
-                break;
+            } else if (verdict == Verdict.UNREADABLE) {
+                unreadable = true;
             }
         }
-        System.exit(actionNeeded ? EXIT_ACTION_NEEDED : EXIT_OK);
+        // A package that could not be read is the read error the usage text promises to report. Silent
+        // success there would tell a script everything was fine about something nothing examined.
+        if (actionNeeded) {
+            System.exit(EXIT_ACTION_NEEDED);
+        }
+        System.exit(unreadable ? EXIT_ERROR : EXIT_OK);
     }
 
     /**

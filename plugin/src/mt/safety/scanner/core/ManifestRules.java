@@ -194,6 +194,12 @@ public final class ManifestRules {
                 if (!a.manifest.usable() || !b.manifest.usable()) {
                     continue;
                 }
+                // Only installed plugins are compared. A downloaded .mtp sitting beside the copy
+                // installed from it shares its identity by definition, and calling that impersonation
+                // would flag the most ordinary situation there is.
+                if (a.archive || b.archive) {
+                    continue;
+                }
                 String idA = a.manifest.pluginId;
                 String idB = b.manifest.pluginId;
                 String nameA = a.manifest.name;

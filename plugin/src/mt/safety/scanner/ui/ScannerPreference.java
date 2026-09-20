@@ -46,7 +46,7 @@ public class ScannerPreference implements PluginPreference {
         builder.addHeader(safe(strings.screenTitle()));
         builder.addText(safe(strings.screenSubtitle())).summary(safe(strings.limits()));
 
-        render(builder, result.rows);
+        render(builder, result.rows, strings);
 
         builder.addHeader(safe(strings.commandsHeader()));
         builder.addSwitch(safe(strings.deepSwitchTitle()), ScanRunner.KEY_DEEP)
@@ -56,7 +56,7 @@ public class ScannerPreference implements PluginPreference {
         builder.addInput(safe(strings.commandFieldTitle()), ScanRunner.KEY_COMMAND);
         builder.addText(safe(strings.commandsHelpTitle())).summary(safe(strings.commandsHelp()));
 
-        render(builder, result.aboutRows);
+        render(builder, result.aboutRows, strings);
     }
 
     /**
@@ -65,11 +65,18 @@ public class ScannerPreference implements PluginPreference {
      * <p>{@code java.util.List} is spelled out in full here: implementing {@link PluginPreference}
      * brings its nested {@code List} option type into scope, which shadows the collection type.
      */
-    private void render(Builder builder, java.util.List<ScanRunner.Row> rows) {
+    private void render(Builder builder, java.util.List<ScanRunner.Row> rows, Strings strings) {
         for (int i = 0; i < rows.size(); i++) {
             ScanRunner.Row row = rows.get(i);
             if (row.header) {
                 builder.addHeader(safe(row.title));
+            } else if (row.toggle) {
+                // The only tappable control MT Manager offers a plugin. It arms the action; the work
+                // happens on the next build, so nothing is done while the screen is open.
+                builder.addSwitch(safe(row.title), row.key)
+                        .defaultValue(false)
+                        .summaryOn(safe(strings.armedOn()))
+                        .summaryOff(safe(row.summary));
             } else {
                 builder.addText(safe(row.title)).summary(safe(row.summary));
             }

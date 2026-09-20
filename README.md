@@ -73,6 +73,34 @@ Each plugin gets a verdict and its findings, worst first, with the file and line
 | `[!!!]` | Likely malicious, or on your denylist. Remove it. |
 | `[ ? ]` | Could not be read. Judge it by hand. |
 
+### Removing a flagged plugin
+
+**One at a time:** an installed plugin the scan flagged gets a **Quarantine this plugin** switch under
+it. Turn it on and reopen the screen. The plugin is moved aside and `restore` puts it back. Nothing
+happens while the screen is open, so a switch touched by accident can simply be turned off again.
+
+The switch is deliberately absent in three cases, and each is a refusal rather than an oversight: a
+`.mtp` file sitting in a downloads folder is not installed, so there is nothing to move aside; a package
+the scan could not hash has no identity to bind the switch to, and the screen will not arm an action it
+cannot confirm is still pointing at the same files when it runs; and the scanner will not quarantine
+itself. Those are listed with `[ ? ]` or without a switch, and the advice line says to judge them by
+hand.
+
+**All of them at once:** type `quarantine malicious` (or `quarantine suspicious` for the wider net).
+Nothing is moved yet — the screen comes back listing exactly which plugins it would touch and a short
+code:
+
+```
+This will quarantine 2 plugin(s): Handy Tools, Theme Pack.
+Type "confirm 4f9a" to go ahead, or "cancel" to drop it.
+```
+
+Type `confirm 4f9a` and reopen. The code is tied to that exact set of plugins: if anything changed in
+between, it is refused rather than applied to a different list than the one you read.
+
+`remove malicious` / `remove suspicious` do the same thing but delete permanently, leaving no
+quarantined copy to restore from.
+
 ### Actions
 
 There are no buttons available to a plugin, so actions are typed into the **Command** field and run the
@@ -80,19 +108,26 @@ next time you open the screen. A half-typed command therefore cannot do anything
 
 | Command | What it does |
 | --- | --- |
+| `quarantine malicious` / `quarantine suspicious` | Move every flagged plugin aside, reversibly. Lists them and waits for a confirmation code. |
+| `remove malicious` / `remove suspicious` | The same, but permanent. |
+| `confirm CODE` / `cancel` | Carry out, or drop, the listed action. |
 | `deep` / `fast` | Thorough or quick scanning. Thorough reads more and opens more slowly. |
 | `export` | Writes the full text and JSON reports into this plugin's folder. |
 | `trust HASH` | Accept a package by its SHA-256. Shown at the bottom of each report. |
 | `untrust HASH` / `deny HASH_OR_ID` | Undo a trust decision, or mark something as known bad. |
-| `quarantine ID` | Move an installed plugin aside, reversibly. |
+| `quarantine ID` | Move one installed plugin aside, reversibly. |
 | `restore ID` / `purge ID` / `quarantined` | Manage what has been moved. |
 | `root PATH` | Also search a folder you name. |
+
+Bulk actions only ever touch **installed** plugins, never an `.mtp` sitting in a downloads folder, and
+never this scanner itself.
 
 ## Removing a malicious plugin
 
 **Use MT Manager's own plugin management screen to uninstall it.** That is the clean route: MT Manager
 keeps its own record of installed plugins, and deleting files from underneath it can leave that record
-inconsistent.
+inconsistent. A plugin cannot call that uninstaller — there is no API for it — so what this one offers
+instead is moving a plugin's files out of the way, or deleting them.
 
 `quarantine` exists for what that route does not cover — a plugin that misbehaves on load, or one you
 want preserved as evidence before it goes. It moves the plugin's directory into this plugin's own
@@ -111,8 +146,8 @@ tools/mtsafety --json plugin-dir/             # machine-readable
 ```
 
 Exit status is `0` when nothing needs action, `2` when something does, `1` on a usage or read error, so
-it drops into a script. It needs only a JDK — no Android SDK, no device — and runs under Termux on the
-phone itself.
+it drops into a script. It needs only a JDK (9 or newer) — no Android SDK, no device — and runs under
+Termux on the phone itself.
 
 ## Your own indicator lists
 
@@ -131,7 +166,8 @@ tools/build.sh test     # compile and test only
 tools/build.sh docs     # regenerate the rule reference from the rule catalogue
 ```
 
-Requirements: a JDK and `zip`. **No Android SDK is needed** — a plugin SDK v2 `.mtp` is a zip of Java
+Requirements: **JDK 9 or newer** and `zip`. (The scripts pass `javac --release 8`, which produces
+Java 8 bytecode for MT Manager's on-device compiler but is itself a JDK 9+ flag.) **No Android SDK is needed** — a plugin SDK v2 `.mtp` is a zip of Java
 sources that MT Manager compiles on the device. The `javac` run exists to catch errors before the phone
 does, using the stubs in `tools/stubs/` to stand in for classes MT Manager provides at runtime. Those
 stubs are never shipped inside the `.mtp`.
