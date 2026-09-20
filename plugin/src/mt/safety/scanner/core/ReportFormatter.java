@@ -120,6 +120,11 @@ public final class ReportFormatter {
     public static String plainText(List<ScanReport> reports) {
         StringBuilder sb = new StringBuilder();
         sb.append("MT Manager plugin safety report\n");
+        // Which rules produced this. A report read months later, or by someone else, is only
+        // meaningful against the catalogue that made it.
+        sb.append("Rules   : catalogue v").append(CodePatterns.CATALOGUE_VERSION)
+                .append(" of ").append(CodePatterns.CATALOGUE_DATE)
+                .append(" (").append(CodePatterns.ruleCount()).append(" rules)\n");
         sb.append(overview(reports)).append("\n\n");
         for (int i = 0; i < reports.size(); i++) {
             sb.append(plainText(reports.get(i))).append('\n');
@@ -132,7 +137,11 @@ public final class ReportFormatter {
     /** Machine-readable form, for keeping a record or diffing across scans. */
     public static String json(List<ScanReport> reports) {
         StringBuilder sb = new StringBuilder();
-        sb.append("{\n  \"reports\": [\n");
+        sb.append("{\n  \"catalogue\": {\"version\": ")
+                .append(CodePatterns.CATALOGUE_VERSION)
+                .append(", \"date\": ").append(Json.quote(CodePatterns.CATALOGUE_DATE))
+                .append(", \"rules\": ").append(CodePatterns.ruleCount()).append("},\n");
+        sb.append("  \"reports\": [\n");
         for (int i = 0; i < reports.size(); i++) {
             appendReport(sb, reports.get(i));
             sb.append(i + 1 < reports.size() ? ",\n" : "\n");

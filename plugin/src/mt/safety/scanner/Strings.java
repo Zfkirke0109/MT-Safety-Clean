@@ -272,7 +272,10 @@ public final class Strings {
     }
 
     public String commandsHelp() {
-        return pick("quarantine-all - move every flagged plugin aside, worth-a-look included."
+        return pick("definitions - where the rules came from and how old they are."
+                + " import PATH - fold in an indicator list you obtained yourself."
+                + "   "
+                + "quarantine-all - move every flagged plugin aside, worth-a-look included."
                 + "quarantine malicious / quarantine suspicious - move every flagged plugin aside,"
                 + " reversibly.   remove malicious / remove suspicious - delete them for good."
                 + "   confirm CODE / cancel - go ahead with, or drop, the listed action."
@@ -446,6 +449,80 @@ public final class Strings {
     public String nothingSelected() {
         return pick("Nothing is selected, malicious or quarantined, so nothing was done.",
                 "没有已选中、恶意或已隔离的插件，未执行操作。");
+    }
+
+    // ---------------------------------------------------- where detection comes from
+
+    public String rulesTitle(int version) {
+        return pick("Detection rules: catalogue v" + version,
+                "检测规则：规则库 v" + version);
+    }
+
+    public String rulesLine(int version, String date, int count, long ageDays) {
+        return pick(count + " rules, built " + date + " (" + age(ageDays) + "). Written and reviewed"
+                        + " in the open; updated by installing a new build of this plugin.",
+                count + " 条规则，版本日期 " + date + "（" + age(ageDays)
+                        + "）。规则公开可查，通过安装"
+                        + "新版插件更新。");
+    }
+
+    public String indicatorTitle() {
+        return pick("Your indicator file", "您的指标文件");
+    }
+
+    public String indicatorLine(String version, String updated, int trusted, int denied,
+            int patterns, long ageDays) {
+        String counts = trusted + " trusted, " + denied + " denied, " + patterns + " patterns";
+        String zhCounts = trusted + " 信任、" + denied + " 拒绝、" + patterns
+                + " 模式";
+        if (updated == null || updated.length() == 0) {
+            return pick(counts + ". No date recorded; it ships empty and holds only what you put in"
+                            + " it. Use \"import PATH\" to fold in a list you obtained yourself.",
+                    zhCounts + "。未记录日期；默认为空，"
+                            + "仅包含您自己添加的内容。"
+                            + "可用 \"import PATH\" 导入外部清单。");
+        }
+        String v = version == null || version.length() == 0 ? "" : " v" + version;
+        return pick("Version" + v + ", dated " + updated + " (" + age(ageDays) + "). " + counts + ".",
+                "版本" + v + "，日期 " + updated + "（" + age(ageDays) + "）。"
+                        + zhCounts + "。");
+    }
+
+    public String indicatorSource(String source) {
+        return pick("Source: " + source, "来源：" + source);
+    }
+
+    /** Plain-language age, since "0 days" reads worse than "today". */
+    private String age(long days) {
+        if (days == mt.safety.scanner.core.Dates.UNKNOWN) {
+            return pick("age unknown", "日期未知");
+        }
+        if (days < 0) {
+            return pick("dated in the future; check this device's clock",
+                    "日期晚于当前，请检查本机时间");
+        }
+        if (days == 0) {
+            return pick("today", "今天");
+        }
+        if (days == 1) {
+            return pick("1 day old", "1 天前");
+        }
+        return pick(days + " days old", days + " 天前");
+    }
+
+    public String noSuchFile(String path) {
+        return pick("No such file: " + path, "文件不存在：" + path);
+    }
+
+    public String importFailed(String reason) {
+        return pick("Could not import: " + reason, "导入失败：" + reason);
+    }
+
+    public String imported(int trusted, int denied, int patterns) {
+        return pick("Imported: " + trusted + " trusted, " + denied + " denied, " + patterns
+                        + " patterns added.",
+                "已导入：新增 " + trusted + " 信任、" + denied
+                        + " 拒绝、" + patterns + " 模式。");
     }
 
     // ------------------------------------------------------------ v3 button UI

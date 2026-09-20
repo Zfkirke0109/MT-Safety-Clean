@@ -8,6 +8,8 @@ import java.util.ArrayList;
 import java.util.List;
 
 import mt.safety.scanner.core.Bytes;
+import mt.safety.scanner.core.CodePatterns;
+import mt.safety.scanner.core.Dates;
 import mt.safety.scanner.core.Discovery;
 import mt.safety.scanner.core.Json;
 import mt.safety.scanner.core.IocDatabase;
@@ -852,6 +854,16 @@ public final class ScanRunner {
 
         List<Row> about = result.aboutRows;
         about.add(Row.header(strings.aboutHeader()));
+        long now = System.currentTimeMillis();
+        // Where the detection comes from, and how old it is. A scanner that cannot tell you this is
+        // asking to be trusted on nothing.
+        about.add(Row.text(strings.rulesTitle(CodePatterns.CATALOGUE_VERSION),
+                strings.rulesLine(CodePatterns.CATALOGUE_VERSION, CodePatterns.CATALOGUE_DATE,
+                        CodePatterns.ruleCount(), Dates.daysSince(CodePatterns.CATALOGUE_DATE, now))));
+        about.add(Row.text(strings.indicatorTitle(),
+                strings.indicatorLine(database.version(), database.updated(),
+                        database.trustedCount(), database.deniedCount(), database.patternCount(),
+                        database.undated() ? Dates.UNKNOWN : Dates.daysSince(database.updated(), now))));
         about.add(Row.text(strings.trustCounts(database.trustedCount(), database.deniedCount()),
                 new File(host.filesDir(), "indicators.json").getAbsolutePath()));
         about.add(Row.text(strings.rootsSearched(roots.size()), describeRoots(roots)));
@@ -1002,6 +1014,12 @@ public final class ScanRunner {
             if (verb.equals("purge")) {
                 return quarantine.purge(argument).message;
             }
+            if (verb.equals("definitions") || verb.equals("defs")) {
+                return describeDefinitions(database);
+            }
+            if (verb.equals("import")) {
+                return importCommand(argument, database, configFile);
+            }
             if (verb.equals("quarantined")) {
                 return describeQuarantine(quarantine);
             }
@@ -1066,6 +1084,58 @@ public final class ScanRunner {
             }
         }
         return strings.noSuchPlugin(argument);
+    }
+
+    /**
+     * Where the detection came from and how old it is.
+     *
+     * <p>Two separate things, and they update differently. The rule catalogue is compiled into the
+     * plugin, so it moves when the plugin is updated. The indicator file is the user's own, and moves
+     * when they edit or import one.
+     */
+    private String describeDefinitions(IocDatabase database) {
+        long now = System.currentTimeMillis();
+        StringBuilder sb = new StringBuilder();
+        sb.append(strings.rulesLine(CodePatterns.CATALOGUE_VERSION, CodePatterns.CATALOGUE_DATE,
+                CodePatterns.ruleCount(), Dates.daysSince(CodePatterns.CATALOGUE_DATE, now)));
+        sb.append("   ");
+        sb.append(strings.indicatorLine(database.version(), database.updated(),
+                database.trustedCount(), database.deniedCount(), database.patternCount(),
+                database.undated() ? Dates.UNKNOWN : Dates.daysSince(database.updated(), now)));
+        if (database.source().length() > 0) {
+            sb.append("   ").append(strings.indicatorSource(database.source()));
+        }
+        return sb.toString();
+    }
+
+    /**
+     * Folds an indicator file the user obtained themselves into their own.
+     *
+     * <p>A file, not a download. The scanner has no network code at all, which is the point: a list
+     * fetched over the wire would put a server in the middle of a security decision and give this
+     * plugin a capability it spends its time reporting other plugins for having. So an update is a
+     * file you chose, from a source you trust, imported deliberately.
+     */
+    private String importCommand(String argument, IocDatabase database, File configFile) {
+        if (argument.length() == 0) {
+            return strings.needsArgument("import");
+        }
+        File source = new File(argument);
+        if (!source.isFile()) {
+            return strings.noSuchFile(argument);
+        }
+        IocDatabase incoming = IocDatabase.load(source);
+        if (!incoming.loadErrors().isEmpty()) {
+            return strings.importFailed(incoming.loadErrors().get(0));
+        }
+        int[] added = database.mergeFrom(incoming);
+        try {
+            database.save(configFile);
+        } catch (IOException e) {
+            return strings.couldNotSave(e.getMessage());
+        }
+        return strings.imported(added[0], added[1], added[2])
+                + "   " + describeDefinitions(database);
     }
 
     private String describeQuarantine(Quarantine quarantine) {

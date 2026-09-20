@@ -28,6 +28,20 @@ import mt.safety.scanner.core.Indicator.Scope;
  */
 public final class CodePatterns {
 
+    /**
+     * The rule catalogue's own version, bumped whenever a rule below is added or changed.
+     *
+     * <p>These rules are not malware signatures and there is no feed behind them: they describe what
+     * a plugin is *able* to do, and they are written and reviewed in this file. So "how current" the
+     * scanner is means "which build of this catalogue is installed", which is what this reports. It
+     * is shown on the settings screen and at the top of every exported report, so a report can always
+     * be read against the rules that produced it.
+     */
+    public static final int CATALOGUE_VERSION = 3;
+
+    /** The date the catalogue last changed, as ISO {@code yyyy-MM-dd}. */
+    public static final String CATALOGUE_DATE = "2026-09-20";
+
     private static final List<Indicator> INDICATORS = new ArrayList<Indicator>();
     private static final List<PairIndicator> PAIRS = new ArrayList<PairIndicator>();
 
@@ -40,6 +54,11 @@ public final class CodePatterns {
 
     public static List<PairIndicator> pairs() {
         return Collections.unmodifiableList(PAIRS);
+    }
+
+    /** How many rules the catalogue holds, single indicators and same-file pairs together. */
+    public static int ruleCount() {
+        return INDICATORS.size() + PAIRS.size();
     }
 
     private static void add(String id, Category category, Severity severity, String title, String detail,

@@ -156,14 +156,46 @@ Exit status is `0` when nothing needs action, `2` when something does, `1` on a 
 it drops into a script. It needs only a JDK (9 or newer) — no Android SDK, no device — and runs under
 Termux on the phone itself.
 
-## Your own indicator lists
+## Where the detection comes from
 
-`assets/indicators.json` is copied into the plugin's folder on first run. It holds your trusted hashes,
-your denied hashes and plugin ids, and any extra regular expressions you want treated as high severity.
+There is no threat-intelligence feed behind this, and no vendor database. Detection is two things,
+and they are deliberately kept apart because they age and update differently.
+
+**1. The rule catalogue** — 47 rules, written and reviewed in
+[`CodePatterns.java`](plugin/src/mt/safety/scanner/core/CodePatterns.java). Each one is a regular
+expression, a severity, a title and a paragraph explaining why it is there, in a plain text file you
+can read in a browser. They are **capability rules, not malware signatures**: they answer "what is
+this plugin able to do", which is why the scanner works on a plugin nobody has ever seen before and
+why it can point at a file, a line and the matched snippet as evidence. Nothing is hashed, hidden or
+compiled into an opaque blob, and [`docs/DETECTION-RULES.md`](docs/DETECTION-RULES.md) is generated
+*from* the catalogue by the build, so the published reference cannot drift from what actually runs.
+
+The catalogue carries a version and a date. Both are shown under **About** on the scanner screen, at
+the top of every exported report, and in the JSON export, so a report can always be read against the
+rules that produced it. Type `definitions` to see them with the age in days. The catalogue is compiled
+into the plugin, so it updates when you install a new build — there is no separate definition
+download.
+
+**2. Your indicator file** — `assets/indicators.json`, copied into the plugin's folder on first run.
+It holds your trusted hashes, your denied hashes and plugin ids, and any extra regular expressions you
+want treated as high severity, plus `version`, `updated` and `source` describing where the list came
+from. The scanner shows those and how many days old the file is.
 
 It ships **empty on purpose**. A list of allegedly malicious plugin hashes invented by this tool's
-author would be worthless, and one fetched from a server would put a network dependency in the middle of
-a security decision. Fill it from sources you trust; share it as a plain file.
+author would be worthless, and one fetched from a server would put a network dependency in the middle
+of a security decision — in a tool whose whole job is reporting other plugins for having exactly that
+capability. So updating it is deliberate: obtain a list from a source you trust and fold it in with
+
+```
+import /sdcard/Download/plugin-iocs.json
+```
+
+which merges rather than replaces (your own trust decisions survive), adopts the newer list's version
+and date, and tells you how many entries were added. Re-importing the same list adds nothing.
+
+**This scanner makes no network connections at all** — not for definitions, not for telemetry, not for
+anything. You can verify that: `grep -rn "java.net\|URLConnection\|Socket" plugin/src/` returns only
+the rule catalogue's own search strings.
 
 ## Build and test
 

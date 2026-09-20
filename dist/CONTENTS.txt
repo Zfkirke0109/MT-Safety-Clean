@@ -1,5 +1,5 @@
 assets/  (directory)
-assets/indicators.json  6e4f0156cd208fd17c40398df1591e26a69cf9d6896a3e5989d88fffc86674e0
+assets/indicators.json  173d1623ad67920b10d7b528a970948439808de0b1dcbb045d5ab92348e424f3
 classes.dex  (compiled; not hashed)
 icon.png  af976337717f5a815702be1065df7244c0f0de7dd8d424f4bf33ea9bc8450ef1
 manifest.json  4688e2abed1f2e4df1dc4760e9903050e283d73a9024f53b2fb23fa6183b89af

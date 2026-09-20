@@ -51,6 +51,7 @@ public final class ScannerTest {
         reportRendering(fixtures);
         regressions(fixtures);
         realDeviceReport(fixtures);
+        definitionProvenance();
         ActionsTest.run(new ActionsTest.Checker() {
             @Override
             public void that(String description, boolean condition, String context) {
@@ -478,6 +479,82 @@ public final class ScannerTest {
      * a {@code classes.dex}, a {@code {key}} name resolved from an {@code .mtl}, an {@code icon.webp},
      * and assets that mention API names in passing. These pin the behaviour that report demanded.
      */
+    /** Where the detection comes from, and whether the scanner can say how old it is. */
+    private static void definitionProvenance() {
+        // Civil-date arithmetic, which is what the age on screen rests on.
+        check("the epoch is day zero",
+                mt.safety.scanner.core.Dates.epochDay("1970-01-01") == 0,
+                String.valueOf(mt.safety.scanner.core.Dates.epochDay("1970-01-01")));
+        check("a leap day is counted",
+                mt.safety.scanner.core.Dates.epochDay("2024-03-01")
+                        - mt.safety.scanner.core.Dates.epochDay("2024-02-28") == 2,
+                "2024-02-28 -> 2024-03-01");
+        check("a century that is not a leap year is counted",
+                mt.safety.scanner.core.Dates.epochDay("1900-03-01")
+                        - mt.safety.scanner.core.Dates.epochDay("1900-02-28") == 1,
+                "1900 is not a leap year");
+        check("an unreadable date is reported as unknown, not as day zero",
+                mt.safety.scanner.core.Dates.epochDay("not-a-date") == mt.safety.scanner.core.Dates.UNKNOWN
+                        && mt.safety.scanner.core.Dates.epochDay(null) == mt.safety.scanner.core.Dates.UNKNOWN,
+                "bad dates must not read as 1970");
+        long twoDays = mt.safety.scanner.core.Dates.daysSince("2026-01-01",
+                (mt.safety.scanner.core.Dates.epochDay("2026-01-03") * 86400000L) + 5000L);
+        check("age is whole days since the date", twoDays == 2, String.valueOf(twoDays));
+
+        // The catalogue says what it is, and the rule count is real rather than hardcoded.
+        check("the rule catalogue carries a version and a readable date",
+                mt.safety.scanner.core.CodePatterns.CATALOGUE_VERSION > 0
+                        && mt.safety.scanner.core.Dates.epochDay(
+                                mt.safety.scanner.core.CodePatterns.CATALOGUE_DATE)
+                                != mt.safety.scanner.core.Dates.UNKNOWN,
+                mt.safety.scanner.core.CodePatterns.CATALOGUE_DATE);
+        check("the rule count matches the catalogue actually loaded",
+                mt.safety.scanner.core.CodePatterns.ruleCount()
+                        == mt.safety.scanner.core.CodePatterns.indicators().size()
+                                + mt.safety.scanner.core.CodePatterns.pairs().size(),
+                String.valueOf(mt.safety.scanner.core.CodePatterns.ruleCount()));
+
+        // An indicator file states its own provenance, and keeps it when the user edits the file.
+        IocDatabase dated = IocDatabase.parse("{\"version\": \"7\", \"updated\": \"2026-01-05\","
+                + " \"source\": \"example.org advisory\", \"trusted\": [], \"denied\": [],"
+                + " \"patterns\": []}");
+        check("an indicator file's version, date and source are read",
+                "7".equals(dated.version()) && "2026-01-05".equals(dated.updated())
+                        && dated.source().contains("example.org"), dated.updated());
+        dated.trust("abc123", "mine");
+        check("recording a trust decision does not erase the file's provenance",
+                IocDatabase.parse(dated.toJson()).updated().equals("2026-01-05")
+                        && IocDatabase.parse(dated.toJson()).source().contains("example.org"),
+                dated.toJson());
+        check("a file with no date says so rather than implying it is current",
+                IocDatabase.parse("{\"trusted\": [], \"denied\": [], \"patterns\": []}").undated(),
+                "an undated file must be reported as undated");
+
+        // Importing folds a list in without dropping what the user already decided.
+        IocDatabase mine = IocDatabase.parse("{\"updated\": \"2026-01-01\", \"trusted\":"
+                + " [{\"value\": \"keepme\", \"note\": \"mine\"}], \"denied\": [], \"patterns\": []}");
+        IocDatabase incoming = IocDatabase.parse("{\"version\": \"9\", \"updated\": \"2026-06-01\","
+                + " \"trusted\": [], \"denied\": [{\"value\": \"badhash\", \"note\": \"advisory\"}],"
+                + " \"patterns\": [\"evil\\\\.example\"]}");
+        int[] added = mine.mergeFrom(incoming);
+        check("an import adds what is new",
+                added[1] == 1 && added[2] == 1, java.util.Arrays.toString(added));
+        check("and keeps the user's own decisions",
+                mine.isTrusted("keepme"), "the user's trusted entry was dropped");
+        check("the newer date wins, so the age shown is the age of what was added",
+                "2026-06-01".equals(mine.updated()) && "9".equals(mine.version()), mine.updated());
+        int[] again = mine.mergeFrom(incoming);
+        check("importing the same list twice adds nothing the second time",
+                again[0] == 0 && again[1] == 0 && again[2] == 0, java.util.Arrays.toString(again));
+
+        // An older list must not roll the recorded date backwards.
+        IocDatabase older = IocDatabase.parse("{\"updated\": \"2025-01-01\", \"trusted\": [],"
+                + " \"denied\": [], \"patterns\": []}");
+        mine.mergeFrom(older);
+        check("importing an older list does not roll the date backwards",
+                "2026-06-01".equals(mine.updated()), mine.updated());
+    }
+
     private static void realDeviceReport(Fixtures fixtures) {
         String benign = "package demo;\npublic class A { public int n() { return 1; } }\n";
 

@@ -46,6 +46,11 @@ public final class IocDatabase {
     private final List<String> loadErrors = new ArrayList<String>();
 
     /** An empty database, used when no file exists yet. */
+    /** What the indicator file says about itself: where it came from and when it was made. */
+    private String version = "";
+    private String updated = "";
+    private String source = "";
+
     public static IocDatabase empty() {
         return new IocDatabase();
     }
@@ -58,6 +63,9 @@ public final class IocDatabase {
         }
         try {
             Map<String, Object> root = Json.parseObject(json);
+            db.version = Json.str(root, "version", "");
+            db.updated = Json.str(root, "updated", "");
+            db.source = Json.str(root, "source", "");
             db.readRecords(Json.objectList(root, "trusted"), db.trusted);
             db.readRecords(Json.objectList(root, "denied"), db.denied);
             List<String> regexes = Json.stringList(root, "patterns");
@@ -142,6 +150,74 @@ public final class IocDatabase {
         return loadErrors;
     }
 
+    /** The file's declared version, or an empty string when it declares none. */
+    public String version() {
+        return version;
+    }
+
+    /** The file's declared date as ISO {@code yyyy-MM-dd}, or an empty string. */
+    public String updated() {
+        return updated;
+    }
+
+    /** Where the file says it came from, or an empty string. */
+    public String source() {
+        return source;
+    }
+
+    /** True when the file carries none of the metadata that would let its age be judged. */
+    public boolean undated() {
+        return updated == null || updated.length() == 0;
+    }
+
+    public int patternCount() {
+        return patternSources.size();
+    }
+
+    /**
+     * Folds another indicator file into this one, and reports how much was new.
+     *
+     * <p>Merging rather than replacing, because this file holds the user's own trust decisions as
+     * well as whatever they imported: a list from elsewhere should be able to add to those, never
+     * quietly drop them. An entry already present keeps the note it already had. The metadata is
+     * taken from the import when the import is the newer of the two, so the age shown afterwards is
+     * the age of what was actually added.
+     *
+     * @return counts of what was added: trusted, denied, patterns
+     */
+    public int[] mergeFrom(IocDatabase other) {
+        int[] added = new int[3];
+        if (other == null) {
+            return added;
+        }
+        for (Record record : other.trusted.values()) {
+            if (trusted.put(record.value.toLowerCase(java.util.Locale.US), record) == null) {
+                added[0]++;
+            }
+        }
+        for (Record record : other.denied.values()) {
+            if (denied.put(record.value.toLowerCase(java.util.Locale.US), record) == null) {
+                added[1]++;
+            }
+        }
+        for (int i = 0; i < other.patternSources.size(); i++) {
+            String regex = other.patternSources.get(i);
+            if (!patternSources.contains(regex)) {
+                patternSources.add(regex);
+                patterns.add(other.patterns.get(i));
+                added[2]++;
+            }
+        }
+        long mine = Dates.epochDay(updated);
+        long theirs = Dates.epochDay(other.updated);
+        if (theirs != Dates.UNKNOWN && (mine == Dates.UNKNOWN || theirs >= mine)) {
+            updated = other.updated;
+            version = other.version;
+            source = other.source;
+        }
+        return added;
+    }
+
     public int trustedCount() {
         return trusted.size();
     }
@@ -174,7 +250,13 @@ public final class IocDatabase {
     /** Serialises the database as JSON. */
     public String toJson() {
         StringBuilder sb = new StringBuilder();
-        sb.append("{\n  \"trusted\": [\n");
+        sb.append("{\n");
+        // Written back out so the file keeps saying what it is and when it was made. Without this,
+        // the first trust decision the user recorded would erase the provenance of the list.
+        sb.append("  \"version\": ").append(Json.quote(version)).append(",\n");
+        sb.append("  \"updated\": ").append(Json.quote(updated)).append(",\n");
+        sb.append("  \"source\": ").append(Json.quote(source)).append(",\n");
+        sb.append("  \"trusted\": [\n");
         appendRecords(sb, trusted);
         sb.append("  ],\n  \"denied\": [\n");
         appendRecords(sb, denied);

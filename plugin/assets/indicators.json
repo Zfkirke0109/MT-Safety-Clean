@@ -12,10 +12,19 @@
     "           in a package and reported as high severity. Add an endpoint or string from an",
     "           advisory here rather than waiting for a new build of the scanner.",
     "",
+    "version / updated / source - what this list is, when it was made and where it came from.",
+    "           The scanner shows these, and how many days old the file is, on its About section.",
+    "           Ships blank because this copy is yours and starts empty. Fill them in when you",
+    "           import or curate a list, so a report can be read against known definitions.",
+    "",
     "This file deliberately ships with no hashes. A list of allegedly malicious plugin hashes",
     "invented by the scanner's author would be worthless, and one fetched from a server would put a",
-    "network dependency in the middle of a security decision. Populate it from sources you trust."
+    "network dependency in the middle of a security decision. Populate it from sources you trust,",
+    "or fold one in with the scanner's \"import PATH\" command."
   ],
+  "version": "",
+  "updated": "",
+  "source": "",
   "trusted": [],
   "denied": [],
   "patterns": []
