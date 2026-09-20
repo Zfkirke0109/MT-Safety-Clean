@@ -47,6 +47,13 @@ the network. If it only does that, the network finding is recorded as context an
 the same package also reads private data, the excuse is withdrawn and its network use counts in full.
 The example above is exactly that case: it declares itself a translation engine, and is still condemned.
 
+**Known-malware signatures, if you load some.** The scanner reads signature files in
+[ClamAV](https://www.clamav.net/)'s published text formats (`.hdb`, `.hsb`, `.ndb`, `.fp`, `.ign2`)
+and checks every member of every plugin, inside bundled jars too, against them. A hash or pattern
+match is reported as **Known bad** with the signature's name as evidence. The same signatures can be
+run over the files MT Manager can read — the download folder, `MT2/`, its own storage — with a button
+or the `files` command. See [Known-malware signatures](#known-malware-signatures-clamav-format).
+
 Full reference, generated from the rules themselves: **[docs/DETECTION-RULES.md](docs/DETECTION-RULES.md)**.
 
 ## Install the plugin
@@ -150,6 +157,8 @@ passwords and keys involved. Removing the plugin does not undo what it already s
 tools/mtsafety suspicious.mtp                 # a package you downloaded
 tools/mtsafety --scan-dir /sdcard/Download    # everything in a folder
 tools/mtsafety --json plugin-dir/             # machine-readable
+tools/mtsafety --signatures android.ndb x.mtp # also match ClamAV-format signatures
+tools/mtsafety --signatures sigs/ --files ~/Downloads   # check ordinary files against them
 ```
 
 Exit status is `0` when nothing needs action, `2` when something does, `1` on a usage or read error, so
@@ -158,7 +167,7 @@ Termux on the phone itself.
 
 ## Where the detection comes from
 
-There is no threat-intelligence feed behind this, and no vendor database. Detection is two things,
+There is no threat-intelligence feed behind this, and no vendor database. Detection is three things,
 and they are deliberately kept apart because they age and update differently.
 
 **1. The rule catalogue** — 47 rules, written and reviewed in
@@ -193,9 +202,71 @@ import /sdcard/Download/plugin-iocs.json
 which merges rather than replaces (your own trust decisions survive), adopts the newer list's version
 and date, and tells you how many entries were added. Re-importing the same list adds nothing.
 
+**3. Malware signatures** — files in ClamAV's formats that you import, described in the next section.
+The scanner shows how many are loaded, from how many files, and the date of the newest one.
+
 **This scanner makes no network connections at all** — not for definitions, not for telemetry, not for
 anything. You can verify that: `grep -rn "java.net\|URLConnection\|Socket" plugin/src/` returns only
 the rule catalogue's own search strings.
+
+## Known-malware signatures (ClamAV format)
+
+The capability rules answer "what can this plugin do". A malware signature answers a different
+question: "has this exact file, or this exact byte sequence, been seen and classified before". Both
+are worth having, and the second is what a conventional antivirus is. The one free and open-source
+antivirus whose signatures anyone can download and read is **[ClamAV](https://www.clamav.net/)** (GPL,
+maintained by Cisco Talos), so that is the format this scanner reads. Nothing is converted: a file from
+ClamAV, or from a third-party feed written for it, loads as it is.
+
+| File | Holds | Format |
+| --- | --- | --- |
+| `.hdb`, `.hdu` | MD5 of a whole file | `md5:size:name` (`*` for any size) |
+| `.hsb`, `.hsu` | SHA-1 or SHA-256 of a whole file | `sha:size:name` |
+| `.ndb`, `.ndu` | a byte pattern with wildcards | `name:target:offset:hexpattern` |
+| `.fp`, `.sfp` | hashes of files known to be clean, never reported | as `.hdb` / `.hsb` |
+| `.ign2` | names of signatures to switch off | one name per line |
+
+A match on a plugin member is `SIG001` (hash) or `SIG002` (pattern) and makes the plugin **Known bad**;
+a `PUA.*` signature — adware, riskware, unwanted rather than hostile — is `SIG003`, high severity. A
+matched member is named in the evidence together with the signature's name, which is the only
+description a signature carries.
+
+**Loading signatures.** Type `import /sdcard/Download/android.ndb` (any of the extensions above), or
+copy files into the folder shown under *About → Signature folder*. The file is parsed before it is
+copied, so a file with nothing usable in it is refused rather than left in the folder. Importing a file
+of the same name replaces it, which is how you update. `definitions` shows how many hash and pattern
+signatures are loaded and the date of the newest file; entries that use syntax this scanner does not
+implement are counted and shown rather than loaded to silently match nothing.
+
+**Getting signatures.** Install ClamAV on a desktop (`apt install clamav`, `brew install clamav`) and run
+`freshclam`, which downloads `main.cvd` and `daily.cvd`. Those are packed bundles of several million
+entries, far more than a phone can hold and mostly Windows and email malware, so unpack one and keep the
+part that matters here:
+
+```sh
+mkdir daily && cd daily && sigtool --unpack /var/lib/clamav/daily.cvd
+grep -h '^Andr\.' daily.ndb > android.ndb            # Android byte patterns
+grep -hi 'Andr\.' daily.hdb daily.hsb > android.hsb   # Android hashes (mixed md5/sha, any order)
+```
+
+Then copy the result to the phone and `import` it. Loading stops at 300,000 hashes and 40,000 patterns
+and says how many it left out. Third-party feeds in the same formats (Sanesecurity, URLhaus and others)
+work the same way; choose sources you trust, because a signature file decides what gets called
+malicious.
+
+**Scanning files, not just plugins.** The *Scan files for known malware* button, or `files`
+(optionally `files /sdcard/Download`), walks the folders this plugin can read — the same places it
+searches for plugins — and checks each file, and each member of each archive, against the loaded
+signatures. It reports; it never deletes, because a hit in your download folder is yours to look at.
+The walk is bounded by a time and byte budget (about 6 seconds, or 90 with deep scanning), a file
+count and a hit count, and the result says which limit it hit and how many files it actually checked.
+The full list is written to `files-report.txt` next to the plugin's other reports.
+
+**What this is not.** ClamAV's database is about what has been seen, and its Android coverage is small;
+nobody has published signatures for MT plugins specifically. So a match is strong evidence, an absence
+of matches proves nothing, and the capability rules stay the first line of defence against a plugin
+nobody has classified yet. It is also not a commercial antivirus: no real-time protection, no cloud
+lookups, no behavioural sandbox — and, by design, no network access at all.
 
 ## Build and test
 
@@ -208,6 +279,10 @@ tools/build.sh docs     # regenerate the rule reference from the rule catalogue
 Requirements for `test`: **JDK 9 or newer** and `zip`, nothing else. The detection core is plain Java
 with no Android or MT types, so it compiles and runs on a desktop JVM; `tools/build.sh test` is the
 build a contributor runs.
+
+The command-line scanner takes the same signatures: `--signatures PATH` (a file or a folder, may be
+repeated) applies them to every package scanned, and `--files DIR` walks a folder of ordinary files
+against them, exiting `2` if anything matched.
 
 `package` builds a plugin SDK **v3** `.mtp`, whose code ships as a compiled `classes.dex`. That step
 additionally downloads, and caches under the build directory, an Android platform jar, a stable
@@ -233,6 +308,8 @@ plugin/                     what goes into the .mtp
   icon.png                  the plugin's icon
   src/mt/safety/scanner/
     core/                   the detection engine: no Android, no MT, no dependencies
+      SignatureDatabase,    ClamAV-format signatures: HexSignature is the pattern matcher,
+      FileScanner           FileScanner walks ordinary files against them
     ScanRunner, Host        logic and the seam to the UI
   ui-v3/...ScannerPreference the v3 UI (buttons + dialogs); the only file that touches an MT type
 tools/
@@ -267,5 +344,7 @@ phone and under test on a desktop JVM, and it is why the tests can be this thoro
   whatever the layout. Unreadable locations are skipped. Add one with `root PATH`.
 - **The scanner excludes itself.** Its rule catalogue contains every string it searches for, so scanning
   itself would produce a page of findings about the tool doing its job.
-- **No signatures.** MT plugin packages are not signed, so there is no publisher to verify. Identity
-  rests on the content hash and your own trusted list.
+- **Packages are not signed.** MT plugin packages carry no publisher signature, so there is no author
+  to verify. Identity rests on the content hash and your own trusted list.
+- **Malware signatures know only what has been seen.** They ship empty, you load them, and ClamAV's
+  Android coverage is small. Treat a match as strong and an absence of matches as nothing.

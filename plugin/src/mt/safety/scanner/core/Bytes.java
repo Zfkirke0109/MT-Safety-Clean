@@ -49,6 +49,43 @@ public final class Bytes {
         }
     }
 
+    /**
+     * A raw digest of {@code data} under a named algorithm.
+     *
+     * <p>Every JVM and every Android release ships MD5, SHA-1 and SHA-256, which are the three that
+     * signature databases use, so an absent algorithm is a broken runtime rather than a condition to
+     * handle.
+     */
+    public static byte[] digest(String algorithm, byte[] data) {
+        try {
+            return MessageDigest.getInstance(algorithm).digest(data);
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException(algorithm + " unavailable", e);
+        }
+    }
+
+    /**
+     * Decodes a hex string to bytes, or returns null when it is not one.
+     *
+     * <p>Signature files spell hashes in hex; comparing them as bytes keeps a database of hundreds of
+     * thousands of entries at a fraction of what the same table of strings would cost.
+     */
+    public static byte[] fromHex(String hex) {
+        if (hex == null || hex.length() % 2 != 0) {
+            return null;
+        }
+        byte[] out = new byte[hex.length() / 2];
+        for (int i = 0; i < out.length; i++) {
+            int hi = Character.digit(hex.charAt(i * 2), 16);
+            int lo = Character.digit(hex.charAt(i * 2 + 1), 16);
+            if (hi < 0 || lo < 0) {
+                return null;
+            }
+            out[i] = (byte) ((hi << 4) | lo);
+        }
+        return out;
+    }
+
     /** How often the streaming hash stops to ask whether the scan still has time. */
     private static final int HASH_DEADLINE_CHECK_BYTES = 1 << 22;
 

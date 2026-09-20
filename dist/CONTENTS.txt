@@ -2,4 +2,4 @@ assets/  (directory)
 assets/indicators.json  173d1623ad67920b10d7b528a970948439808de0b1dcbb045d5ab92348e424f3
 classes.dex  (compiled; not hashed)
 icon.png  af976337717f5a815702be1065df7244c0f0de7dd8d424f4bf33ea9bc8450ef1
-manifest.json  4688e2abed1f2e4df1dc4760e9903050e283d73a9024f53b2fb23fa6183b89af
+manifest.json  f7563939a398dbd706d8825000f87060abf1659f9a2c880de61de260f0b26c14

@@ -22,7 +22,8 @@ public enum Category {
     EVASION("Anti-analysis behaviour"),
     PERSISTENCE("Writing installable or executable files"),
     RECON("Screen, clipboard and accessibility capture"),
-    PROVENANCE("Identity and trust of the package");
+    PROVENANCE("Identity and trust of the package"),
+    SIGNATURE("Known malware signatures");
 
     private final String label;
 

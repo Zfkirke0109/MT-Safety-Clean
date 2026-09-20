@@ -5,12 +5,14 @@ import java.util.ArrayList;
 import java.util.List;
 
 import mt.safety.scanner.core.Discovery;
+import mt.safety.scanner.core.FileScanner;
 import mt.safety.scanner.core.PluginManifest;
 import mt.safety.scanner.core.IocDatabase;
 import mt.safety.scanner.core.PluginScanner;
 import mt.safety.scanner.core.ReportFormatter;
 import mt.safety.scanner.core.ScanBudget;
 import mt.safety.scanner.core.ScanReport;
+import mt.safety.scanner.core.SignatureDatabase;
 import mt.safety.scanner.core.Verdict;
 
 /**
@@ -34,6 +36,8 @@ public final class MtSafetyCli {
     public static void main(String[] args) {
         List<File> targets = new ArrayList<File>();
         List<File> discoverRoots = new ArrayList<File>();
+        List<File> signaturePaths = new ArrayList<File>();
+        List<File> fileRoots = new ArrayList<File>();
         boolean json = false;
         boolean deep = false;
         boolean includeSelf = false;
@@ -59,6 +63,18 @@ public final class MtSafetyCli {
                     return;
                 }
                 discoverRoots.add(new File(args[i]));
+            } else if (arg.equals("--signatures")) {
+                if (++i >= args.length) {
+                    fail("--signatures needs a file or directory path");
+                    return;
+                }
+                signaturePaths.add(new File(args[i]));
+            } else if (arg.equals("--files")) {
+                if (++i >= args.length) {
+                    fail("--files needs a directory path");
+                    return;
+                }
+                fileRoots.add(new File(args[i]));
             } else if (arg.equals("-h") || arg.equals("--help")) {
                 usage(System.out);
                 System.exit(EXIT_OK);
@@ -71,10 +87,33 @@ public final class MtSafetyCli {
             }
         }
 
-        if (targets.isEmpty() && discoverRoots.isEmpty()) {
+        if (targets.isEmpty() && discoverRoots.isEmpty() && fileRoots.isEmpty()) {
             usage(System.err);
             System.exit(EXIT_ERROR);
             return;
+        }
+
+        SignatureDatabase signatures = signaturePaths.isEmpty()
+                ? SignatureDatabase.empty() : SignatureDatabase.load(signaturePaths);
+        for (int i = 0; i < signatures.problems().size(); i++) {
+            System.err.println("mtsafety: signatures: " + signatures.problems().get(i));
+        }
+
+        if (!fileRoots.isEmpty()) {
+            // A file scan is a different job from a package scan and reports differently: a list of
+            // files that matched, rather than a verdict per plugin. Both can be asked for at once.
+            if (signatures.isEmpty()) {
+                fail("--files needs a signature database; pass one with --signatures");
+                return;
+            }
+            FileScanner.Result scan = new FileScanner(signatures).scan(fileRoots, null,
+                    deep ? ScanBudget.unlimited() : new ScanBudget(600000L, 8L * 1024 * 1024 * 1024));
+            System.out.print(ReportFormatter.fileScanText(scan, signatures));
+            if (targets.isEmpty() && discoverRoots.isEmpty()) {
+                System.exit(scan.hits.isEmpty() ? EXIT_OK : EXIT_ACTION_NEEDED);
+                return;
+            }
+            System.out.println();
         }
 
         List<File> packages = new ArrayList<File>(targets);
@@ -94,7 +133,7 @@ public final class MtSafetyCli {
         }
 
         IocDatabase database = indicators == null ? IocDatabase.empty() : IocDatabase.load(indicators);
-        PluginScanner scanner = new PluginScanner(database);
+        PluginScanner scanner = new PluginScanner(database, signatures);
         List<ScanReport> reports = new ArrayList<ScanReport>();
         for (int i = 0; i < packages.size(); i++) {
             // --deep lifts the limits; without it a generous but bounded budget keeps a hostile package
@@ -103,7 +142,8 @@ public final class MtSafetyCli {
         }
         scanner.finishSet(reports);
 
-        System.out.print(json ? ReportFormatter.json(reports) : ReportFormatter.plainText(reports));
+        System.out.print(json ? ReportFormatter.json(reports, signatures)
+                : ReportFormatter.plainText(reports, signatures));
 
         boolean actionNeeded = false;
         boolean unreadable = false;
@@ -159,11 +199,16 @@ public final class MtSafetyCli {
         out.println();
         out.println("  --scan-dir DIR     also search DIR for plugins and .mtp files");
         out.println("  --indicators FILE  load your trusted/denied lists and extra patterns");
+        out.println("  --signatures PATH  load ClamAV-format signatures (.hdb .hsb .ndb .fp .ign2), a file");
+        out.println("                     or a folder of them; may be repeated");
+        out.println("  --files DIR        check every file under DIR against the signatures instead of,");
+        out.println("                     or as well as, scanning plugin packages; may be repeated");
         out.println("  --deep             lift the read limits entirely (slower on huge packages)");
         out.println("  --json             machine-readable output");
         out.println("  --include-self     do not skip this scanner's own package");
         out.println();
-        out.println("Exit status: 0 nothing to act on, 2 something needs action, 1 usage or read error.");
+        out.println("Exit status: 0 nothing to act on, 2 something needs action (or a file matched a");
+        out.println("signature), 1 usage or read error.");
     }
 
     private static void fail(String message) {

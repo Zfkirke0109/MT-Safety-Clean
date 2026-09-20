@@ -90,6 +90,15 @@ public final class CodeRules {
      */
     public static int apply(ScanReport report, PluginPackage pkg, List<PluginPackage.Entry> entries,
             ScanBudget budget, IocDatabase database) {
+        return apply(report, pkg, entries, budget, database, null);
+    }
+
+    /**
+     * As {@link #apply(ScanReport, PluginPackage, List, ScanBudget, IocDatabase)}, also checking each
+     * member against a signature database when one is loaded.
+     */
+    public static int apply(ScanReport report, PluginPackage pkg, List<PluginPackage.Entry> entries,
+            ScanBudget budget, IocDatabase database, SignatureDatabase signatures) {
         Map<String, Signal> byRule = new HashMap<String, Signal>();
         int scanned = 0;
 
@@ -128,11 +137,15 @@ public final class CodeRules {
             }
             scanned++;
 
+            // Known-malware signatures see the member's bytes as they are, before any text is
+            // extracted from them. A whole-file hash only means something for a complete read.
+            SignatureRules.match(report, byRule, entry, data, data.length >= entry.size, signatures);
+
             // A jar's members are deflated, so searching the container's raw bytes finds nothing at
             // all. libs/ is the documented home for third-party jars, which makes it the obvious
             // place to hide a payload: it has to be opened, not just skimmed.
             if (Bytes.looksLikeZip(data)) {
-                scanNestedArchive(report, byRule, entry.name, data, budget, database, 1);
+                scanNestedArchive(report, byRule, entry.name, data, budget, database, signatures, 1);
             }
 
             String text = scope == Scope.BINARY ? Bytes.extractedText(data, 6) : Bytes.text(data);
@@ -186,7 +199,7 @@ public final class CodeRules {
      * finding can be traced back to the file it actually came from.
      */
     private static void scanNestedArchive(ScanReport report, Map<String, Signal> byRule, String parentName,
-            byte[] data, ScanBudget budget, IocDatabase database, int depth) {
+            byte[] data, ScanBudget budget, IocDatabase database, SignatureDatabase signatures, int depth) {
         if (depth > MAX_NESTED_DEPTH) {
             return;
         }
@@ -240,13 +253,17 @@ public final class CodeRules {
                 Scope childScope = classify(synthetic.extension());
                 String childText = childScope == Scope.BINARY
                         ? Bytes.extractedText(child, 6) : Bytes.text(child);
+                // A member that filled its whole allowance may have been cut short, so only a
+                // shorter read is known to be complete enough for a whole-file hash.
+                SignatureRules.match(report, byRule, synthetic, child, child.length < granted, signatures);
                 matchIndicators(report, byRule, synthetic, childScope, childText);
                 matchPairs(report, byRule, synthetic, childScope, childText);
                 matchUserPatterns(report, byRule, synthetic, childText, database);
                 checkEncodedPayloads(report, byRule, synthetic, childText);
 
                 if (Bytes.looksLikeZip(child)) {
-                    scanNestedArchive(report, byRule, childName, child, budget, database, depth + 1);
+                    scanNestedArchive(report, byRule, childName, child, budget, database, signatures,
+                            depth + 1);
                 }
             }
         } catch (IOException e) {
@@ -439,7 +456,7 @@ public final class CodeRules {
     // ------------------------------------------------------------------ helpers
 
     /** Returns the existing finding for a rule, or registers a new one. */
-    private static Signal signalFor(ScanReport report, Map<String, Signal> byRule, String ruleId,
+    static Signal signalFor(ScanReport report, Map<String, Signal> byRule, String ruleId,
             Category category, Severity severity, String title, String detail) {
         Signal existing = byRule.get(ruleId);
         if (existing != null) {

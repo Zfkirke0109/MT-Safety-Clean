@@ -14,9 +14,25 @@ import java.util.List;
 public final class PluginScanner {
 
     private final IocDatabase database;
+    private final SignatureDatabase signatures;
 
     public PluginScanner(IocDatabase database) {
+        this(database, null);
+    }
+
+    /**
+     * A scanner that also checks every member against known-malware signatures.
+     *
+     * @param signatures a database in ClamAV's text formats, or null for none
+     */
+    public PluginScanner(IocDatabase database, SignatureDatabase signatures) {
         this.database = database == null ? IocDatabase.empty() : database;
+        this.signatures = signatures == null ? SignatureDatabase.empty() : signatures;
+    }
+
+    /** The signature database this scanner matches against; empty when none was loaded. */
+    public SignatureDatabase signatures() {
+        return signatures;
     }
 
     /** Scans one package: a {@code .mtp} file or an installed plugin directory. */
@@ -55,7 +71,7 @@ public final class PluginScanner {
 
             ManifestRules.apply(report, manifest, pkg, entries, budget);
             ArchiveRules.apply(report, pkg, entries, budget);
-            int scanned = CodeRules.apply(report, pkg, entries, budget, database);
+            int scanned = CodeRules.apply(report, pkg, entries, budget, database, signatures);
 
             report.setFilesScanned(scanned);
             report.setTruncated(budget.wasTruncated());
