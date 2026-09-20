@@ -27,19 +27,41 @@ public final class PluginManifest {
     public final String description;
     public final List<String> interfaces;
     public final String mainPreference;
+    /** True when the package ships compiled code: {@code dexMode} in the manifest, or SDK 3. */
+    public final boolean dexMode;
+    /** Lowest MT Manager build this plugin declares it needs, or -1. */
+    public final int minHostVersion;
+    /**
+     * True when the manifest only parsed after forgiving comments or unquoted keys.
+     *
+     * <p>Kept apart from {@link #unreadable} and from a broken manifest because it means neither: MT
+     * Manager accepts this syntax, and the fields are all here. It is worth a low note, not a finding.
+     */
+    public final boolean nonStandardJson;
     public final Map<String, Object> raw;
 
+    /** A display name resolved from the package's language files, when {@link #name} is a key. */
+    private String resolvedName;
+
     private PluginManifest(boolean present, String parseError, Map<String, Object> raw) {
-        this(present, false, parseError, raw);
+        this(present, false, parseError, raw, false);
     }
 
     private PluginManifest(boolean present, boolean unreadable, String parseError,
             Map<String, Object> raw) {
+        this(present, unreadable, parseError, raw, false);
+    }
+
+    private PluginManifest(boolean present, boolean unreadable, String parseError,
+            Map<String, Object> raw, boolean nonStandardJson) {
         this.present = present;
         this.unreadable = unreadable;
         this.parseError = parseError;
         this.raw = raw;
+        this.nonStandardJson = nonStandardJson;
         if (raw == null) {
+            this.dexMode = false;
+            this.minHostVersion = -1;
             this.sdkVersion = -1;
             this.pluginId = "";
             this.versionCode = -1;
@@ -58,6 +80,9 @@ public final class PluginManifest {
         this.description = localized(raw, "description");
         this.interfaces = Json.stringList(raw, "interfaces");
         this.mainPreference = Json.str(raw, "mainPreference", "");
+        Object dex = raw.get("dexMode");
+        this.dexMode = Boolean.TRUE.equals(dex) || this.sdkVersion >= 3;
+        this.minHostVersion = Json.integer(raw, "minHostVersion", -1);
     }
 
     /** A manifest that could not be found in the package. */
@@ -115,10 +140,19 @@ public final class PluginManifest {
         if (data == null || data.length == 0) {
             return missing();
         }
+        String text = Bytes.text(data);
         try {
-            return new PluginManifest(true, null, Json.parseObject(Bytes.text(data)));
-        } catch (Json.JsonException e) {
-            return broken(e.getMessage());
+            return new PluginManifest(true, null, Json.parseObject(text));
+        } catch (Json.JsonException strict) {
+            // MT Manager's own parser forgives comments and unquoted keys, and plugins in the wild
+            // rely on that. Reporting one of them as concealing its manifest was a false alarm
+            // against a package whose author wrote a comment.
+            try {
+                return new PluginManifest(true, false, strict.getMessage(),
+                        Json.parseObjectLenient(text), true);
+            } catch (Json.JsonException lenient) {
+                return broken(strict.getMessage());
+            }
         }
     }
 
@@ -135,12 +169,38 @@ public final class PluginManifest {
         return out;
     }
 
-    /** Best display name, falling back to the id. */
+    /**
+     * Best display name, falling back to the id.
+     *
+     * <p>A name of the form <code>{key}</code> is a reference into the plugin's language files, which
+     * MT Manager resolves before showing it. Printing the raw key as though it were the name gave a
+     * report full of headings reading literally {@code {plugin_name}}. When the scanner has resolved
+     * it (see {@link #setResolvedName}), that is used; otherwise the id, which is at least real.
+     */
     public String displayName() {
-        if (name != null && name.length() > 0) {
+        if (resolvedName != null && resolvedName.length() > 0) {
+            return resolvedName;
+        }
+        if (name != null && name.length() > 0 && !namePlaceholder()) {
             return name;
         }
         return pluginId != null && pluginId.length() > 0 ? pluginId : "(unnamed)";
+    }
+
+    /** True when {@link #name} is a <code>{key}</code> reference rather than text. */
+    public boolean namePlaceholder() {
+        return name != null && name.length() > 2 && name.charAt(0) == '{'
+                && name.charAt(name.length() - 1) == '}' && name.indexOf('{', 1) < 0;
+    }
+
+    /** The key inside a placeholder name, e.g. {@code plugin_name} for <code>{plugin_name}</code>. */
+    public String placeholderKey() {
+        return namePlaceholder() ? name.substring(1, name.length() - 1) : "";
+    }
+
+    /** Records the name the package's own language files give for a placeholder. */
+    public void setResolvedName(String value) {
+        this.resolvedName = value == null ? null : value.trim();
     }
 
     /**

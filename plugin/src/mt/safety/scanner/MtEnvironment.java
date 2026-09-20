@@ -34,7 +34,25 @@ public final class MtEnvironment {
      * @param extraRoot   an additional directory the user configured, or null
      */
     public static List<File> candidateRoots(File ownFilesDir, String extraRoot) {
+        return candidateRoots(ownFilesDir, "bin.mt.plus", extraRoot);
+    }
+
+    /**
+     * Builds the list of directories to search, starting from the host's own plugin folder.
+     *
+     * <p>On a device the installed plugins live at {@code /data/user/0/<host>/files/plugin/<id>/},
+     * which is derived here from the host package name MT Manager reports about itself. The
+     * ancestor walk and the public locations remain as fallbacks for layouts this has not seen.
+     */
+    public static List<File> candidateRoots(File ownFilesDir, String hostPackage, String extraRoot) {
         List<File> roots = new ArrayList<File>();
+
+        if (hostPackage != null && hostPackage.matches("[A-Za-z0-9_.]+")) {
+            addIfUseful(roots, "/data/user/0/" + hostPackage + "/files/plugin");
+            addIfUseful(roots, "/data/data/" + hostPackage + "/files/plugin");
+            addIfUseful(roots, "/data/user/0/" + hostPackage + "/files");
+            addIfUseful(roots, "/data/data/" + hostPackage + "/files");
+        }
 
         // Derived from a path MT Manager itself supplied: the reliable one.
         if (ownFilesDir != null) {

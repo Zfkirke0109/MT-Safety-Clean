@@ -30,7 +30,8 @@ public final class ManifestRules {
     }
 
     /** Runs every manifest rule, adding findings to {@code report}. */
-    public static void apply(ScanReport report, PluginManifest manifest, List<PluginPackage.Entry> entries) {
+    public static void apply(ScanReport report, PluginManifest manifest, PluginPackage pkg,
+            List<PluginPackage.Entry> entries, ScanBudget budget) {
         if (!manifest.present) {
             report.add(new Signal("MFT001", Category.MANIFEST, Severity.HIGH,
                     "No manifest.json",
@@ -56,6 +57,17 @@ public final class ManifestRules {
             return;
         }
 
+        if (manifest.nonStandardJson) {
+            // Same rule id, because it is the same observation; a different weight, because what it
+            // means is different. MT Manager's own parser accepts comments and unquoted keys, and
+            // every field is present, so this is a note about tooling, not concealment.
+            report.add(new Signal("MFT002", Category.MANIFEST, Severity.LOW,
+                    "manifest.json is not standard JSON",
+                    "The manifest uses comments, unquoted keys or trailing commas. MT Manager accepts"
+                            + " that; strict JSON tools will not, so review it with MT Manager or by eye.")
+                    .withEvidence("manifest.json", String.valueOf(manifest.parseError)));
+        }
+
         if (manifest.pluginId == null || manifest.pluginId.length() == 0) {
             report.add(new Signal("MFT003", Category.MANIFEST, Severity.MEDIUM,
                     "No pluginID declared",
@@ -69,54 +81,130 @@ public final class ManifestRules {
                     .withEvidence("manifest.json", "pluginID = " + manifest.pluginId));
         }
 
-        if (manifest.sdkVersion != 2 && manifest.sdkVersion != 3) {
+        if (manifest.sdkVersion < 1 || manifest.sdkVersion > 3) {
             report.add(new Signal("MFT005", Category.MANIFEST, Severity.LOW,
                     "Unrecognised pluginSdkVersion",
-                    "Known plugin SDK versions are 2 and 3. An unknown value may simply be newer than this"
+                    "Known plugin SDK versions are 1, 2 and 3. An unknown value may simply be newer than this"
                             + " scanner.")
                     .withEvidence("manifest.json", "pluginSdkVersion = " + manifest.sdkVersion));
         }
 
-        checkDeclaredClasses(report, manifest, entries);
+        checkDeclaredClasses(report, manifest, pkg, entries, budget);
         checkMetadataText(report, manifest);
     }
+
+    /** The dex descriptor of the API type every translation plugin implements. */
+    private static final String TRANSLATION_ENGINE_DESCRIPTOR =
+            "Lbin/mt/plugin/api/translation/TranslationEngine;";
 
     /**
      * Verifies that every declared entry point actually exists in the package.
      *
      * <p>A mismatch cuts both ways: a class named but absent means the package was repacked, and code
      * present but declared nowhere means a reviewer reading only the manifest never looks at it.
+     *
+     * <p>For a compiled plugin the check is exact rather than guessed: the class is looked up as a
+     * descriptor in the dex string table. Guessing from file names was the single largest source of
+     * noise on a real device, where every v3 plugin was reported as missing every class it declared,
+     * because a dex has no file per class. And when MT Manager keeps the compiled code outside the
+     * package it installs, as it does, the absence is MT Manager's layout and not the plugin's doing,
+     * so nothing is reported beyond a note that the code was not in view.
      */
-    private static void checkDeclaredClasses(ScanReport report, PluginManifest manifest,
-            List<PluginPackage.Entry> entries) {
-        boolean hasCompiled = false;
+    private static void checkDeclaredClasses(ScanReport report, PluginManifest manifest, PluginPackage pkg,
+            List<PluginPackage.Entry> entries, ScanBudget budget) {
         boolean hasSource = false;
+        boolean hasJar = false;
+        java.util.Set<String> dexStrings = new java.util.HashSet<String>();
+        int dexFiles = 0;
         for (PluginPackage.Entry entry : entries) {
+            if (entry.directory) {
+                continue;
+            }
             String ext = entry.extension();
             if (ext.equals("java")) {
                 hasSource = true;
-            } else if (ext.equals("jar") || ext.equals("dex") || ext.equals("class")) {
-                hasCompiled = true;
+            } else if (ext.equals("jar")) {
+                hasJar = true;
+            } else if (ext.equals("dex") && dexFiles < 8) {
+                dexFiles++;
+                try {
+                    byte[] data = pkg.read(entry, PluginPackage.MAX_MEMBER_BYTES, budget);
+                    dexStrings.addAll(Bytes.dexStrings(data, 200000, 512));
+                } catch (java.io.IOException e) {
+                    report.addError("could not read " + entry.name + ": " + e.getMessage());
+                }
             }
         }
+        boolean codeInView = hasSource || dexFiles > 0 || hasJar;
+        // MT Manager compiles a plugin on install and keeps the result beside the package, as an
+        // encrypted file it calls "code"; the installed plugin.mtp is left holding only the manifest
+        // and assets. That is true of v1 and v2 source plugins as much as v3 ones, so for any
+        // installed package with no code in view, the absence is MT Manager's layout and not the
+        // plugin's. A loose download with declared classes and no code at all is a different matter.
+        boolean codeKeptByHost = !codeInView && pkg.installed();
 
+        List<String> missing = new java.util.ArrayList<String>();
+        List<String> unverifiable = new java.util.ArrayList<String>();
         for (String className : manifest.declaredClasses()) {
             if (className == null || className.length() == 0) {
                 continue;
             }
-            if (!classPresent(className, entries)) {
-                // Compiled members can hold a class the scanner cannot see by filename, so only a
-                // source-only package lets us state this as a mismatch.
-                Severity severity = hasCompiled ? Severity.LOW : Severity.MEDIUM;
-                report.add(new Signal("MFT006", Category.MANIFEST, severity,
-                        "Declared class not found in the package",
-                        "The manifest registers an entry point whose source file is not present. The package"
-                                + " may have been repacked after review.")
-                        .withEvidence("manifest.json", className));
+            if (className.endsWith("TranslationEngine")) {
+                // MT Manager's own plugins and every third-party translator name the class this way,
+                // and the trait is what excuses a translator for talking to the network.
+                report.traits.add("translation-engine");
             }
+            if (classPresent(className, entries)) {
+                continue;
+            }
+            if (dexFiles > 0 && dexStrings.contains("L" + className.replace('.', '/') + ";")) {
+                continue;
+            }
+            if (codeKeptByHost) {
+                // Nothing to check against, and nothing to hold against the plugin.
+                continue;
+            }
+            if (dexFiles == 0 && hasJar && !hasSource) {
+                unverifiable.add(className);
+                continue;
+            }
+            missing.add(className);
+        }
+        if (dexStrings.contains(TRANSLATION_ENGINE_DESCRIPTOR)) {
+            report.traits.add("translation-engine");
         }
 
-        if (manifest.declaredClasses().isEmpty() && (hasSource || hasCompiled)) {
+        if (!missing.isEmpty()) {
+            // One finding with every class as evidence. Twenty-three separate findings for a plugin
+            // with twenty-three entry points added up to a "likely malicious" score out of nothing.
+            Signal signal = new Signal("MFT006", Category.MANIFEST, Severity.MEDIUM,
+                    "Declared classes not found in the package",
+                    "The manifest registers entry points whose code is not present. The package may have"
+                            + " been repacked after review.");
+            for (int i = 0; i < missing.size(); i++) {
+                signal.withEvidence("manifest.json", missing.get(i));
+            }
+            report.add(signal);
+        }
+        if (!unverifiable.isEmpty()) {
+            Signal signal = new Signal("MFT006", Category.MANIFEST, Severity.LOW,
+                    "Declared classes could not be located",
+                    "The entry points may live inside a bundled jar, which this check does not open."
+                            + " Worth a look if nothing else explains them.");
+            for (int i = 0; i < unverifiable.size(); i++) {
+                signal.withEvidence("manifest.json", unverifiable.get(i));
+            }
+            report.add(signal);
+        }
+        if (codeKeptByHost && !manifest.declaredClasses().isEmpty()) {
+            report.add(new Signal("MFT013", Category.MANIFEST, Severity.INFO,
+                    "Compiled code is kept outside the package",
+                    "MT Manager compiles an installed plugin and keeps the result beside the package"
+                            + " rather than inside it, encrypted. The code was not in view of this scan,"
+                            + " so findings here rest on the manifest and assets."));
+        }
+
+        if (manifest.declaredClasses().isEmpty() && codeInView) {
             report.add(new Signal("MFT007", Category.MANIFEST, Severity.MEDIUM,
                     "Ships code but declares no entry point",
                     "The manifest registers no interfaces and no settings screen, yet the package contains"
@@ -197,13 +285,17 @@ public final class ManifestRules {
                 // Only installed plugins are compared. A downloaded .mtp sitting beside the copy
                 // installed from it shares its identity by definition, and calling that impersonation
                 // would flag the most ordinary situation there is.
-                if (a.archive || b.archive) {
+                if (!a.installed || !b.installed) {
                     continue;
                 }
                 String idA = a.manifest.pluginId;
                 String idB = b.manifest.pluginId;
-                String nameA = a.manifest.name;
-                String nameB = b.manifest.name;
+                // The resolved display name, never the raw field: an unresolved {key} placeholder is
+                // the same literal string in every plugin that uses one, and comparing those reported
+                // every such plugin as a lookalike of every other. displayName falls back to the id
+                // when a name has not resolved, so a real difference still shows.
+                String nameA = a.manifest.namePlaceholder() ? "" : a.manifest.displayName();
+                String nameB = b.manifest.namePlaceholder() ? "" : b.manifest.displayName();
                 boolean idLookalike = confusable(idA, idB);
                 boolean nameLookalike = confusable(nameA, nameB);
                 if (!idLookalike && !nameLookalike) {

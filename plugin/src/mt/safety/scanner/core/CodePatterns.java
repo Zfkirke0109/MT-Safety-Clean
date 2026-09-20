@@ -18,9 +18,29 @@ import mt.safety.scanner.core.Indicator.Scope;
  *
  * <p>Regexes match both source spelling ({@code Runtime.getRuntime}) and the form that survives in a
  * compiled constant pool ({@code Ljava/lang/Runtime;}), so the same catalogue works on a {@code .jar}
- * under {@code libs/}.
+ * under {@code libs/} and on a v3 package's {@code classes.dex}.
+ *
+ * <p>Scopes are not decoration. A first run against a real device rated all 31 installed plugins,
+ * including MT Manager's own, as suspicious or worse, and most of that came from API names matched
+ * in data files: a syntax highlighter's keyword list, an XMP namespace in an icon, a config comment.
+ * Indicators that name an API are scoped to {@link Scope#CODE}; only indicators about data itself,
+ * such as endpoints, private paths and shell commands, apply to every member.
  */
 public final class CodePatterns {
+
+    /**
+     * The rule catalogue's own version, bumped whenever a rule below is added or changed.
+     *
+     * <p>These rules are not malware signatures and there is no feed behind them: they describe what
+     * a plugin is *able* to do, and they are written and reviewed in this file. So "how current" the
+     * scanner is means "which build of this catalogue is installed", which is what this reports. It
+     * is shown on the settings screen and at the top of every exported report, so a report can always
+     * be read against the rules that produced it.
+     */
+    public static final int CATALOGUE_VERSION = 3;
+
+    /** The date the catalogue last changed, as ISO {@code yyyy-MM-dd}. */
+    public static final String CATALOGUE_DATE = "2026-09-20";
 
     private static final List<Indicator> INDICATORS = new ArrayList<Indicator>();
     private static final List<PairIndicator> PAIRS = new ArrayList<PairIndicator>();
@@ -36,9 +56,19 @@ public final class CodePatterns {
         return Collections.unmodifiableList(PAIRS);
     }
 
+    /** How many rules the catalogue holds, single indicators and same-file pairs together. */
+    public static int ruleCount() {
+        return INDICATORS.size() + PAIRS.size();
+    }
+
     private static void add(String id, Category category, Severity severity, String title, String detail,
             String regex, Scope scope) {
         INDICATORS.add(new Indicator(id, category, severity, title, detail, regex, scope));
+    }
+
+    private static void add(String id, Category category, Severity severity, String title, String detail,
+            String regex, Scope scope, String notPrecededBy) {
+        INDICATORS.add(new Indicator(id, category, severity, title, detail, regex, scope, notPrecededBy));
     }
 
     private static void pair(String id, Category category, Severity severity, String title, String detail,
@@ -54,7 +84,7 @@ public final class CodePatterns {
                 "The plugin starts external processes. A plugin that only extends MT Manager's own"
                         + " features has no reason to shell out.",
                 "Runtime\\s*\\.\\s*getRuntime\\s*\\(\\s*\\)|java[/.]lang[/.]Runtime|new\\s+ProcessBuilder|java[/.]lang[/.]ProcessBuilder",
-                Scope.ANY);
+                Scope.CODE);
 
         add("EXE002", Category.COMMAND_EXEC, Severity.HIGH,
                 "Asks for root privileges",
@@ -72,7 +102,8 @@ public final class CodePatterns {
         add("EXE004", Category.COMMAND_EXEC, Severity.MEDIUM,
                 "Changes file permissions or mounts",
                 "Alters permissions or remounts filesystems, usually to make a protected area writable.",
-                "\\bchmod\\s+[0-7]{3,4}\\b|\\bchown\\s+\\w|\\bmount\\s+-o\\s*(rw|remount)|\\bremount\\b",
+                "\\bchmod\\s+(-R\\s+)?([0-7]{3,4}|[ugoa]*[+\\-=][rwxst]+)\\s+\\S*/|\\bchown\\s+(-R\\s+)?[\\w.\\-]+(:[\\w.\\-]+)?\\s+\\S*/"
+                        + "|\\bmount\\s+-o\\s*(rw,)?remount\\b|\\bremount,rw\\b",
                 Scope.ANY);
 
         add("EXE005", Category.COMMAND_EXEC, Severity.MEDIUM,
@@ -88,32 +119,33 @@ public final class CodePatterns {
                 "Uses a class loader to run code from a file or download. Anything reviewed here can be"
                         + " replaced at runtime by code nobody has seen.",
                 "DexClassLoader|InMemoryDexClassLoader|PathClassLoader|BaseDexClassLoader|URLClassLoader|defineClass\\s*\\(|dalvik[/.]system[/.]Dex",
-                Scope.ANY);
+                Scope.CODE);
 
         add("DYN002", Category.DYNAMIC_CODE, Severity.HIGH,
                 "Loads a native library",
                 "MT plugins are Java only. Loading a .so means native code the scanner cannot read.",
                 "System\\s*\\.\\s*load(Library)?\\s*\\(|\\.so\"|lib[a-z0-9_]+\\.so",
-                Scope.ANY);
+                Scope.CODE);
 
         add("DYN003", Category.DYNAMIC_CODE, Severity.MEDIUM,
                 "Uses reflection",
                 "Reflection is common in plugins, but it is also how code reaches APIs it was not given.",
                 "Class\\s*\\.\\s*forName|getDeclaredMethod|getDeclaredField|setAccessible\\s*\\(\\s*true|getMethod\\s*\\(",
-                Scope.ANY);
+                Scope.CODE);
 
         add("DYN004", Category.DYNAMIC_CODE, Severity.HIGH,
                 "Reaches for MT Manager's application context",
                 "The plugin API deliberately hands out no Android Context. Obtaining one gives the plugin"
                         + " MT Manager's full app identity and permissions.",
                 "ActivityThread|currentApplication|AppGlobals|getApplicationContext\\s*\\(|android[/.]app[/.]ActivityThread",
-                Scope.ANY);
+                Scope.CODE);
 
         add("DYN005", Category.DYNAMIC_CODE, Severity.HIGH,
                 "Compiles or evaluates code on the fly",
                 "Ships a compiler or script engine, so its real behaviour is decided at runtime.",
-                "javax[/.]script|ScriptEngine|dexmaker|javassist|com[/.]android[/.]dx\\b|BeanShell|luaj",
-                Scope.ANY);
+                "javax[/.]script|ScriptEngine(Manager)?|dexmaker|javassist|com[/.]android[/.]dx\\b|bsh[/.]Interpreter"
+                        + "|BeanShell|org[/.]luaj[/.]vm2|org[/.]mozilla[/.]javascript|groovy[/.]lang[/.]GroovyShell",
+                Scope.CODE);
 
         // ------------------------------------------------------------------ network
 
@@ -122,7 +154,7 @@ public final class CodePatterns {
                 "Expected for a translation engine or an update check; listed so you know it talks to the"
                         + " network at all.",
                 "HttpURLConnection|HttpsURLConnection|openConnection\\s*\\(|okhttp3|retrofit2|java[/.]net[/.]Socket|DatagramSocket|SSLSocket",
-                Scope.ANY);
+                Scope.CODE);
 
         add("NET002", Category.NETWORK, Severity.MEDIUM,
                 "Contacts a hardcoded IP address",
@@ -152,14 +184,16 @@ public final class CodePatterns {
         add("NET005", Category.NETWORK, Severity.LOW,
                 "Transfers over plain HTTP",
                 "Unencrypted transport, so anything sent is readable on the network path.",
-                "\"http://(?!localhost|127\\.0\\.0\\.1)",
+                "\"http://(?!localhost|127\\.0\\.0\\.1|(www\\.)?w3\\.org|schemas\\.|purl\\.org|ns\\.adobe\\.com|xml\\.|xmlns\\."
+                        + "|java\\.sun\\.com|(www\\.)?apache\\.org|(www\\.)?iptc\\.org|xmlpull\\.org|creativecommons\\.org"
+                        + "|(www\\.)?gnu\\.org|opensource\\.org|(www\\.)?ietf\\.org|json-schema\\.org|namespaces\\.|(www\\.)?eclipse\\.org)",
                 Scope.ANY);
 
         add("NET006", Category.NETWORK, Severity.MEDIUM,
                 "Uploads file bodies",
                 "Builds multipart or raw file uploads, which is how bulk data is shipped off a device.",
                 "multipart/form-data|Content-Disposition:\\s*form-data|application/octet-stream",
-                Scope.ANY);
+                Scope.CODE);
 
         // ------------------------------------------------------- private user data
 
@@ -173,7 +207,7 @@ public final class CodePatterns {
         add("SEN002", Category.SENSITIVE_DATA, Severity.HIGH,
                 "Looks for key, wallet or seed material",
                 "Searches for the exact artefacts used to take over accounts and crypto wallets.",
-                "mnemonic|seed\\s?phrase|private[_ ]?key|wallet\\.dat|\\bkeystore\\b|\\.jks\\b|id_rsa|/\\.ssh/"
+                "seed\\s?phrase|private_key|privateKey|wallet\\.dat|\\.jks\\b|id_rsa|/\\.ssh/"
                         + "|BEGIN\\s+(RSA|DSA|EC|OPENSSH|PGP)?\\s*PRIVATE\\s+KEY|metamask|trustwallet",
                 Scope.ANY);
 
@@ -183,7 +217,7 @@ public final class CodePatterns {
                         + " session tokens is not.",
                 "accounts\\.db|cookies?\\.(db|sqlite|txt)|getPrimaryClip|saved[_ ]?password|stored[_ ]?password"
                         + "|access[_ ]?token|refresh[_ ]?token|session[_ ]?id|authenticator|\\botp\\b|two[_ -]?factor",
-                Scope.ANY);
+                Scope.CODE);
 
         add("SEN004", Category.SENSITIVE_DATA, Severity.HIGH,
                 "Reads other applications' data folders",
@@ -197,13 +231,13 @@ public final class CodePatterns {
                 "Personal data with no connection to editing files or translating text.",
                 "content://sms|content://call_log|content://mms|ContactsContract|content://com\\.android\\.contacts"
                         + "|READ_SMS|READ_CONTACTS|READ_CALL_LOG",
-                Scope.ANY);
+                Scope.CODE);
 
         add("SEN006", Category.SENSITIVE_DATA, Severity.LOW,
                 "Walks shared media folders",
                 "Ordinary for a file tool, worth noting only if the plugin also sends data out.",
                 "/DCIM|/Pictures/|/Documents/|/Download/|MediaStore",
-                Scope.ANY);
+                Scope.CODE);
 
         // ------------------------------------------------------------- identifiers
 
@@ -212,21 +246,23 @@ public final class CodePatterns {
                 "Builds a durable fingerprint of the device or SIM, used to track a victim across installs.",
                 "getDeviceId|getImei\\b|getSubscriberId|getSimSerialNumber|ANDROID_ID|android_id|getSerial\\b"
                         + "|getMacAddress|getLine1Number|Build\\.SERIAL",
-                Scope.ANY);
+                Scope.CODE);
 
         add("IDN002", Category.DEVICE_IDENTITY, Severity.LOW,
                 "Enumerates installed applications",
                 "Inventories what else is on the device.",
                 "getInstalledPackages|getInstalledApplications|queryIntentActivities",
-                Scope.ANY);
+                Scope.CODE);
 
         // ------------------------------------------- MT Manager and other plugins
 
         add("XPL001", Category.CROSS_PLUGIN, Severity.HIGH,
                 "Reads or writes MT Manager's own files",
-                "Hardcodes MT Manager's package paths. That reaches MT's settings, licence state and"
-                        + " every other installed plugin.",
-                "bin\\.mt\\.plus|Android/(data|obb)/bin\\.mt|/MT2/|bin\\.mt\\.plugin\\.(?!api)",
+                "Hardcodes a path into MT Manager's private storage. That reaches MT's settings,"
+                        + " licence state and every other installed plugin. (A class merely named under"
+                        + " bin.mt.plugin is not this: that is the namespace plugin authors use.)",
+                "/data/(data|user/\\d+|user_de/\\d+)/bin\\.mt\\.plus|Android/(data|obb)/bin\\.mt\\.plus"
+                        + "|bin\\.mt\\.plus/(files|shared_prefs|databases|cache)",
                 Scope.ANY);
 
         add("XPL002", Category.CROSS_PLUGIN, Severity.HIGH,
@@ -254,7 +290,7 @@ public final class CodePatterns {
                 "Overwrites file contents in place",
                 "Rewrites or truncates existing files rather than creating new ones.",
                 "RandomAccessFile|setLength\\s*\\(\\s*0\\s*\\)|FileChannel\\s*\\.\\s*truncate",
-                Scope.ANY);
+                Scope.CODE);
 
         // ----------------------------------------------------------- obfuscation
 
@@ -263,13 +299,16 @@ public final class CodePatterns {
                 "Hides what the code actually references. Legitimate plugins rarely need to.",
                 "Cipher\\s*\\.\\s*getInstance|SecretKeySpec|IvParameterSpec|javax[/.]crypto|\"AES/|\"DES/"
                         + "|\\^\\s*0x[0-9a-f]{1,2}|\\^\\s*\\d+\\s*\\)\\s*;",
-                Scope.ANY);
+                Scope.CODE);
 
         add("OBF002", Category.OBFUSCATION, Severity.MEDIUM,
                 "Embeds a long encoded blob",
                 "A large Base64 or hex blob in source is usually a payload rather than data.",
                 "[A-Za-z0-9+/]{512,}={0,2}|(\\\\u00[0-9a-f]{2}){12,}|(0x[0-9a-f]{2}\\s*,\\s*){24,}",
-                Scope.ANY);
+                Scope.ANY,
+                // An inline data: URI is an embedded image or font, not a hidden payload. Minified
+                // libraries carry dozens, and reporting them made a Markdown previewer look packed.
+                ";base64,\\s*$");
 
         add("OBF003", Category.OBFUSCATION, Severity.HIGH,
                 "Uses bidirectional or invisible Unicode in source",
@@ -282,7 +321,7 @@ public final class CodePatterns {
                 "Decodes Base64 at runtime",
                 "Common and usually harmless; only interesting next to a large embedded blob.",
                 "Base64\\s*\\.\\s*(decode|getDecoder)|android[/.]util[/.]Base64",
-                Scope.ANY);
+                Scope.CODE);
 
         // -------------------------------------------------------------- evasion
 
@@ -291,13 +330,13 @@ public final class CodePatterns {
                 "Looks for an emulator, debugger or root, typically to behave differently while watched.",
                 "ro\\.kernel\\.qemu|generic_x86|goldfish|ranchu|isDebuggerConnected|android[/.]os[/.]Debug"
                         + "|Build\\.FINGERPRINT|/proc/self/status|TracerPid",
-                Scope.ANY);
+                Scope.CODE);
 
         add("EVA002", Category.EVASION, Severity.MEDIUM,
                 "Defers its work on a long timer",
                 "Long sleeps and schedulers delay behaviour past the moment you would be watching.",
                 "Thread\\s*\\.\\s*sleep\\s*\\(\\s*\\d{5,}|AlarmManager|ScheduledExecutorService|postDelayed\\s*\\(\\s*[^,]{0,40},\\s*\\d{5,}",
-                Scope.ANY);
+                Scope.CODE);
 
         // ----------------------------------------------------------- persistence
 
@@ -311,7 +350,7 @@ public final class CodePatterns {
                 "Triggers an application install",
                 "Hands Android a package to install, which is how a plugin becomes a permanent app.",
                 "application/vnd\\.android\\.package-archive|ACTION_INSTALL_PACKAGE|REQUEST_INSTALL_PACKAGES",
-                Scope.ANY);
+                Scope.CODE);
 
         // ---------------------------------------------------------------- recon
 
@@ -319,32 +358,32 @@ public final class CodePatterns {
                 "Reads the clipboard",
                 "The clipboard is where passwords, recovery phrases and one-time codes pass through.",
                 "ClipboardManager|getPrimaryClip|ClipData\\s*\\.",
-                Scope.ANY);
+                Scope.CODE);
 
         add("REC002", Category.RECON, Severity.HIGH,
                 "Captures the screen",
                 "Screen capture records whatever you are looking at, including other apps.",
-                "MediaProjection|createVirtualDisplay|takeScreenshot|screencap",
-                Scope.ANY);
+                "MediaProjection|createVirtualDisplay|takeScreenshot|\\bscreencap\\b",
+                Scope.CODE);
 
         add("REC003", Category.RECON, Severity.HIGH,
                 "Uses accessibility automation",
                 "Accessibility APIs can read and tap any screen. This is the standard route for Android"
                         + " banking fraud.",
                 "AccessibilityService|AccessibilityNodeInfo|performGlobalAction|dispatchGesture",
-                Scope.ANY);
+                Scope.CODE);
 
         add("REC004", Category.RECON, Severity.MEDIUM,
                 "Uses the microphone or camera",
                 "Audio or image capture from a plugin that should only touch files.",
                 "MediaRecorder|AudioRecord|CameraManager|android[/.]hardware[/.]Camera|takePicture",
-                Scope.ANY);
+                Scope.CODE);
 
         add("REC005", Category.RECON, Severity.MEDIUM,
                 "Reads device location",
                 "Location has no role in editing files.",
                 "LocationManager|getLastKnownLocation|FusedLocationProvider|requestLocationUpdates",
-                Scope.ANY);
+                Scope.CODE);
 
         // --------------------------------------------- combinations within a file
 
@@ -354,7 +393,7 @@ public final class CodePatterns {
                         + " a payload onto storage.",
                 "FileOutputStream|BufferedOutputStream|RandomAccessFile|\\.write\\s*\\(",
                 "\\.apk\"|\\.dex\"|\\.mtp\"|\\.so\"|\\.jar\"",
-                Scope.ANY);
+                Scope.CODE);
 
         pair("CMB002", Category.DYNAMIC_CODE, Severity.CRITICAL,
                 "Downloads code and loads it",
@@ -362,21 +401,21 @@ public final class CodePatterns {
                         + " operator can change tomorrow.",
                 "HttpURLConnection|openConnection\\s*\\(|okhttp3|java[/.]net[/.]Socket",
                 "DexClassLoader|InMemoryDexClassLoader|PathClassLoader|URLClassLoader|defineClass\\s*\\(",
-                Scope.ANY);
+                Scope.CODE);
 
         pair("CMB003", Category.COMMAND_EXEC, Severity.CRITICAL,
                 "Runs shell commands on instructions from the network",
                 "Process execution and network access in one file, the shape of a remote control channel.",
                 "Runtime\\s*\\.\\s*getRuntime|ProcessBuilder",
                 "HttpURLConnection|openConnection\\s*\\(|java[/.]net[/.]Socket|okhttp3",
-                Scope.ANY);
+                Scope.CODE);
 
         pair("CMB004", Category.DESTRUCTIVE, Severity.CRITICAL,
                 "Encrypts files and then deletes the originals",
                 "Encryption together with bulk deletion in one file is the ransomware pattern.",
                 "Cipher\\s*\\.\\s*getInstance|SecretKeySpec|javax[/.]crypto",
                 "\\brm\\s+-rf?\\b|deleteRecursive|deleteDirectory|\\.delete\\s*\\(\\s*\\)",
-                Scope.ANY);
+                Scope.CODE);
 
         pair("CMB005", Category.OBFUSCATION, Severity.HIGH,
                 "Decodes a hidden blob and runs or loads it",
@@ -384,6 +423,6 @@ public final class CodePatterns {
                         + " review.",
                 "Base64\\s*\\.\\s*decode|base64Decode|Cipher\\s*\\.\\s*getInstance",
                 "DexClassLoader|defineClass\\s*\\(|Runtime\\s*\\.\\s*getRuntime|ProcessBuilder|System\\s*\\.\\s*load",
-                Scope.ANY);
+                Scope.CODE);
     }
 }

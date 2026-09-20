@@ -14,8 +14,8 @@ import java.util.Set;
  * <p>MT Manager's documentation does not state where installed plugins live on disk, and the location
  * has moved between versions and between rooted and unrooted devices. Rather than hard-coding one path
  * and silently finding nothing, discovery is content-based: a directory containing {@code manifest.json}
- * with a {@code pluginID} is an installed plugin, and a {@code .mtp} file is one waiting to be
- * installed. Candidate roots are searched; unreadable ones are skipped without complaint, because on an
+ * with a {@code pluginID} is an installed plugin, as is a directory holding {@code plugin.mtp} (MT
+ * Manager's own layout), and a loose {@code .mtp} file is one waiting to be installed. Candidate roots are searched; unreadable ones are skipped without complaint, because on an
  * unrooted device most of them will be.
  */
 public final class Discovery {
@@ -133,8 +133,17 @@ public final class Discovery {
         }
     }
 
-    /** True for a directory that holds a plugin manifest naming a pluginID. */
+    /**
+     * True for a directory that is an installed plugin: MT Manager's {@code <id>/plugin.mtp}, or an
+     * unpacked directory holding a manifest that names a pluginID.
+     */
     public static boolean isInstalledPlugin(File dir) {
+        File inner = new File(dir, PluginPackage.INSTALLED_ARCHIVE);
+        if (inner.isFile() && inner.length() > 0) {
+            // This is how MT Manager actually keeps them. Treating that archive as "a download
+            // waiting to be installed" hid every installed plugin from every action.
+            return true;
+        }
         File manifest = new File(dir, "manifest.json");
         if (!manifest.isFile() || manifest.length() > 512 * 1024) {
             return false;

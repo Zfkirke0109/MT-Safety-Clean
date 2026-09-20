@@ -50,6 +50,8 @@ public final class ScannerTest {
         trustDecisions(fixtures);
         reportRendering(fixtures);
         regressions(fixtures);
+        realDeviceReport(fixtures);
+        definitionProvenance();
         ActionsTest.run(new ActionsTest.Checker() {
             @Override
             public void that(String description, boolean condition, String context) {
@@ -471,6 +473,303 @@ public final class ScannerTest {
      * as tests rather than just fixed, because a scanner that silently stops catching something is
      * worse than one that never caught it: the report still looks reassuring.
      */
+    /**
+     * The scan of a real device rated all 31 installed plugins, MT Manager's own included, as
+     * suspicious or worse. Installed plugins are v3: a folder holding {@code plugin.mtp} whose code is
+     * a {@code classes.dex}, a {@code {key}} name resolved from an {@code .mtl}, an {@code icon.webp},
+     * and assets that mention API names in passing. These pin the behaviour that report demanded.
+     */
+    /** Where the detection comes from, and whether the scanner can say how old it is. */
+    private static void definitionProvenance() {
+        // Civil-date arithmetic, which is what the age on screen rests on.
+        check("the epoch is day zero",
+                mt.safety.scanner.core.Dates.epochDay("1970-01-01") == 0,
+                String.valueOf(mt.safety.scanner.core.Dates.epochDay("1970-01-01")));
+        check("a leap day is counted",
+                mt.safety.scanner.core.Dates.epochDay("2024-03-01")
+                        - mt.safety.scanner.core.Dates.epochDay("2024-02-28") == 2,
+                "2024-02-28 -> 2024-03-01");
+        check("a century that is not a leap year is counted",
+                mt.safety.scanner.core.Dates.epochDay("1900-03-01")
+                        - mt.safety.scanner.core.Dates.epochDay("1900-02-28") == 1,
+                "1900 is not a leap year");
+        check("an unreadable date is reported as unknown, not as day zero",
+                mt.safety.scanner.core.Dates.epochDay("not-a-date") == mt.safety.scanner.core.Dates.UNKNOWN
+                        && mt.safety.scanner.core.Dates.epochDay(null) == mt.safety.scanner.core.Dates.UNKNOWN,
+                "bad dates must not read as 1970");
+        long twoDays = mt.safety.scanner.core.Dates.daysSince("2026-01-01",
+                (mt.safety.scanner.core.Dates.epochDay("2026-01-03") * 86400000L) + 5000L);
+        check("age is whole days since the date", twoDays == 2, String.valueOf(twoDays));
+
+        // The catalogue says what it is, and the rule count is real rather than hardcoded.
+        check("the rule catalogue carries a version and a readable date",
+                mt.safety.scanner.core.CodePatterns.CATALOGUE_VERSION > 0
+                        && mt.safety.scanner.core.Dates.epochDay(
+                                mt.safety.scanner.core.CodePatterns.CATALOGUE_DATE)
+                                != mt.safety.scanner.core.Dates.UNKNOWN,
+                mt.safety.scanner.core.CodePatterns.CATALOGUE_DATE);
+        check("the rule count matches the catalogue actually loaded",
+                mt.safety.scanner.core.CodePatterns.ruleCount()
+                        == mt.safety.scanner.core.CodePatterns.indicators().size()
+                                + mt.safety.scanner.core.CodePatterns.pairs().size(),
+                String.valueOf(mt.safety.scanner.core.CodePatterns.ruleCount()));
+
+        // An indicator file states its own provenance, and keeps it when the user edits the file.
+        IocDatabase dated = IocDatabase.parse("{\"version\": \"7\", \"updated\": \"2026-01-05\","
+                + " \"source\": \"example.org advisory\", \"trusted\": [], \"denied\": [],"
+                + " \"patterns\": []}");
+        check("an indicator file's version, date and source are read",
+                "7".equals(dated.version()) && "2026-01-05".equals(dated.updated())
+                        && dated.source().contains("example.org"), dated.updated());
+        dated.trust("abc123", "mine");
+        check("recording a trust decision does not erase the file's provenance",
+                IocDatabase.parse(dated.toJson()).updated().equals("2026-01-05")
+                        && IocDatabase.parse(dated.toJson()).source().contains("example.org"),
+                dated.toJson());
+        check("a file with no date says so rather than implying it is current",
+                IocDatabase.parse("{\"trusted\": [], \"denied\": [], \"patterns\": []}").undated(),
+                "an undated file must be reported as undated");
+
+        // Importing folds a list in without dropping what the user already decided.
+        IocDatabase mine = IocDatabase.parse("{\"updated\": \"2026-01-01\", \"trusted\":"
+                + " [{\"value\": \"keepme\", \"note\": \"mine\"}], \"denied\": [], \"patterns\": []}");
+        IocDatabase incoming = IocDatabase.parse("{\"version\": \"9\", \"updated\": \"2026-06-01\","
+                + " \"trusted\": [], \"denied\": [{\"value\": \"badhash\", \"note\": \"advisory\"}],"
+                + " \"patterns\": [\"evil\\\\.example\"]}");
+        int[] added = mine.mergeFrom(incoming);
+        check("an import adds what is new",
+                added[1] == 1 && added[2] == 1, java.util.Arrays.toString(added));
+        check("and keeps the user's own decisions",
+                mine.isTrusted("keepme"), "the user's trusted entry was dropped");
+        check("the newer date wins, so the age shown is the age of what was added",
+                "2026-06-01".equals(mine.updated()) && "9".equals(mine.version()), mine.updated());
+        int[] again = mine.mergeFrom(incoming);
+        check("importing the same list twice adds nothing the second time",
+                again[0] == 0 && again[1] == 0 && again[2] == 0, java.util.Arrays.toString(again));
+
+        // An older list must not roll the recorded date backwards.
+        IocDatabase older = IocDatabase.parse("{\"updated\": \"2025-01-01\", \"trusted\": [],"
+                + " \"denied\": [], \"patterns\": []}");
+        mine.mergeFrom(older);
+        check("importing an older list does not roll the date backwards",
+                "2026-06-01".equals(mine.updated()), mine.updated());
+    }
+
+    private static void realDeviceReport(Fixtures fixtures) {
+        String benign = "package demo;\npublic class A { public int n() { return 1; } }\n";
+
+        // A v3 translator: dexMode, a placeholder name, its engine and preference declared and present
+        // in the dex string table, an icon.webp, and a strings.mtl that names it.
+        java.util.Map<String, byte[]> members = new java.util.LinkedHashMap<String, byte[]>();
+        members.put("manifest.json", Fixtures.bytes(
+                "{\"pluginSdkVersion\": 3, \"dexMode\": true, \"pluginID\": \"bin.plugin.translator.google\","
+                        + " \"versionCode\": 1, \"versionName\": \"v1.5\", \"name\": \"{name}\","
+                        + " \"description\": \"{description}\","
+                        + " \"mainPreference\": \"bin.mt.plugin.GoogleTranslatePreference\","
+                        + " \"interfaces\": [\"bin.mt.plugin.GoogleWebTranslationEngine\"]}"));
+        members.put("classes.dex", Fixtures.dexWithStrings(
+                "Lbin/mt/plugin/GoogleWebTranslationEngine;",
+                "Lbin/mt/plugin/GoogleTranslatePreference;",
+                "Lbin/mt/plugin/api/translation/TranslationEngine;"));
+        members.put("icon.webp", Fixtures.bytes("RIFF____WEBPVP8 realish-image-bytes"));
+        members.put("assets/strings.mtl",
+                Fixtures.bytes("name: Google Translate\ndescription: Translates text via Google.\n"));
+        File translator = fixtures.installedArchive("bin.plugin.translator.google", members, null);
+        ScanReport translatorReport = new PluginScanner(IocDatabase.empty())
+                .scan(translator, ScanBudget.unlimited());
+        check("a real v3 translator is clean, not suspicious",
+                translatorReport.verdict() == Verdict.CLEAN, summarise(translatorReport)
+                        + " :: " + translatorReport.verdict());
+        check("its declared classes are found in the dex, so MFT006 does not fire",
+                !translatorReport.hasRule("MFT006"), summarise(translatorReport));
+        check("a {key} name is resolved from the language file, not shown raw",
+                "Google Translate".equals(translatorReport.manifest.displayName()),
+                translatorReport.manifest.displayName());
+        check("hardcoding a class under bin.mt.plugin is not treated as reaching into MT",
+                !translatorReport.hasRule("XPL001"), summarise(translatorReport));
+        check("the translation-engine trait is recognised from the dex",
+                translatorReport.traits.contains("translation-engine"),
+                String.valueOf(translatorReport.traits));
+        check("a v3 installed plugin is marked installed, so the UI can act on it",
+                translatorReport.installed, "installed=" + translatorReport.installed);
+
+        // A Markdown previewer bundling commonmark and highlight.js: the assets name chmod, chown and
+        // package-archive, and used to score it "likely malicious" for words in a keyword table.
+        java.util.Map<String, byte[]> md = new java.util.LinkedHashMap<String, byte[]>();
+        md.put("manifest.json", Fixtures.bytes(
+                "{\"pluginSdkVersion\": 3, \"dexMode\": true, \"pluginID\": \"com.md.preview\","
+                        + " \"versionCode\": 1, \"versionName\": \"1.0.0\", \"name\": \"Markdown Preview\","
+                        + " \"description\": \"Preview markdown\","
+                        + " \"mainPreference\": \"com.md.preview.FontSettings\","
+                        + " \"interfaces\": [\"com.md.preview.MarkdownPreviewToolMenu\"]}"));
+        md.put("classes.dex", Fixtures.dexWithStrings(
+                "Lcom/md/preview/FontSettings;", "Lcom/md/preview/MarkdownPreviewToolMenu;"));
+        md.put("assets/highlight/highlight.min.js",
+                Fixtures.bytes("chdir chmod chomp chop chown chr chroot close closedir connect continue"));
+        md.put("assets/katex/katex.min.js",
+                Fixtures.bytes("document.createElementNS(\"http://www.w3.org/2000/svg\",\"svg\");"));
+        md.put("org/commonmark/internal/util/entities.properties", Fixtures.bytes("nbsp=160\namp=38\n"));
+        File preview = fixtures.installedArchive("com.md.preview", md, null);
+        ScanReport previewReport = new PluginScanner(IocDatabase.empty())
+                .scan(preview, ScanBudget.unlimited());
+        check("a markdown previewer is not called malicious for a syntax-highlighter word list",
+                previewReport.verdict() == Verdict.CLEAN || previewReport.verdict() == Verdict.REVIEW,
+                summarise(previewReport) + " :: " + previewReport.verdict());
+        check("shell words in a data file do not trip the command-execution rules",
+                !previewReport.hasRule("EXE004") && !previewReport.hasRule("CMB103"),
+                summarise(previewReport));
+        check("an XMP or SVG namespace URL in an asset is not a plain-HTTP finding",
+                !previewReport.hasRule("NET005"), summarise(previewReport));
+
+        // MT Manager keeps a v3 plugin's dex beside the package, not inside it: the manifest declares
+        // classes the scan cannot see, and that absence is MT Manager's layout, not the plugin's.
+        java.util.Map<String, byte[]> extracted = new java.util.LinkedHashMap<String, byte[]>();
+        extracted.put("manifest.json", Fixtures.bytes(
+                "{\"pluginSdkVersion\": 3, \"dexMode\": true, \"pluginID\": \"com.ext.tool\","
+                        + " \"versionCode\": 1, \"versionName\": \"v1\", \"name\": \"Extracted\","
+                        + " \"description\": \"d\", \"mainPreference\": \"com.ext.tool.Pref\","
+                        + " \"interfaces\": [\"com.ext.tool.Menu\"]}"));
+        extracted.put("assets/strings.mtl", Fixtures.bytes("k: v\n"));
+        java.util.Map<String, byte[]> beside = new java.util.LinkedHashMap<String, byte[]>();
+        beside.put("classes.dex", Fixtures.dexWithStrings("Lcom/ext/tool/Pref;", "Lcom/ext/tool/Menu;"));
+        File extractedPlugin = fixtures.installedArchive("com.ext.tool", extracted, beside);
+        ScanReport extractedReport = new PluginScanner(IocDatabase.empty())
+                .scan(extractedPlugin, ScanBudget.unlimited());
+        check("a v3 plugin whose dex MT Manager extracted beside it is not accused of missing classes",
+                !extractedReport.hasRule("MFT006"), summarise(extractedReport));
+
+        // A manifest MT Manager accepts but strict JSON rejects: a comment and a trailing comma.
+        java.util.Map<String, byte[]> lenient = new java.util.LinkedHashMap<String, byte[]>();
+        lenient.put("manifest.json", Fixtures.bytes(
+                "{\n  // the main translation entry\n  \"pluginSdkVersion\": 3, \"dexMode\": true,\n"
+                        + "  \"pluginID\": \"io.lenient.tool\", \"versionCode\": 1, \"versionName\": \"v1\",\n"
+                        + "  \"name\": \"Lenient\", \"description\": \"d\",\n"
+                        + "  \"interfaces\": [\"io.lenient.tool.Engine\",],\n}"));
+        lenient.put("classes.dex", Fixtures.dexWithStrings("Lio/lenient/tool/Engine;"));
+        File lenientPlugin = fixtures.installedArchive("io.lenient.tool", lenient, null);
+        ScanReport lenientReport = new PluginScanner(IocDatabase.empty())
+                .scan(lenientPlugin, ScanBudget.unlimited());
+        check("a manifest with comments MT Manager accepts is read, not called invalid JSON",
+                "io.lenient.tool".equals(lenientReport.manifest.pluginId),
+                lenientReport.manifest.pluginId + " / " + summarise(lenientReport));
+        check("but the non-standard JSON is noted at low severity",
+                lenientReport.manifest.nonStandardJson && lenientReport.verdict() != Verdict.LIKELY_MALICIOUS,
+                summarise(lenientReport) + " :: " + lenientReport.verdict());
+
+        // The whole point still holds: a v3 package whose dex really does name su, a bot endpoint and
+        // /data/data is caught, because the dex strings are searched like any other code.
+        java.util.Map<String, byte[]> evil = new java.util.LinkedHashMap<String, byte[]>();
+        evil.put("manifest.json", Fixtures.bytes(
+                "{\"pluginSdkVersion\": 3, \"dexMode\": true, \"pluginID\": \"evil.v3\","
+                        + " \"versionCode\": 1, \"versionName\": \"v1\", \"name\": \"Helper\","
+                        + " \"description\": \"d\", \"interfaces\": []}"));
+        evil.put("classes.dex", Fixtures.dexWithStrings(
+                "su -c https://api.telegram.org/bot9:AA/sendDocument",
+                "/data/data/com.whatsapp/databases",
+                "Ljava/lang/Runtime;", "Ljava/net/Socket;"));
+        File evilPlugin = fixtures.installedArchive("evil.v3", evil, null);
+        ScanReport evilReport = new PluginScanner(IocDatabase.empty())
+                .scan(evilPlugin, ScanBudget.unlimited());
+        check("a v3 package whose dex hides a real payload is still caught",
+                evilReport.verdict() == Verdict.LIKELY_MALICIOUS, summarise(evilReport)
+                        + " :: " + evilReport.verdict());
+        check("the payload's capabilities are read out of the dex string table",
+                evilReport.hasRule("SEN001") && evilReport.hasRule("NET003") && evilReport.hasRule("EXE001"),
+                summarise(evilReport));
+
+        // The second device report: 22 clean, but eight plugins sat at "worth a look" for reasons
+        // that were all MT Manager's own doing rather than the plugin's. Each is pinned here.
+
+        // Six of the eight: an installed package MT Manager compiled, keeping the result beside it.
+        // The manifest still declares its classes and the package no longer contains them.
+        java.util.Map<String, byte[]> hostKept = new java.util.LinkedHashMap<String, byte[]>();
+        hostKept.put("manifest.json", Fixtures.bytes(
+                "{\"pluginSdkVersion\": 2, \"pluginID\": \"com.hand.mtplugin\", \"versionCode\": 1,"
+                        + " \"versionName\": \"v1.0\", \"name\": \"Unicode\", \"description\": \"d\","
+                        + " \"mainPreference\": \"com.hand.mtplugin.Preference\","
+                        + " \"interfaces\": [\"com.hand.mtplugin.UnicodeTranslationEngine\"]}"));
+        hostKept.put("assets/strings.mtl", Fixtures.bytes("k: v\n"));
+        java.util.Map<String, byte[]> compiledBeside = new java.util.LinkedHashMap<String, byte[]>();
+        compiledBeside.put("code", Fixtures.highEntropy(190 * 1024));
+        File hostKeptPlugin = fixtures.installedArchive("com.hand.mtplugin", hostKept, compiledBeside);
+        ScanReport hostKeptReport = new PluginScanner(IocDatabase.empty())
+                .scan(hostKeptPlugin, ScanBudget.unlimited());
+        check("a plugin whose code MT Manager keeps beside the package is clean, not worth a look",
+                hostKeptReport.verdict() == Verdict.CLEAN,
+                hostKeptReport.verdict() + " :: " + summarise(hostKeptReport));
+        check("its declared classes are not reported as missing",
+                !hostKeptReport.hasRule("MFT006"), summarise(hostKeptReport));
+        check("and MT Manager's own encrypted output is not called a packed member",
+                !hostKeptReport.hasRule("ARC007"), summarise(hostKeptReport));
+
+        // A loose download that declares classes and ships no code at all is still reported: there
+        // the absence is the package's own, not the host's.
+        java.util.Map<String, byte[]> hollow = new java.util.LinkedHashMap<String, byte[]>();
+        hollow.put("manifest.json", Fixtures.bytes(
+                "{\"pluginSdkVersion\": 2, \"pluginID\": \"x.hollow\", \"versionCode\": 1,"
+                        + " \"versionName\": \"v1\", \"name\": \"Hollow\", \"description\": \"d\","
+                        + " \"interfaces\": [\"x.hollow.Engine\"]}"));
+        hollow.put("assets/note.txt", Fixtures.bytes("nothing here"));
+        ScanReport hollowReport = scan(fixtures.rawArchive("hollow.mtp", hollow, false));
+        check("a download that declares a class and ships no code is still reported",
+                hollowReport.hasRule("MFT006"), summarise(hollowReport));
+
+        // JavaSmali declares pluginSdkVersion 1, which is a real MT generation, not an unknown one.
+        check("plugin SDK version 1 is recognised",
+                !hostKeptReport.hasRule("MFT005"), summarise(hostKeptReport));
+
+        // Markdown Preview bundles mermaid.min.js: an inline data: URI image and an XML namespace URL.
+        java.util.Map<String, byte[]> bundled = new java.util.LinkedHashMap<String, byte[]>();
+        StringBuilder blob = new StringBuilder("var logo=\"data:image/png;base64,");
+        for (int i = 0; i < 700; i++) {
+            blob.append("iVBORw0KGgoAAAANSUhEUg".charAt(i % 22));
+        }
+        blob.append("\";var ns=\"http://www.eclipse.org/elk/ElkGraph\";");
+        bundled.put("manifest.json", Fixtures.bytes(
+                "{\"pluginSdkVersion\": 3, \"dexMode\": true, \"pluginID\": \"com.md.preview\","
+                        + " \"versionCode\": 1, \"versionName\": \"1.0.0\", \"name\": \"Markdown Preview\","
+                        + " \"description\": \"d\", \"interfaces\": []}"));
+        java.util.Map<String, byte[]> mermaid = new java.util.LinkedHashMap<String, byte[]>();
+        mermaid.put("files/mermaid-v10.min.js", Fixtures.bytes(blob.toString()));
+        File bundledPlugin = fixtures.installedArchive("com.md.preview.v2", bundled, mermaid);
+        ScanReport bundledReport = new PluginScanner(IocDatabase.empty())
+                .scan(bundledPlugin, ScanBudget.unlimited());
+        check("an inline data: URI image in a bundled library is not an encoded payload",
+                !bundledReport.hasRule("OBF002"), summarise(bundledReport));
+        check("an XML namespace URL is not a plain-HTTP finding",
+                !bundledReport.hasRule("NET005"), summarise(bundledReport));
+
+        // The exception is narrow: a bare Base64 blob with no data: URI in front of it still reports.
+        java.util.Map<String, byte[]> bare = new java.util.LinkedHashMap<String, byte[]>();
+        StringBuilder raw = new StringBuilder("String payload = \"");
+        for (int i = 0; i < 700; i++) {
+            raw.append("QUJDREVGR0hJSktMTU5PUFFSU1RVVld".charAt(i % 31));
+        }
+        raw.append("\";");
+        bare.put("manifest.json",
+                Fixtures.bytes(Fixtures.manifest("x.bareblob", "Bare", "demo.A")));
+        bare.put("src/demo/A.java", Fixtures.bytes("package demo;\npublic class A { " + raw + " }\n"));
+        ScanReport bareReport = scan(fixtures.rawArchive("bare-blob.mtp", bare, false));
+        check("a Base64 blob that is not part of a data: URI is still reported",
+                bareReport.hasRule("OBF002"), summarise(bareReport));
+
+        // Every one of these is a real, distinct plugin; none is a lookalike of another.
+        List<File> all = new ArrayList<File>();
+        all.add(translator);
+        all.add(preview);
+        all.add(extractedPlugin);
+        all.add(lenientPlugin);
+        List<ScanReport> set = new PluginScanner(IocDatabase.empty()).scanAll(all, ScanBudget.unlimited());
+        boolean anyLookalike = false;
+        for (int i = 0; i < set.size(); i++) {
+            if (set.get(i).hasRule("MFT011")) {
+                anyLookalike = true;
+            }
+        }
+        check("distinct plugins sharing a {name} placeholder are not called lookalikes",
+                !anyLookalike, "MFT011 fired across distinct plugins");
+    }
+
     private static void regressions(Fixtures fixtures) {
         String benign = "package demo;\npublic class A { public int n() { return 1; } }\n";
 

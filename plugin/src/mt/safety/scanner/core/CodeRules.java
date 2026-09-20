@@ -97,6 +97,12 @@ public final class CodeRules {
             if (entry.directory) {
                 continue;
             }
+            // The manifest is metadata, judged by ManifestRules on what it declares. Searching its
+            // text for indicators reported a plugin for naming its own classes under bin.mt.plugin
+            // and for the dexMode flag every v3 package carries.
+            if (entry.name.equals("manifest.json")) {
+                continue;
+            }
             if (budget.exhausted()) {
                 budget.markTruncated();
                 break;
@@ -294,7 +300,14 @@ public final class CodeRules {
                 continue;
             }
             Matcher matcher = indicator.pattern.matcher(text);
-            if (!matcher.find()) {
+            boolean found = false;
+            while (matcher.find()) {
+                if (!indicator.excludedAt(text, matcher.start())) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
                 continue;
             }
             Signal signal = signalFor(report, byRule, indicator.ruleId, indicator.category,

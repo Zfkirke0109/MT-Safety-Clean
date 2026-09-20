@@ -33,6 +33,11 @@ public final class PairIndicator {
     }
 
     public boolean appliesTo(Indicator.Scope memberScope) {
-        return scope == Indicator.Scope.ANY || scope == memberScope;
+        if (scope == Indicator.Scope.ANY || scope == memberScope) {
+            return true;
+        }
+        // CODE means "anywhere code can run", which is source and compiled members alike.
+        return scope == Indicator.Scope.CODE
+                && (memberScope == Indicator.Scope.SOURCE || memberScope == Indicator.Scope.BINARY);
     }
 }

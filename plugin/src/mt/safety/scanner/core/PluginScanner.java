@@ -35,6 +35,7 @@ public final class PluginScanner {
             }
 
             PluginManifest manifest = readManifest(pkg, entries, budget);
+            resolvePlaceholderName(manifest, pkg, entries, budget);
             String hash;
             try {
                 hash = pkg.contentHash(budget);
@@ -43,7 +44,7 @@ public final class PluginScanner {
             }
 
             ScanReport report = new ScanReport(pkg.label(), path.getAbsolutePath(), pkg.archive(),
-                    manifest, hash);
+                    pkg.installed(), manifest, hash);
             if (prefix != null) {
                 report.add(new Signal("ARC008", Category.ARCHIVE, Severity.LOW,
                         "Plugin contents sit inside a wrapping folder",
@@ -52,7 +53,7 @@ public final class PluginScanner {
                         .withEvidence("archive", prefix));
             }
 
-            ManifestRules.apply(report, manifest, entries);
+            ManifestRules.apply(report, manifest, pkg, entries, budget);
             ArchiveRules.apply(report, pkg, entries, budget);
             int scanned = CodeRules.apply(report, pkg, entries, budget, database);
 
@@ -72,16 +73,17 @@ public final class PluginScanner {
             report.setElapsedMs(System.currentTimeMillis() - started);
             return report;
         } catch (IOException e) {
-            ScanReport report = new ScanReport(path.getName(), path.getAbsolutePath(), !path.isDirectory(),
-                    PluginManifest.missing(), "");
-            report.addError("could not open the package: " + e.getMessage());
-            report.setVerdict(Verdict.UNREADABLE, "The package could not be opened: " + e.getMessage());
+            String why = describeOpenFailure(e);
+            ScanReport report = new ScanReport(path.getName(), path.getAbsolutePath(), looksArchive(path),
+                    path.isDirectory(), PluginManifest.missing(), "");
+            report.addError("could not open the package: " + why);
+            report.setVerdict(Verdict.UNREADABLE, "The package could not be opened: " + why);
             report.setElapsedMs(System.currentTimeMillis() - started);
             return report;
         } catch (RuntimeException e) {
             // A malformed package must never take the host application down with it.
-            ScanReport report = new ScanReport(path.getName(), path.getAbsolutePath(), !path.isDirectory(),
-                    PluginManifest.missing(), "");
+            ScanReport report = new ScanReport(path.getName(), path.getAbsolutePath(), looksArchive(path),
+                    path.isDirectory(), PluginManifest.missing(), "");
             report.addError("the package could not be parsed: " + e);
             report.setVerdict(Verdict.UNREADABLE, "The package could not be parsed safely.");
             report.setElapsedMs(System.currentTimeMillis() - started);
@@ -132,6 +134,72 @@ public final class PluginScanner {
      * <p>An exhausted budget returns no bytes, and reporting that as a missing manifest produced a
      * false high-severity finding about a package whose manifest was present and perfectly readable.
      */
+    /** True when {@code path} is, or wraps, a zip archive. */
+    private static boolean looksArchive(File path) {
+        return !path.isDirectory() || new File(path, PluginPackage.INSTALLED_ARCHIVE).isFile();
+    }
+
+    /**
+     * Turns a zip library's failure into something the user can act on.
+     *
+     * <p>"invalid CEN header (bad compression method: 95)" is the JDK saying a member is XZ-compressed,
+     * which it cannot inflate and MT Manager can. That is a limit of this scanner, and the report
+     * should say so rather than leave the user guessing whether the package is corrupt.
+     */
+    private static String describeOpenFailure(IOException e) {
+        String message = String.valueOf(e.getMessage());
+        if (message.contains("bad compression method: 95")) {
+            return "a member uses XZ compression (zip method 95), which this scanner cannot read and MT"
+                    + " Manager can. Inspect it by hand.";
+        }
+        if (message.contains("bad compression method")) {
+            return "a member uses a compression method this scanner cannot read (" + message + ")."
+                    + " Inspect it by hand.";
+        }
+        return message;
+    }
+
+    /**
+     * Resolves a <code>{key}</code> plugin name from the package's own language files.
+     *
+     * <p>MT Manager does this before showing the name; a report that prints the raw key instead is
+     * not a report anyone can read. Bounded to a few small files under {@code assets/}.
+     */
+    private static void resolvePlaceholderName(PluginManifest manifest, PluginPackage pkg,
+            List<PluginPackage.Entry> entries, ScanBudget budget) {
+        if (!manifest.namePlaceholder()) {
+            return;
+        }
+        String key = manifest.placeholderKey();
+        String pack = null;
+        int colon = key.indexOf(':');
+        if (colon > 0) {
+            pack = key.substring(0, colon);
+            key = key.substring(colon + 1);
+        }
+        List<String> files = Mtl.candidateFiles(entries, pack, "en");
+        int looked = 0;
+        for (int i = 0; i < files.size() && looked < 6; i++) {
+            String name = files.get(i);
+            for (PluginPackage.Entry entry : entries) {
+                if (!entry.name.equals(name)) {
+                    continue;
+                }
+                looked++;
+                try {
+                    String value = Mtl.parse(Bytes.text(pkg.read(entry, Mtl.MAX_BYTES, budget))).get(key);
+                    if (value != null && value.trim().length() > 0) {
+                        manifest.setResolvedName(value.trim());
+                        return;
+                    }
+                } catch (IOException e) {
+                    // The name is cosmetic; a language file that cannot be read is not a finding.
+                }
+                break;
+            }
+        }
+    }
+
     /** True when every member of the package sits under {@code prefix}. */
     private static boolean allUnder(List<PluginPackage.Entry> entries, String prefix) {
         for (PluginPackage.Entry entry : entries) {

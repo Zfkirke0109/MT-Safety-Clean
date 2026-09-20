@@ -48,4 +48,12 @@ public interface Host {
 
     /** This plugin's own id, so the scanner can leave itself out of its results. */
     String pluginId();
+
+    /**
+     * The package name of the MT Manager this plugin runs inside, e.g. {@code bin.mt.plus}.
+     *
+     * <p>MT Manager keeps installed plugins under its own private storage, so knowing which build
+     * of it is hosting us is what turns "search likely places" into "look in the right one".
+     */
+    String hostPackage();
 }

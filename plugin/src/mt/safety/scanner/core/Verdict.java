@@ -35,6 +35,11 @@ public enum Verdict {
     }
 
     /** True when the user should act on this package. */
+    /** True for anything the scan flagged at all, "worth a look" included. */
+    public boolean flagged() {
+        return this == REVIEW || actionable();
+    }
+
     public boolean actionable() {
         return this == SUSPICIOUS || this == LIKELY_MALICIOUS || this == KNOWN_BAD;
     }

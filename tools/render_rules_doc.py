@@ -153,14 +153,18 @@ Long Base64 runs are decoded and examined, one level deep:
 ## Acting on what is found
 
 Findings are only useful if something can be done with them, and the settings screen has no buttons, so
-acting happens in two ways. A switch under an installed plugin the scan flagged arms a quarantine that
-runs the next time the screen is opened. A typed `quarantine malicious`, `quarantine suspicious`,
-`remove malicious` or `remove suspicious` covers everything the scan flagged.
+acting happens through real controls. Every plugin the scan flagged, "worth a look" included, gets a
+"Select for removal" switch, which only marks it. An "Uninstall selected, quarantined and malicious"
+button then deletes everything selected, everything malicious and anything already in quarantine, after
+confirming in a dialog that lists exactly what it will delete; a "Quarantine all flagged" button is the
+reversible version of the same sweep. Before it moves anything the scanner re-reads each package and
+refuses if it changed since the scan. The same actions are available as typed commands
+(`quarantine-all`, `quarantine malicious`, `remove suspicious`, ...) for anyone who prefers them.
 
-The switch appears only where it can be honoured: not for a `.mtp` file in a downloads folder, which is
-not installed; not for a package the scan could not hash, because the switch is bound to the contents it
-was armed against and there is nothing to bind it to; and not for the scanner itself. Those findings are
-reported without a switch and have to be judged by hand.
+A control appears only where it can be honoured: not for a `.mtp` file in a downloads folder, which is
+not installed; not for a package the scan could not hash, because the action is bound to the contents it
+was confirmed against and there is nothing to bind it to; and not for the scanner itself. Those findings
+are reported without a control and have to be judged by hand.
 
 A bulk action never runs when it is typed. It lists the plugins it would touch and issues a short code
 derived from that exact set; only `confirm CODE` carries it out, and only while the set is unchanged. A

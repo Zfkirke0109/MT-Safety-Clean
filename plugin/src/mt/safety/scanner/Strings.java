@@ -272,7 +272,11 @@ public final class Strings {
     }
 
     public String commandsHelp() {
-        return pick("quarantine malicious / quarantine suspicious - move every flagged plugin aside,"
+        return pick("definitions - where the rules came from and how old they are."
+                + " import PATH - fold in an indicator list you obtained yourself."
+                + "   "
+                + "quarantine-all - move every flagged plugin aside, worth-a-look included."
+                + "quarantine malicious / quarantine suspicious - move every flagged plugin aside,"
                 + " reversibly.   remove malicious / remove suspicious - delete them for good."
                 + "   confirm CODE / cancel - go ahead with, or drop, the listed action."
                 + "   deep / fast - thorough or quick scanning."
@@ -399,5 +403,190 @@ public final class Strings {
 
     public String commandFailed(String reason) {
         return pick("The command failed: " + reason, "\u547d\u4ee4\u6267\u884c\u5931\u8d25\uff1a" + reason);
+    }
+
+    public String selectThis() {
+        return pick("Select for removal", "选中以便删除");
+    }
+
+    public String selectThisHelp() {
+        return pick("Nothing happens until you press the uninstall button.",
+                "在按下卸载按钮前不会执行任何操作。");
+    }
+
+    public String selectedOn() {
+        return pick("Selected. The uninstall button will delete this.",
+                "已选中，卸载按钮将删除它。");
+    }
+
+    public String uninstallButton(int count) {
+        return pick("Uninstall selected, quarantined and malicious (" + count + ")",
+                "卸载已选中、已隔离和恶意插件（" + count + "）");
+    }
+
+    public String uninstallButtonHelp() {
+        return pick("Deletes them for good. Quarantine first if you want it reversible.",
+                "永久删除。如需可恢复，请先隔离。");
+    }
+
+    public String uninstallTitle() {
+        return pick("Uninstall plugins?", "卸载插件？");
+    }
+
+    public String uninstallBody(int targets, int held) {
+        return pick("This deletes " + targets + " installed plugin(s) and clears " + held
+                        + " already in quarantine. It cannot be undone.",
+                "将删除 " + targets + " 个已安装插件，并清空隔离区的 "
+                        + held + " 个。此操作无法撤销。");
+    }
+
+    public String uninstalled(int removed, int purged) {
+        return pick("Uninstalled " + removed + ", cleared " + purged + " from quarantine. Restart MT Manager.",
+                "已卸载 " + removed + " 个，清理隔离区 " + purged
+                        + " 个。请重启 MT 管理器。");
+    }
+
+    public String nothingSelected() {
+        return pick("Nothing is selected, malicious or quarantined, so nothing was done.",
+                "没有已选中、恶意或已隔离的插件，未执行操作。");
+    }
+
+    // ---------------------------------------------------- where detection comes from
+
+    public String rulesTitle(int version) {
+        return pick("Detection rules: catalogue v" + version,
+                "检测规则：规则库 v" + version);
+    }
+
+    public String rulesLine(int version, String date, int count, long ageDays) {
+        return pick(count + " rules, built " + date + " (" + age(ageDays) + "). Written and reviewed"
+                        + " in the open; updated by installing a new build of this plugin.",
+                count + " 条规则，版本日期 " + date + "（" + age(ageDays)
+                        + "）。规则公开可查，通过安装"
+                        + "新版插件更新。");
+    }
+
+    public String indicatorTitle() {
+        return pick("Your indicator file", "您的指标文件");
+    }
+
+    public String indicatorLine(String version, String updated, int trusted, int denied,
+            int patterns, long ageDays) {
+        String counts = trusted + " trusted, " + denied + " denied, " + patterns + " patterns";
+        String zhCounts = trusted + " 信任、" + denied + " 拒绝、" + patterns
+                + " 模式";
+        if (updated == null || updated.length() == 0) {
+            return pick(counts + ". No date recorded; it ships empty and holds only what you put in"
+                            + " it. Use \"import PATH\" to fold in a list you obtained yourself.",
+                    zhCounts + "。未记录日期；默认为空，"
+                            + "仅包含您自己添加的内容。"
+                            + "可用 \"import PATH\" 导入外部清单。");
+        }
+        String v = version == null || version.length() == 0 ? "" : " v" + version;
+        return pick("Version" + v + ", dated " + updated + " (" + age(ageDays) + "). " + counts + ".",
+                "版本" + v + "，日期 " + updated + "（" + age(ageDays) + "）。"
+                        + zhCounts + "。");
+    }
+
+    public String indicatorSource(String source) {
+        return pick("Source: " + source, "来源：" + source);
+    }
+
+    /** Plain-language age, since "0 days" reads worse than "today". */
+    private String age(long days) {
+        if (days == mt.safety.scanner.core.Dates.UNKNOWN) {
+            return pick("age unknown", "日期未知");
+        }
+        if (days < 0) {
+            return pick("dated in the future; check this device's clock",
+                    "日期晚于当前，请检查本机时间");
+        }
+        if (days == 0) {
+            return pick("today", "今天");
+        }
+        if (days == 1) {
+            return pick("1 day old", "1 天前");
+        }
+        return pick(days + " days old", days + " 天前");
+    }
+
+    public String noSuchFile(String path) {
+        return pick("No such file: " + path, "文件不存在：" + path);
+    }
+
+    public String importFailed(String reason) {
+        return pick("Could not import: " + reason, "导入失败：" + reason);
+    }
+
+    public String imported(int trusted, int denied, int patterns) {
+        return pick("Imported: " + trusted + " trusted, " + denied + " denied, " + patterns
+                        + " patterns added.",
+                "已导入：新增 " + trusted + " 信任、" + denied
+                        + " 拒绝、" + patterns + " 模式。");
+    }
+
+    // ------------------------------------------------------------ v3 button UI
+
+    public String actionsHeader() {
+        return pick("Act on what was found", "\u5904\u7406\u626b\u63cf\u7ed3\u679c");
+    }
+
+    /** Label for a "quarantine/remove all X (N)" button. */
+    public String bulkButton(String action, String scope, int count) {
+        String act = actionWord(action);
+        String kind;
+        if (scope.equals("malicious")) {
+            kind = pick("malicious", "\u6076\u610f");
+        } else if (scope.equals("flagged")) {
+            kind = pick("flagged", "\u88ab\u6807\u8bb0\u7684");
+        } else {
+            kind = pick("suspicious", "\u53ef\u7591");
+        }
+        return pick(act + " all " + kind + " (" + count + ")",
+                act + "\u6240\u6709" + kind + "\u63d2\u4ef6\uff08" + count + "\uff09");
+    }
+
+    public String bulkButtonHelp(boolean remove) {
+        return remove
+                ? pick("Tap to review and delete them for good.",
+                        "\u70b9\u51fb\u67e5\u770b\u5e76\u6c38\u4e45\u5220\u9664\u3002")
+                : pick("Tap to review and move them aside. Restore undoes it.",
+                        "\u70b9\u51fb\u67e5\u770b\u5e76\u79fb\u51fa\u3002\u53ef\u901a\u8fc7 restore \u6062\u590d\u3002");
+    }
+
+    public String confirmTitle(String action) {
+        return pick(actionWord(action) + " plugins?", actionWord(action) + "\u63d2\u4ef6\uff1f");
+    }
+
+    public String confirmBody(boolean remove, int count) {
+        String n = String.valueOf(count);
+        return remove
+                ? pick("Delete these " + n + " plugins for good? This cannot be undone.",
+                        "\u6c38\u4e45\u5220\u9664\u8fd9 " + n + " \u4e2a\u63d2\u4ef6\uff1f\u6b64\u64cd\u4f5c\u65e0\u6cd5\u64a4\u9500\u3002")
+                : pick("Move these " + n + " plugins aside? Restore undoes it.",
+                        "\u79fb\u51fa\u8fd9 " + n + " \u4e2a\u63d2\u4ef6\uff1f\u53ef\u901a\u8fc7 restore \u6062\u590d\u3002");
+    }
+
+    public String actOneBody(String verdict) {
+        return pick("This plugin was rated: " + verdict + ". Quarantine moves it aside so restore can"
+                        + " undo it; remove deletes it for good.",
+                "\u8be5\u63d2\u4ef6\u8bc4\u7ea7\uff1a" + verdict + "\u3002\u9694\u79bb\u53ef\u6062\u590d\uff0c"
+                        + "\u5220\u9664\u4e0d\u53ef\u6062\u590d\u3002");
+    }
+
+    public String confirmAct(boolean remove) {
+        return remove ? pick("Remove", "\u5220\u9664") : pick("Quarantine", "\u9694\u79bb");
+    }
+
+    public String cancel() {
+        return pick("Cancel", "\u53d6\u6d88");
+    }
+
+    public String andMore(int count) {
+        return pick("and " + count + " more", "\u7b49\u53e6\u5916 " + count + " \u4e2a");
+    }
+
+    private String actionWord(String action) {
+        return action.equals("remove") ? pick("Remove", "\u5220\u9664") : pick("Quarantine", "\u9694\u79bb");
     }
 }

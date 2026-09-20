@@ -53,8 +53,15 @@ public final class RiskScorer {
         applyCombinationEscalations(report);
 
         int total = 0;
+        Set<String> counted = new HashSet<String>();
         for (Signal signal : report.signals) {
             if (excused.contains(signal.ruleId)) {
+                continue;
+            }
+            // Each rule counts once. Evidence is what grows with repetition, not the score: a plugin
+            // that declares twenty entry points is not twenty times as dangerous as one that
+            // declares one, and adding them up rated an ordinary text-editor helper as malicious.
+            if (!counted.add(signal.ruleId)) {
                 continue;
             }
             total += signal.severity.weight();

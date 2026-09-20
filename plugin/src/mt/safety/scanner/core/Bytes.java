@@ -96,6 +96,79 @@ public final class Bytes {
         }
     }
 
+    /**
+     * The string table of a Dalvik executable, or an empty set when {@code data} is not one.
+     *
+     * <p>A dex file keeps every class descriptor, method name and literal in one table at a known
+     * offset, so the question "does this package contain the class its manifest declares" can be
+     * answered exactly for a compiled plugin, rather than guessed at from file names that a dex does
+     * not have. Reads are bounded on every axis: the count of strings, the length of each, and the
+     * offsets, which a hostile file controls and may point anywhere.
+     */
+    public static java.util.Set<String> dexStrings(byte[] data, int maxStrings, int maxLength) {
+        java.util.Set<String> out = new java.util.LinkedHashSet<String>();
+        if (data == null || data.length < 0x70 || data[0] != 'd' || data[1] != 'e' || data[2] != 'x'
+                || data[3] != '\n') {
+            return out;
+        }
+        long count = readU4(data, 0x38);
+        long tableOffset = readU4(data, 0x3C);
+        if (count <= 0 || tableOffset < 0x70 || tableOffset + count * 4L > data.length) {
+            return out;
+        }
+        long limit = Math.min(count, (long) maxStrings);
+        for (long i = 0; i < limit; i++) {
+            long offset = readU4(data, (int) (tableOffset + i * 4));
+            if (offset < 0 || offset >= data.length) {
+                continue;
+            }
+            String decoded = readMutf8(data, (int) offset, maxLength);
+            if (decoded != null) {
+                out.add(decoded);
+            }
+        }
+        return out;
+    }
+
+    private static long readU4(byte[] data, int at) {
+        if (at < 0 || at + 4 > data.length) {
+            return -1;
+        }
+        return (data[at] & 0xFFL) | ((data[at + 1] & 0xFFL) << 8) | ((data[at + 2] & 0xFFL) << 16)
+                | ((data[at + 3] & 0xFFL) << 24);
+    }
+
+    /** One dex string: a ULEB128 length in UTF-16 units, then modified UTF-8 up to a NUL. */
+    private static String readMutf8(byte[] data, int at, int maxLength) {
+        int pos = at;
+        // Skip the ULEB128 length; the NUL terminator is what actually ends the string.
+        for (int i = 0; i < 5 && pos < data.length; i++) {
+            if ((data[pos++] & 0x80) == 0) {
+                break;
+            }
+        }
+        StringBuilder sb = new StringBuilder();
+        while (pos < data.length && sb.length() < maxLength) {
+            int b = data[pos] & 0xFF;
+            if (b == 0) {
+                return sb.toString();
+            }
+            if (b < 0x80) {
+                sb.append((char) b);
+                pos += 1;
+            } else if ((b & 0xE0) == 0xC0 && pos + 1 < data.length) {
+                sb.append((char) (((b & 0x1F) << 6) | (data[pos + 1] & 0x3F)));
+                pos += 2;
+            } else if ((b & 0xF0) == 0xE0 && pos + 2 < data.length) {
+                sb.append((char) (((b & 0x0F) << 12) | ((data[pos + 1] & 0x3F) << 6) | (data[pos + 2] & 0x3F)));
+                pos += 3;
+            } else {
+                return null;
+            }
+        }
+        return pos < data.length ? sb.toString() : null;
+    }
+
     public static String hex(byte[] data) {
         StringBuilder sb = new StringBuilder(data.length * 2);
         for (int i = 0; i < data.length; i++) {

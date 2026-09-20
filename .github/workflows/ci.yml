@@ -17,6 +17,15 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+      # The detection core is plain Java and needs only a JDK. The v3 package additionally needs an
+      # Android platform jar, the r8/d8 dexer and MT Manager's plugin API; build.sh downloads those
+      # into this directory, so caching them keeps the network out of the common path.
+      - name: Cache the v3 build toolchain
+        uses: actions/cache@v4
+        with:
+          path: /tmp/mt-safety-build/toolchain
+          key: mt-toolchain-r8-8.9.35-platform30
+
       - name: Compile and test
         run: tools/build.sh test
 
@@ -27,8 +36,9 @@ jobs:
         run: |
           # The .mtp is committed so it can be downloaded directly, and a zip is not byte-reproducible
           # because it stores modification times. CONTENTS.txt records a hash per member, so this
-          # compares what is actually inside the artefact rather than only which files are in it: a
-          # changed source file whose name did not change is the stale-artefact case that matters.
+          # compares what is actually inside the artefact rather than only which files are in it. The
+          # compiled classes.dex is recorded but not hashed: d8's output embeds build metadata that
+          # varies run to run, and the sources that produce it are what the test suite covers.
           git diff --exit-code -- dist/CONTENTS.txt
 
       - name: Check the rule reference is up to date

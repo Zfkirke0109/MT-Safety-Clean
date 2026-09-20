@@ -65,6 +65,125 @@ public final class Json {
         return value;
     }
 
+    /**
+     * Parses a manifest written in the relaxed JSON that MT Manager's own parser accepts.
+     *
+     * <p>Six of the plugins on a real device carried comments or unquoted keys in
+     * {@code manifest.json}. MT Manager installed and ran every one of them, and the strict parser
+     * here reported each as "not valid JSON" with no id and a high-severity finding -- a claim of
+     * concealment against packages whose authors had merely written a comment. The relaxation is
+     * done as a rewrite into strict JSON that the ordinary parser then checks, so nothing here
+     * accepts a structure the strict parser would not; it only forgives the syntax.
+     *
+     * <p>Forgiven: {@code //} and {@code /* *}{@code /} comments, single-quoted strings, unquoted
+     * keys, and a trailing comma before a closing bracket. Nothing else.
+     */
+    public static Map<String, Object> parseObjectLenient(String text) throws JsonException {
+        if (text == null) {
+            throw new JsonException("no input");
+        }
+        return parseObject(relaxToStrict(stripBom(text)));
+    }
+
+    /** Rewrites relaxed JSON into strict JSON; the result still has to parse. */
+    static String relaxToStrict(String src) {
+        StringBuilder out = new StringBuilder(src.length() + 16);
+        // A stack of the containers currently open, so an identifier is quoted only where a key is
+        // expected: after '{' or a ',' directly inside an object.
+        StringBuilder containers = new StringBuilder();
+        char lastSignificant = 0;
+        int i = 0;
+        int n = src.length();
+        while (i < n) {
+            char c = src.charAt(i);
+            if (c == '/' && i + 1 < n && src.charAt(i + 1) == '/') {
+                while (i < n && src.charAt(i) != '\n') {
+                    i++;
+                }
+                continue;
+            }
+            if (c == '/' && i + 1 < n && src.charAt(i + 1) == '*') {
+                int end = src.indexOf("*/", i + 2);
+                i = end < 0 ? n : end + 2;
+                continue;
+            }
+            if (c == '"' || c == '\'') {
+                // Copy a string through, converting single quotes to double.
+                char quote = c;
+                out.append('"');
+                i++;
+                while (i < n) {
+                    char d = src.charAt(i);
+                    if (d == '\\' && i + 1 < n) {
+                        char e = src.charAt(i + 1);
+                        if (quote == '\'' && e == '\'') {
+                            out.append('\'');
+                        } else {
+                            out.append(d).append(e);
+                        }
+                        i += 2;
+                        continue;
+                    }
+                    if (d == quote) {
+                        i++;
+                        break;
+                    }
+                    if (d == '"') {
+                        out.append("\\\"");
+                    } else {
+                        out.append(d);
+                    }
+                    i++;
+                }
+                out.append('"');
+                lastSignificant = '"';
+                continue;
+            }
+            if (c == '{' || c == '[') {
+                containers.append(c);
+                out.append(c);
+                lastSignificant = c;
+                i++;
+                continue;
+            }
+            if (c == '}' || c == ']') {
+                // A trailing comma before this closer is dropped.
+                int back = out.length() - 1;
+                while (back >= 0 && Character.isWhitespace(out.charAt(back))) {
+                    back--;
+                }
+                if (back >= 0 && out.charAt(back) == ',') {
+                    out.deleteCharAt(back);
+                }
+                if (containers.length() > 0) {
+                    containers.setLength(containers.length() - 1);
+                }
+                out.append(c);
+                lastSignificant = c;
+                i++;
+                continue;
+            }
+            boolean inObject = containers.length() > 0 && containers.charAt(containers.length() - 1) == '{';
+            boolean expectingKey = inObject && (lastSignificant == '{' || lastSignificant == ',');
+            if (expectingKey && (Character.isLetter(c) || c == '_' || c == '$')) {
+                int start = i;
+                while (i < n && (Character.isLetterOrDigit(src.charAt(i)) || src.charAt(i) == '_'
+                        || src.charAt(i) == '$' || src.charAt(i) == '.' || src.charAt(i) == '-')) {
+                    i++;
+                }
+                out.append('"').append(src, start, i).append('"');
+                lastSignificant = '"';
+                continue;
+            }
+            if (!Character.isWhitespace(c)) {
+                lastSignificant = c;
+            }
+            out.append(c);
+            i++;
+        }
+        return out.toString();
+    }
+
     /** Parses {@code text} expecting a JSON object at the top level. */
     @SuppressWarnings("unchecked")
     public static Map<String, Object> parseObject(String text) throws JsonException {

@@ -136,10 +136,10 @@ public final class Quarantine {
         if (pluginDir == null || !pluginDir.isDirectory()) {
             return new Result(false, "Not a directory: " + pluginDir);
         }
-        File manifest = new File(pluginDir, "manifest.json");
-        if (!manifest.isFile()) {
-            return new Result(false, "No manifest.json here, so this is not an installed plugin: "
-                    + pluginDir.getName());
+        if (!new File(pluginDir, "manifest.json").isFile()
+                && !new File(pluginDir, mt.safety.scanner.core.PluginPackage.INSTALLED_ARCHIVE).isFile()) {
+            return new Result(false, "No manifest.json or plugin.mtp here, so this is not an installed"
+                    + " plugin: " + pluginDir.getName());
         }
         // A cross-volume move falls back to copy-then-delete, and a directory link inside the plugin
         // would take that delete outside the plugin entirely. This is a tool for removing hostile
@@ -150,7 +150,7 @@ public final class Quarantine {
                     + escaping + "). Moving it could affect files elsewhere, so nothing was done."
                     + " Inspect it by hand.");
         }
-        String pluginId = readPluginId(manifest);
+        String pluginId = readPluginId(pluginDir);
         if (ownPluginId != null && ownPluginId.equals(pluginId)) {
             return new Result(false, "That is this scanner. Uninstall it from MT Manager's plugin list"
                     + " if you want it gone.");
@@ -334,17 +334,23 @@ public final class Quarantine {
         }
     }
 
-    private String readPluginId(File manifest) {
-        try {
-            InputStream in = new FileInputStream(manifest);
+    /** The id of the plugin in {@code dir}, from an unpacked manifest or from inside plugin.mtp. */
+    private String readPluginId(File dir) {
+        File manifest = new File(dir, "manifest.json");
+        if (manifest.isFile()) {
             try {
-                return PluginManifest.parse(Bytes.readAtMost(in, 512 * 1024)).pluginId;
-            } finally {
-                in.close();
+                InputStream in = new FileInputStream(manifest);
+                try {
+                    return PluginManifest.parse(Bytes.readAtMost(in, 512 * 1024)).pluginId;
+                } finally {
+                    in.close();
+                }
+            } catch (IOException e) {
+                return "";
             }
-        } catch (IOException e) {
-            return "";
         }
+        File inner = new File(dir, mt.safety.scanner.core.PluginPackage.INSTALLED_ARCHIVE);
+        return inner.isFile() ? PluginManifest.readFrom(inner).pluginId : "";
     }
 
     /** An unused directory inside the store, or null when even the suffixed names are taken. */

@@ -40,6 +40,23 @@ public final class Fixtures {
         return dir;
     }
 
+    /**
+     * A plugin in MT Manager's real installed layout: a folder named for the id holding
+     * {@code plugin.mtp}, with any extra members MT Manager extracted beside it.
+     */
+    public File installedArchive(String id, Map<String, byte[]> archiveMembers, Map<String, byte[]> beside) {
+        File dir = new File(root, id);
+        dir.mkdirs();
+        rawArchiveAt(new File(dir, "plugin.mtp"), archiveMembers);
+        if (beside != null) {
+            for (Map.Entry<String, byte[]> e : beside.entrySet()) {
+                writeBytes(new File(dir, e.getKey()), e.getValue());
+            }
+        }
+        return dir;
+    }
+
+
     /** The same content packaged as an .mtp archive. */
     public File archivePlugin(String name, String manifestJson, Map<String, String> sources) {
         Map<String, byte[]> members = new LinkedHashMap<String, byte[]>();
@@ -165,8 +182,17 @@ public final class Fixtures {
      * @param duplicateFirstMember when true, the first member is written into the archive twice, so the
      *                             file a reviewer reads need not be the file that is extracted
      */
+    public void rawArchiveAt(File file, Map<String, byte[]> members) {
+        rawArchiveInto(file, members, false);
+    }
+
     public File rawArchive(String name, Map<String, byte[]> members, boolean duplicateFirstMember) {
         File file = new File(root, name);
+        file.getParentFile().mkdirs();
+        return rawArchiveInto(file, members, duplicateFirstMember);
+    }
+
+    private File rawArchiveInto(File file, Map<String, byte[]> members, boolean duplicateFirstMember) {
         file.getParentFile().mkdirs();
 
         List<String> names = new ArrayList<String>(members.keySet());
@@ -243,7 +269,7 @@ public final class Fixtures {
                 fileOut.close();
             }
         } catch (IOException e) {
-            throw new IllegalStateException("could not build fixture " + name, e);
+            throw new IllegalStateException("could not build fixture " + file.getName(), e);
         }
         return file;
     }
@@ -336,6 +362,97 @@ public final class Fixtures {
         return out;
     }
 
+    /**
+     * A minimal but structurally valid dex file whose string table holds exactly {@code strings}.
+     *
+     * <p>Enough for the declared-class check, which reads the string table and nothing else. The
+     * header is real: magic, size, and the string_ids table at its documented offset, followed by the
+     * string data items each as a ULEB128 length, modified UTF-8 and a NUL.
+     */
+    public static byte[] dexWithStrings(String... strings) {
+        ByteArrayOutputStream data = new ByteArrayOutputStream();
+        int[] offsets = new int[strings.length];
+        int dataStart = 0x70 + strings.length * 4;
+        for (int i = 0; i < strings.length; i++) {
+            offsets[i] = dataStart + data.size();
+            byte[] utf = bytes(strings[i]);
+            int len = strings[i].length();
+            // ULEB128 of the UTF-16 length
+            do {
+                int b = len & 0x7F;
+                len >>>= 7;
+                data.write(len != 0 ? (b | 0x80) : b);
+            } while (len != 0);
+            data.write(utf, 0, utf.length);
+            data.write(0);
+        }
+        int total = dataStart + data.size();
+        ByteArrayOutputStream out = new ByteArrayOutputStream(total);
+        out.write(bytes("dex\n035\0"), 0, 8);
+        writeInt(out, 0); // checksum
+        for (int i = 0; i < 20; i++) {
+            out.write(0); // signature
+        }
+        writeInt(out, total); // file_size
+        writeInt(out, 0x70); // header_size
+        writeInt(out, 0x12345678); // endian_tag
+        writeInt(out, 0); // link_size
+        writeInt(out, 0); // link_off
+        writeInt(out, 0); // map_off
+        writeInt(out, strings.length); // string_ids_size  @0x38
+        writeInt(out, 0x70); // string_ids_off   @0x3C
+        for (int i = 0; i < 12; i++) {
+            writeInt(out, 0); // type/proto/field/method/class ids and data section
+        }
+        for (int i = 0; i < strings.length; i++) {
+            writeInt(out, offsets[i]);
+        }
+        out.write(data.toByteArray(), 0, data.size());
+        return out.toByteArray();
+    }
+
+    /** Bytes that the detector recognises as a WebP image, as real plugins ship their icons. */
+    public static byte[] fakeWebp(int length) {
+        byte[] out = new byte[Math.max(length, 20)];
+        byte[] head = bytes("RIFF____WEBPVP8 ");
+        System.arraycopy(head, 0, out, 0, head.length);
+        for (int i = head.length; i < out.length; i++) {
+            out[i] = (byte) ((i * 31 + 7) & 0xFF);
+        }
+        return out;
+    }
+
+    /** A manifest as MT Manager's v3 packager writes one. */
+    public static String v3Manifest(String pluginId, String name, String mainPreference, String... interfaces) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("{\n  \"minAndroidVersion\": 21,\n  \"minHostVersion\": 26022600,\n");
+        sb.append("  \"pluginSdkVersion\": 3,\n  \"pluginID\": \"").append(pluginId).append("\",\n");
+        sb.append("  \"versionCode\": 1,\n  \"versionName\": \"v1.0\",\n");
+        sb.append("  \"name\": \"").append(name).append("\",\n  \"description\": \"{plugin_description}\",\n");
+        if (mainPreference != null && mainPreference.length() > 0) {
+            sb.append("  \"mainPreference\": \"").append(mainPreference).append("\",\n");
+        }
+        if (interfaces.length > 0) {
+            sb.append("  \"interfaces\": [");
+            for (int i = 0; i < interfaces.length; i++) {
+                sb.append(i > 0 ? ", " : "").append('"').append(interfaces[i]).append('"');
+            }
+            sb.append("],\n");
+        }
+        sb.append("  \"dexMode\": true\n}\n");
+        return sb.toString();
+    }
+
+    /**
+     * An installed plugin in MT Manager's own layout: {@code <root>/installed/<id>/plugin.mtp}.
+     *
+     * @return the plugin's folder, which is the install unit the scanner sees
+     */
+    public File installedArchive(String id, Map<String, byte[]> members) {
+        File archive = rawArchive("installed/" + id + "/plugin.mtp", members, false);
+        return archive.getParentFile();
+    }
+
     /** Near-random bytes, for the packed-payload fixture. */
     public static byte[] highEntropy(int length) {
         byte[] out = new byte[length];
@@ -363,6 +480,20 @@ public final class Fixtures {
     }
 
     /** Writes a file, for tests that need one outside the plugin layout. */
+    public static void writeBytes(File file, byte[] content) {
+        file.getParentFile().mkdirs();
+        try {
+            java.io.OutputStream out = new FileOutputStream(file);
+            try {
+                out.write(content);
+            } finally {
+                out.close();
+            }
+        } catch (IOException e) {
+            throw new IllegalStateException("could not write " + file, e);
+        }
+    }
+
     public static void write(File file, String content) {
         writeFile(file, content);
     }
