@@ -206,6 +206,20 @@ public final class IncompleteScanCleanRegression {
                 big.coverage() == Coverage.PARTIAL && big.hasRule("SCN001")
                         && !ReportFormatter.summaryLine(big).startsWith("Clean"),
                 big.coverage() + " :: " + ReportFormatter.summaryLine(big));
+
+        // Calling ZipInputStream.getNextEntry() after a short bounded read can silently inflate
+        // the entire remainder of that entry. Stop traversal instead of visiting later members.
+        Map<String, byte[]> overAndAfter = new LinkedHashMap<String, byte[]>();
+        overAndAfter.put("big.txt", Fixtures.bytes(sb.toString()));
+        overAndAfter.put("after-limit.java", Fixtures.bytes("package demo; public class After { "
+                + "void f() throws Exception { Runtime.getRuntime().exec(\\\"ls\\\"); } }"));
+        ScanReport bounded = scanWithJar(fixtures, "nest-overlimit-stop.mtp",
+                Fixtures.deflatedJar(overAndAfter));
+        String boundedEvidence = ReportFormatter.plainText(bounded);
+        c.that("nested ZIP stops after oversized member without examining the next member",
+                bounded.coverage() == Coverage.PARTIAL && bounded.hasRule("SCN001")
+                        && !boundedEvidence.contains("after-limit.java"),
+                bounded.coverage() + " :: " + boundedEvidence);
     }
 
     private static void riskyPartial(ActionsTest.Checker c, Fixtures fixtures) {
