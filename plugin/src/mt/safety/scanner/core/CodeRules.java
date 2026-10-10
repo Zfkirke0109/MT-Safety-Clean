@@ -125,6 +125,8 @@ public final class CodeRules {
                 data = pkg.read(entry, limit, budget);
             } catch (IOException e) {
                 report.addError("could not read " + entry.name + ": " + e.getMessage());
+                // A member that cannot be read is content that was not inspected.
+                budget.markTruncated();
                 continue;
             }
             if (data.length == 0) {
@@ -192,8 +194,13 @@ public final class CodeRules {
     /**
      * Opens an archived member and applies the same rules to what is inside it.
      *
-     * <p>Bounded in every direction: entry count, bytes per entry, nesting depth, and the scan budget,
-     * because the archive being opened is the untrusted thing under examination.
+     * <p>Nested entry count, nesting depth, decompressed output per member, and logical scan-budget
+     * reservations are bounded. The enclosing member is already held in a bounded byte array. A
+     * reservation accounts for bytes returned to this scanner, including the one-byte EOF probe; it
+     * does not meter compressed input that {@link ZipInputStream}'s inflater may buffer internally.
+     * The deadline is checked between operations and cannot preempt inflater CPU work or bound its
+     * per-byte cost. A capped or failed member stops traversal before advancing the stream, which
+     * would otherwise inflate the unread remainder.
      *
      * <p>Evidence keeps the path that leads to it, {@code libs/helper.jar!evil/Evil.class}, so a
      * finding can be traced back to the file it actually came from.
@@ -201,6 +208,10 @@ public final class CodeRules {
     private static void scanNestedArchive(ScanReport report, Map<String, Signal> byRule, String parentName,
             byte[] data, ScanBudget budget, IocDatabase database, SignatureDatabase signatures, int depth) {
         if (depth > MAX_NESTED_DEPTH) {
+            // The depth cap is a safety bound, not a verdict: what sits below it was never inspected.
+            report.addError(parentName + ": nested archive deeper than " + MAX_NESTED_DEPTH
+                    + " levels was not inspected");
+            budget.markTruncated();
             return;
         }
         Signal executableInside = null;
@@ -214,20 +225,67 @@ public final class CodeRules {
                     break;
                 }
                 if (ze.isDirectory()) {
+                    if (budget.reserve(1) == 0) {
+                        budget.markTruncated();
+                        break;
+                    }
+                    try {
+                        if (zin.read() >= 0) {
+                            report.addError(parentName + "!" + ze.getName()
+                                    + ": directory entry contains unread data; nested traversal stopped");
+                            budget.markTruncated();
+                            break;
+                        }
+                    } catch (IOException e) {
+                        report.addError(parentName + "!" + ze.getName()
+                                + ": could not verify empty directory entry: " + e.getMessage());
+                        budget.markTruncated();
+                        break;
+                    }
                     continue;
                 }
-                int granted = budget.reserve(NESTED_MEMBER_LIMIT);
-                if (granted <= 0) {
+                // One extra output byte is reserved for the end-of-member probe so it is charged too.
+                // This bounds bytes returned by ZipInputStream, not inflater-internal CPU or input reads.
+                int reserved = budget.reserve(NESTED_MEMBER_LIMIT + 1);
+                if (reserved <= 1) {
+                    // No room for data plus the probe: stop without reading or advancing.
                     budget.markTruncated();
                     break;
                 }
+                int granted = reserved - 1;
                 byte[] child;
                 try {
                     child = Bytes.readAtMost(zin, granted);
                 } catch (IOException e) {
                     report.addError("could not read " + parentName + "!" + ze.getName() + ": "
                             + e.getMessage());
-                    continue;
+                    budget.markTruncated();
+                    // Do not ask ZipInputStream for another entry: it would first drain the
+                    // unread remainder of this potentially enormous or corrupt member.
+                    break;
+                }
+                // ZIP streams do not expose a reliable entry size before inflation. Probe at most
+                // the one reserved byte when the allowance is exactly filled; an additional byte
+                // proves truncation.
+                // This accounts for bytes delivered by the nested stream. The inflater may buffer
+                // compressed input internally, and the scan deadline cannot preempt its CPU work.
+                // Importantly, getNextEntry() implicitly inflates the rest of the *current* entry.
+                boolean completeChild = child.length < granted;
+                boolean memberCutShort = false;
+                if (!completeChild) {
+                    try {
+                        if (zin.read() >= 0) {
+                            memberCutShort = true;
+                            budget.markTruncated();
+                        } else {
+                            completeChild = true;
+                        }
+                    } catch (IOException e) {
+                        memberCutShort = true;
+                        budget.markTruncated();
+                        report.addError("could not verify end of " + parentName + "!" + ze.getName()
+                                + ": " + e.getMessage());
+                    }
                 }
                 if (child.length == 0) {
                     continue;
@@ -253,24 +311,31 @@ public final class CodeRules {
                 Scope childScope = classify(synthetic.extension());
                 String childText = childScope == Scope.BINARY
                         ? Bytes.extractedText(child, 6) : Bytes.text(child);
-                // A member that filled its whole allowance may have been cut short, so only a
-                // shorter read is known to be complete enough for a whole-file hash.
-                SignatureRules.match(report, byRule, synthetic, child, child.length < granted, signatures);
+                // Only compare whole-file hashes when the member really reached EOF.
+                // Pattern matching on the bounded prefix remains useful for partial members.
+                SignatureRules.match(report, byRule, synthetic, child, completeChild, signatures);
                 matchIndicators(report, byRule, synthetic, childScope, childText);
                 matchPairs(report, byRule, synthetic, childScope, childText);
                 matchUserPatterns(report, byRule, synthetic, childText, database);
                 checkEncodedPayloads(report, byRule, synthetic, childText);
 
-                if (Bytes.looksLikeZip(child)) {
+                if (!memberCutShort && Bytes.looksLikeZip(child)) {
                     scanNestedArchive(report, byRule, childName, child, budget, database, signatures,
                             depth + 1);
+                }
+                if (memberCutShort) {
+                    // Preserve findings in the inspected prefix, but never call getNextEntry()
+                    // after a bounded read stopped short: it would inflate the skipped tail.
+                    break;
                 }
             }
         } catch (IOException e) {
             report.addError("could not open " + parentName + ": " + e.getMessage());
+            budget.markTruncated();
         } catch (RuntimeException e) {
             // A malformed archive must not take the scan down with it.
             report.addError("could not read inside " + parentName + ": " + e);
+            budget.markTruncated();
         } finally {
             PluginPackage.closeQuietly(zin);
         }

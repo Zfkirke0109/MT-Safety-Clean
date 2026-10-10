@@ -32,7 +32,7 @@ public final class ManifestRules {
     /** Runs every manifest rule, adding findings to {@code report}. */
     public static void apply(ScanReport report, PluginManifest manifest, PluginPackage pkg,
             List<PluginPackage.Entry> entries, ScanBudget budget) {
-        if (!manifest.present) {
+        if (!manifest.present && !manifest.unreadable) {
             report.add(new Signal("MFT001", Category.MANIFEST, Severity.HIGH,
                     "No manifest.json",
                     "Every MT plugin must contain manifest.json. This package is either not a plugin or has"
@@ -40,11 +40,16 @@ public final class ManifestRules {
             return;
         }
         if (manifest.unreadable) {
+            boolean presenceUnknown = !manifest.present;
             report.add(new Signal("MFT012", Category.MANIFEST, Severity.LOW,
-                    "manifest.json was not read",
-                    "The manifest is present but the scanner could not read it, so nothing below is"
-                            + " based on what this plugin declares about itself. This is a limit of the"
-                            + " scan, not a finding against the package.")
+                    presenceUnknown ? "manifest.json could not be confirmed" : "manifest.json was not read",
+                    presenceUnknown
+                            ? "The package listing was incomplete, so the scanner could not establish whether"
+                                    + " manifest.json was present. This is a limit of the scan, not a finding"
+                                    + " against the package."
+                            : "The scanner could not read manifest.json, so nothing below is based on what"
+                                    + " this plugin declares about itself. This is a limit of the scan, not"
+                                    + " a finding against the package.")
                     .withEvidence("manifest.json", String.valueOf(manifest.parseError)));
             return;
         }

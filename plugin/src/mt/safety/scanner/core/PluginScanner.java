@@ -61,6 +61,13 @@ public final class PluginScanner {
 
             ScanReport report = new ScanReport(pkg.label(), path.getAbsolutePath(), pkg.archive(),
                     pkg.installed(), manifest, hash);
+            try {
+                String identityPath = pkg.actionIdentityPath();
+                report.setDestructiveActionIdentity(hash.length() > 0
+                        && pkg.destructiveActionIdentityComplete(), identityPath);
+            } catch (IOException e) {
+                report.setDestructiveActionIdentity(false, "");
+            }
             if (prefix != null) {
                 report.add(new Signal("ARC008", Category.ARCHIVE, Severity.LOW,
                         "Plugin contents sit inside a wrapping folder",
@@ -78,8 +85,10 @@ public final class PluginScanner {
             if (report.truncated()) {
                 report.add(new Signal("SCN001", Category.PROVENANCE, Severity.INFO,
                         "The scan did not read the whole package",
-                        "The package was too large, or too slow to read, to examine completely. Findings below"
-                                + " are real, but absence of findings proves less than usual."));
+                        "Part of the package was not inspected: it was too large or too slow to read, or a"
+                                + " member could not be read. Findings below are real, but absence of"
+                                + " findings proves less than usual. This is a coverage warning, not"
+                                + " evidence of malware."));
             }
             for (int i = 0; i < database.loadErrors().size(); i++) {
                 report.addError(database.loadErrors().get(i));
@@ -145,7 +154,7 @@ public final class PluginScanner {
     }
 
     /**
-     * Reads the manifest, keeping "absent" and "not read" apart.
+     * Reads the manifest, keeping "absent", "not read" and "not observable" apart.
      *
      * <p>An exhausted budget returns no bytes, and reporting that as a missing manifest produced a
      * false high-severity finding about a package whose manifest was present and perfectly readable.
@@ -241,9 +250,15 @@ public final class PluginScanner {
                     }
                     return PluginManifest.parse(data);
                 } catch (IOException e) {
+                    budget.markTruncated();
                     return PluginManifest.unreadable("could not be read: " + e.getMessage());
                 }
             }
+        }
+        if (pkg.manifestListingIncomplete()) {
+            budget.markTruncated();
+            return PluginManifest.presenceUnknown(
+                    "package listing was incomplete; manifest presence is unknown");
         }
         return PluginManifest.missing();
     }

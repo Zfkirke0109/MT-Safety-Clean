@@ -42,6 +42,8 @@ public final class ScanReport {
     private int filesScanned;
     private long elapsedMs;
     private String verdictReason = "";
+    private boolean destructiveActionIdentityComplete;
+    private String actionIdentityPath = "";
 
     public ScanReport(String label, String path, boolean archive, boolean installed, PluginManifest manifest,
             String contentHash) {
@@ -122,6 +124,22 @@ public final class ScanReport {
         return false;
     }
 
+    /** True when the package produced any signal other than a coverage-only notice. */
+    public boolean hasPackageFindings() {
+        for (Signal signal : signals) {
+            if (!isCoverageNotice(signal)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Coverage notices describe scan limits rather than findings against the package. */
+    public static boolean isCoverageNotice(Signal signal) {
+        return signal != null && ("SCN001".equals(signal.ruleId) || "MFT012".equals(signal.ruleId)
+                || "MFT013".equals(signal.ruleId));
+    }
+
     public Verdict verdict() {
         return verdict;
     }
@@ -129,6 +147,60 @@ public final class ScanReport {
     public void setVerdict(Verdict verdict, String reason) {
         this.verdict = verdict;
         this.verdictReason = reason == null ? "" : reason;
+    }
+
+    /** What was inspected. The legacy {@link #verdict()} says nothing about this. */
+    public Coverage coverage() {
+        if (verdict == Verdict.UNREADABLE) {
+            return Coverage.UNSUPPORTED_OR_UNREADABLE;
+        }
+        if (truncated) {
+            return Coverage.PARTIAL;
+        }
+        for (Signal signal : signals) {
+            if (isCoverageNotice(signal)) {
+                return Coverage.PARTIAL;
+            }
+        }
+        return Coverage.COMPLETE;
+    }
+
+    /**
+     * The verdict as it should be shown to a person. Identical to the legacy label when the scan was
+     * complete; otherwise it never reads as an unqualified Clean or Trusted.
+     */
+    public String dispositionLabel() {
+        if (coverage() != Coverage.PARTIAL) {
+            return verdict.label();
+        }
+        if (verdict == Verdict.CLEAN) {
+            return "Incomplete scan";
+        }
+        if (verdict == Verdict.TRUSTED) {
+            return "Trusted identity (inspection incomplete)";
+        }
+        return verdict.label() + " (inspection incomplete)";
+    }
+
+    /** Advice matching {@link #dispositionLabel()}. */
+    public String dispositionAdvice() {
+        if (verdict == Verdict.CLEAN && hasPackageFindings()) {
+            if (coverage() == Coverage.PARTIAL) {
+                return "Package findings were observed; inspection incomplete. This is not an all-clear.";
+            }
+            return "No medium-or-higher risk was detected; review the lower-severity findings below.";
+        }
+        if (coverage() != Coverage.PARTIAL) {
+            return verdict.advice();
+        }
+        if (verdict == Verdict.CLEAN) {
+            return "No findings in inspected content; inspection incomplete. This is not an all-clear.";
+        }
+        if (verdict == Verdict.TRUSTED) {
+            return "You marked this exact version as trusted, but the scan did not read all of it."
+                    + " Inspection incomplete.";
+        }
+        return verdict.advice() + " The scan was incomplete, so there may be more.";
     }
 
     public String verdictReason() {
@@ -167,8 +239,22 @@ public final class ScanReport {
         this.elapsedMs = elapsedMs;
     }
 
+    /** True only when the package digest identifies every file a destructive action would affect. */
+    public boolean destructiveActionIdentityComplete() {
+        return destructiveActionIdentityComplete;
+    }
+
+    public String actionIdentityPath() {
+        return actionIdentityPath;
+    }
+
+    public void setDestructiveActionIdentity(boolean complete, String canonicalPath) {
+        destructiveActionIdentityComplete = complete && canonicalPath != null && canonicalPath.length() > 0;
+        actionIdentityPath = destructiveActionIdentityComplete ? canonicalPath : "";
+    }
+
     /** Short one-line summary used in list views. */
     public String headline() {
-        return verdict.label() + " (" + score + ") - " + manifest.displayName();
+        return dispositionLabel() + " (" + score + ") - " + manifest.displayName();
     }
 }

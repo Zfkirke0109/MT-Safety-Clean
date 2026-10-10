@@ -139,6 +139,31 @@ public final class Strings {
                 + "\u672c\u9875\u91cd\u65b0\u626b\u63cf\u3002");
     }
 
+    public String destructiveActionsUnavailable(String name) {
+        return pick("Cannot safely quarantine or remove " + name
+                + ": the scan cannot reverify every file in its installed folder, including extracted"
+                + " sibling files. Use MT Manager's plugin manager; nothing was moved or deleted.",
+                "\u65e0\u6cd5\u5b89\u5168\u9694\u79bb\u6216\u5220\u9664 " + name
+                + "\uff1a\u626b\u63cf\u5668\u65e0\u6cd5\u91cd\u65b0\u9a8c\u8bc1\u5176\u5b89"
+                + "\u88c5\u76ee\u5f55\u4e2d\u7684\u6240\u6709\u6587\u4ef6\uff0c\u5305\u62ec"
+                + "\u63d0\u53d6\u51fa\u6765\u7684\u540c\u4f34\u6587\u4ef6\u3002\u8bf7\u4f7f"
+                + "\u7528 MT \u7ba1\u7406\u5668\u7684\u63d2\u4ef6\u7ba1\u7406\u5668\uff1b"
+                + "\u672a\u79fb\u52a8\u6216\u5220\u9664\u4efb\u4f55\u6587\u4ef6\u3002");
+    }
+
+    public String destructiveActionsUnavailableTitle() {
+        return pick("Destructive actions unavailable", "\u7834\u574f\u6027\u64cd\u4f5c\u5df2\u7981\u7528");
+    }
+
+    public String destructiveActionsUnavailableHelp() {
+        return pick("These sibling files are scanned and reported, but their contents are not bound to"
+                + " the archive hash used to verify moves. For safety, destructive actions are disabled.",
+                "\u8fd9\u4e9b\u540c\u4f34\u6587\u4ef6\u4f1a\u88ab\u626b\u63cf\u5e76\u62a5\u544a\uff0c"
+                + "\u4f46\u5176\u5185\u5bb9\u672a\u7ed1\u5b9a\u5230\u7528\u4e8e\u79fb\u52a8\u9a8c"
+                + "\u8bc1\u7684\u538b\u7f29\u5305\u54c8\u5e0c\u503c\u3002\u4e3a\u4fdd\u62a4"
+                + "\u5b89\u5168\uff0c\u5df2\u7981\u7528\u7834\u574f\u6027\u64cd\u4f5c\u3002");
+    }
+
     public String actedOnRemoved() {
         return pick("Deleted just now", "\u521a\u521a\u5df2\u5220\u9664");
     }
@@ -197,18 +222,21 @@ public final class Strings {
     }
 
     public String noneVerifiable(int count) {
-        return pick(count + " flagged plugin(s) could not be read completely enough to act on safely."
-                + " Run \"deep\", reopen this screen, then try again.",
-                "\u6709 " + count + " \u4e2a\u88ab\u6807\u8bb0\u7684\u63d2\u4ef6\u672a\u80fd"
-                + "\u5b8c\u6574\u8bfb\u53d6\uff0c\u65e0\u6cd5\u5b89\u5168\u5904\u7406\u3002"
-                + "\u8bf7\u5148\u6267\u884c \"deep\" \u5e76\u91cd\u65b0\u6253\u5f00\u672c\u9875\u3002");
+        return pick(count + " flagged plugin(s) cannot be safely acted on because the scanner cannot"
+                + " reverify all installed files. Use MT Manager's plugin manager; no action was taken.",
+                count + " \u4e2a\u88ab\u6807\u8bb0\u7684\u63d2\u4ef6\u65e0\u6cd5\u5b89\u5168"
+                + "\u5904\u7406\uff0c\u56e0\u4e3a\u626b\u63cf\u5668\u65e0\u6cd5\u91cd\u65b0"
+                + "\u9a8c\u8bc1\u6240\u6709\u5df2\u5b89\u88c5\u6587\u4ef6\u3002\u8bf7\u4f7f"
+                + "\u7528 MT \u7ba1\u7406\u5668\u7684\u63d2\u4ef6\u7ba1\u7406\u5668\uff1b"
+                + "\u672a\u6267\u884c\u64cd\u4f5c\u3002");
     }
 
     public String someUnverifiable(int count) {
-        return pick("(" + count + " more could not be read completely enough to include; run \"deep\""
-                + " to cover them.)",
-                "\uff08\u53e6\u6709 " + count + " \u4e2a\u672a\u80fd\u5b8c\u6574\u8bfb\u53d6"
-                + "\u800c\u672a\u5217\u5165\uff0c\u53ef\u6267\u884c \"deep\" \u540e\u91cd\u8bd5\u3002\uff09");
+        return pick("(" + count + " more could not be safely included because all installed files cannot"
+                + " be reverified.)",
+                "\uff08\u53e6\u6709 " + count + " \u4e2a\u65e0\u6cd5\u7eb3\u5165\u5b89\u5168"
+                + "\u64cd\u4f5c\uff0c\u56e0\u4e3a\u65e0\u6cd5\u91cd\u65b0\u9a8c\u8bc1\u6240"
+                + "\u6709\u5df2\u5b89\u88c5\u6587\u4ef6\u3002\uff09");
     }
 
     public String nothingToConfirm() {

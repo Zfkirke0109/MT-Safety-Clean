@@ -8,7 +8,10 @@ import java.util.Map;
 import mt.safety.scanner.Host;
 import mt.safety.scanner.Quarantine;
 import mt.safety.scanner.ScanRunner;
+import mt.safety.scanner.core.Coverage;
+import mt.safety.scanner.core.ReportFormatter;
 import mt.safety.scanner.core.ScanReport;
+import mt.safety.scanner.core.Severity;
 import mt.safety.scanner.core.Verdict;
 
 /**
@@ -510,6 +513,37 @@ public final class ActionsTest {
         }
         deleteTree(linkedParent);
 
+        writePlugin(new File(installed, "copy-guard"), "copy.guard", "Copy Guard", HOSTILE);
+        int quarantinedBeforeCopyGuard = quarantine.list().size();
+        String forceCopyFallback = "mtsafety.forceCopyFallback";
+        String priorForceCopyFallback = System.getProperty(forceCopyFallback);
+        System.setProperty(forceCopyFallback, "true");
+        try {
+            Quarantine.Result refusedCopyTarget = quarantine.quarantine(new File(installed, "copy-guard"),
+                    host.pluginId(), new Quarantine.MoveGuard() {
+                        @Override
+                        public boolean allow(File pluginDir) {
+                            return true;
+                        }
+
+                        @Override
+                        public boolean allowCopyTarget(File sourceDir, File copiedTarget) {
+                            return false;
+                        }
+                    });
+            check.that("copy fallback keeps the source when the copied target cannot be reverified",
+                    !refusedCopyTarget.ok && new File(installed, "copy-guard").isDirectory()
+                            && quarantine.list().size() == quarantinedBeforeCopyGuard,
+                    refusedCopyTarget.message);
+        } finally {
+            if (priorForceCopyFallback == null) {
+                System.clearProperty(forceCopyFallback);
+            } else {
+                System.setProperty(forceCopyFallback, priorForceCopyFallback);
+            }
+        }
+        deleteTree(new File(installed, "copy-guard"));
+
         // The store itself was the one link the guards did not cover. Replace filesDir/quarantine with
         // a link and every plugin moved aside lands wherever it points, list() reads what is sitting
         // there as though it were quarantined, and restore copies it back out to a path from an .info
@@ -702,6 +736,260 @@ public final class ActionsTest {
                 !new File(installed, "recur").isDirectory() && older.location.isDirectory(),
                 recurRemoval.commandOutcome);
         deleteTree(older.location);
+
+        incompleteSiblingActionEligibility(check);
+        completeSiblingActionEligibility(check);
+    }
+
+    private static void completeSiblingActionEligibility(Checker check) throws Exception {
+        File iso = new File(System.getProperty("java.io.tmpdir"),
+                "mtsafety-complete-siblings-" + System.currentTimeMillis());
+        File filesDir = new File(iso, "a/b/c/d/files");
+        File installed = new File(iso, "a/plugins");
+        if (!filesDir.mkdirs() || !installed.mkdirs()) {
+            throw new IllegalStateException("could not create " + iso);
+        }
+
+        Map<String, byte[]> archiveOnlyMembers = new java.util.LinkedHashMap<String, byte[]>();
+        archiveOnlyMembers.put("manifest.json", Fixtures.bytes(
+                Fixtures.manifest("archive.only", "Archive Only", "x.A")));
+        archiveOnlyMembers.put("src/x/A.java", Fixtures.bytes(RISKY));
+        Map<String, byte[]> siblingArchiveMembers = new java.util.LinkedHashMap<String, byte[]>();
+        siblingArchiveMembers.put("manifest.json", Fixtures.bytes(
+                Fixtures.manifest("sibling.one", "Sibling One", "x.A")));
+        siblingArchiveMembers.put("src/x/A.java", Fixtures.bytes(HARMLESS));
+        Map<String, byte[]> sidecars = new java.util.LinkedHashMap<String, byte[]>();
+        sidecars.put("extracted.java", Fixtures.bytes(HOSTILE));
+
+        Fixtures fixtures = new Fixtures(installed);
+        File archiveOnly = fixtures.installedArchive("archive-only", archiveOnlyMembers, null);
+        File withSibling = fixtures.installedArchive("sibling", siblingArchiveMembers, sidecars);
+        FakeHost host = new FakeHost(filesDir);
+        Quarantine quarantine = new Quarantine(new File(filesDir, "quarantine"));
+        ScanRunner runner = new ScanRunner(host);
+        ScanRunner.Result scan = runner.run();
+        ScanReport archiveReport = reportFor(scan, "archive.only");
+        ScanReport siblingReport = reportFor(scan, "sibling.one");
+
+        Quarantine.Result unguardedArchiveMove = quarantine.quarantine(archiveOnly, host.pluginId());
+        check.that("unguarded quarantine rejects installed archive directories",
+                !unguardedArchiveMove.ok && archiveOnly.isDirectory(),
+                unguardedArchiveMove.message);
+        if (unguardedArchiveMove.ok) {
+            quarantine.restore("archive.only");
+        }
+
+        check.that("archive-only installed plugin retains its complete action identity",
+                archiveReport != null && archiveReport.destructiveActionIdentityComplete()
+                        && archiveReport.contentHash.length() > 0
+                        && runner.actionTargets(scan, "flagged").contains(archiveReport),
+                archiveReport == null ? "no archive-only report" : archiveReport.contentHash);
+        check.that("complete sibling scans retain findings and legacy report fields without changing verdict",
+                siblingReport != null && siblingReport.contentHash.length() > 0
+                        && !siblingReport.destructiveActionIdentityComplete()
+                        && siblingReport.coverage() == Coverage.COMPLETE
+                        && siblingReport.verdict().flagged() && siblingReport.countAtLeast(Severity.LOW) > 0
+                        && ReportFormatter.json(java.util.Collections.singletonList(siblingReport))
+                                .contains("\"verdict\": \"" + siblingReport.verdict().name() + "\"")
+                        && ReportFormatter.json(java.util.Collections.singletonList(siblingReport))
+                                .contains("\"truncated\": false"),
+                siblingReport == null ? "no sibling report" : siblingReport.verdict() + " "
+                        + siblingReport.coverage() + " hash=" + siblingReport.contentHash);
+        check.that("sibling files are scanned for findings but excluded from action targets",
+                runner.actionTargets(scan, "flagged").size() == 1
+                        && !runner.actionTargets(scan, "flagged").contains(siblingReport)
+                        && rowsMention(scan, "Destructive actions unavailable"),
+                "action targets=" + runner.actionTargets(scan, "flagged").size());
+
+        host.putFlag(ScanRunner.selectKey(siblingReport), true);
+        ScanRunner.Result selectedScan = new ScanRunner(host).run();
+        ScanRunner selectedRunner = new ScanRunner(host);
+        check.that("selected targets cannot bypass sibling identity restriction",
+                selectedRunner.selectedTargets(selectedScan).isEmpty()
+                        && !host.configFlag(ScanRunner.selectKey(siblingReport), false)
+                        && withSibling.isDirectory(),
+                "selected=" + selectedRunner.selectedTargets(selectedScan).size());
+
+        host.putFlag(ScanRunner.armKey(siblingReport), true);
+        ScanRunner.Result armedScan = new ScanRunner(host).run();
+        check.that("armed switches cannot quarantine a sibling-bearing install",
+                withSibling.isDirectory() && quarantine.list().isEmpty()
+                        && !host.configFlag(ScanRunner.armKey(siblingReport), false)
+                        && armedScan.commandOutcome.contains("cannot reverify every file"),
+                armedScan.commandOutcome);
+
+        String directQuarantine = runner.actOnOne(scan, siblingReport, false);
+        String directRemove = runner.actOnOne(scan, siblingReport, true);
+        check.that("direct quarantine and remove refuse the archive-only hash",
+                withSibling.isDirectory() && quarantine.list().isEmpty()
+                        && directQuarantine.contains("cannot reverify every file")
+                        && directRemove.contains("cannot reverify every file"),
+                directQuarantine + " / " + directRemove);
+
+        host.type("quarantine sibling.one");
+        ScanRunner.Result typed = new ScanRunner(host).run();
+        check.that("typed quarantine explains and refuses a sibling-bearing install",
+                withSibling.isDirectory() && quarantine.list().isEmpty()
+                        && typed.commandOutcome.contains("cannot reverify every file"),
+                typed.commandOutcome);
+
+        host.type("quarantine flagged");
+        ScanRunner.Result bulk = new ScanRunner(host).run();
+        check.that("bulk plan excludes sibling-bearing install and preserves confirmation for eligible archive",
+                bulk.commandOutcome.contains("confirm ") && bulk.commandOutcome.contains("could not be safely")
+                        && !bulk.commandOutcome.contains("Sibling One") && withSibling.isDirectory(),
+                bulk.commandOutcome);
+        host.type("remove flagged");
+        ScanRunner.Result removePlan = new ScanRunner(host).run();
+        check.that("bulk remove plan excludes sibling-bearing install",
+                removePlan.commandOutcome.contains("confirm ")
+                        && removePlan.commandOutcome.contains("could not be safely")
+                        && !removePlan.commandOutcome.contains("Sibling One") && withSibling.isDirectory(),
+                removePlan.commandOutcome);
+        host.type("cancel");
+        new ScanRunner(host).run();
+        check.that("uninstall targets exclude sibling-bearing installs",
+                !runner.uninstallTargets(scan).contains(siblingReport),
+                "uninstall targets=" + runner.uninstallTargets(scan).size());
+
+        host.type("");
+        String allowed = runner.actOnOne(scan, archiveReport, false);
+        check.that("archive-only installation keeps its permitted quarantine behavior",
+                !archiveOnly.isDirectory() && quarantine.list().size() == 1 && allowed.length() > 0,
+                allowed);
+        check.that("archive-only installation also keeps its permitted remove behavior",
+                quarantine.restore("archive.only").ok && archiveOnly.isDirectory()
+                        && runner.actOnOne(scan, archiveReport, true).length() > 0
+                        && !archiveOnly.isDirectory() && quarantine.list().isEmpty(),
+                "archive-only=" + archiveOnly.isDirectory());
+
+        ScanRunner.Result onlySiblingScan = new ScanRunner(host).run();
+        ScanRunner onlySiblingRunner = new ScanRunner(host);
+        String scoped = onlySiblingRunner.actOnScope(onlySiblingScan, "flagged", true);
+        check.that("bulk UI action refuses when every flagged install has siblings",
+                withSibling.isDirectory() && quarantine.list().isEmpty()
+                        && scoped.contains("cannot be safely acted on"),
+                scoped);
+        host.putFlag(ScanRunner.selectKey(reportFor(onlySiblingScan, "sibling.one")), true);
+        ScanRunner.Result selectedOnlySibling = new ScanRunner(host).run();
+        String uninstall = new ScanRunner(host).uninstallSelection(selectedOnlySibling);
+        check.that("uninstall refuses selected sibling-bearing installs with a clear explanation",
+                withSibling.isDirectory() && quarantine.list().isEmpty()
+                        && uninstall.contains("cannot be safely acted on"),
+                uninstall);
+
+        Fixtures.write(new File(withSibling, "extracted.java"), HARMLESS);
+        check.that("changing a sibling after scanning still cannot authorize removal",
+                runner.actOnOne(scan, siblingReport, true).contains("cannot reverify every file")
+                        && withSibling.isDirectory() && quarantine.list().isEmpty(),
+                "directory remains=" + withSibling.isDirectory());
+
+        host.type("");
+        Map<String, byte[]> lateMembers = new java.util.LinkedHashMap<String, byte[]>();
+        lateMembers.put("manifest.json", Fixtures.bytes(Fixtures.manifest("late.one", "Late Sibling", "x.A")));
+        lateMembers.put("src/x/A.java", Fixtures.bytes(RISKY));
+        File lateSibling = fixtures.installedArchive("late-sibling", lateMembers, null);
+        ScanRunner.Result beforeLateSibling = new ScanRunner(host).run();
+        ScanReport lateReport = reportFor(beforeLateSibling, "late.one");
+        Fixtures.write(new File(lateSibling, "new-extracted.java"), HOSTILE);
+        String late = new ScanRunner(host).actOnOne(beforeLateSibling, lateReport, false);
+        check.that("a sibling added after scanning is caught by the final identity recheck",
+                lateSibling.isDirectory() && quarantine.list().isEmpty()
+                        && late.contains("cannot reverify every file"),
+                late);
+
+        Map<String, byte[]> symlinkMembers = new java.util.LinkedHashMap<String, byte[]>();
+        symlinkMembers.put("manifest.json",
+                Fixtures.bytes(Fixtures.manifest("symlink.one", "Symlink Source", "x.A")));
+        symlinkMembers.put("src/x/A.java", Fixtures.bytes(RISKY));
+        File symlinkSource = fixtures.installedArchive("symlink-source", symlinkMembers, null);
+        ScanRunner.Result beforeSymlink = new ScanRunner(host).run();
+        ScanReport symlinkReport = reportFor(beforeSymlink, "symlink.one");
+        File symlinkBackup = new File(installed, "symlink-source-original");
+        boolean linked = symlinkSource.renameTo(symlinkBackup)
+                && makeSymlink(symlinkSource, symlinkBackup);
+        if (linked) {
+            String substituted = new ScanRunner(host).actOnOne(beforeSymlink, symlinkReport, false);
+            check.that("a root symlink substitution cannot pass the action identity check",
+                    symlinkSource.isDirectory() && symlinkBackup.isDirectory()
+                            && substituted.contains("cannot reverify every file")
+                            && quarantine.list().isEmpty(),
+                    substituted);
+            symlinkSource.delete();
+        } else {
+            check.that("root symlink substitution fixture is supported", true,
+                    "skipped: could not create symlink on this test filesystem");
+        }
+
+        deleteTree(archiveOnly);
+        deleteTree(withSibling);
+        deleteTree(lateSibling);
+        deleteTree(symlinkBackup);
+        deleteTree(iso);
+    }
+
+    private static void incompleteSiblingActionEligibility(Checker check) throws Exception {
+        File iso = new File(System.getProperty("java.io.tmpdir"),
+                "mtsafety-incomplete-siblings-" + System.currentTimeMillis());
+        File filesDir = new File(iso, "a/b/c/d/files");
+        File installed = new File(iso, "a/plugins");
+        if (!filesDir.mkdirs() || !installed.mkdirs()) {
+            throw new IllegalStateException("could not create " + iso);
+        }
+
+        Map<String, byte[]> archiveMembers = new java.util.LinkedHashMap<String, byte[]>();
+        archiveMembers.put("manifest.json", Fixtures.bytes(
+                Fixtures.manifest("partial.siblings", "Partial Siblings", "x.A")));
+        archiveMembers.put("src/x/A.java", Fixtures.bytes(HOSTILE));
+        Map<String, byte[]> siblings = new java.util.LinkedHashMap<String, byte[]>();
+        for (int i = 0; i < 401; i++) {
+            siblings.put("sidecar-" + i, new byte[0]);
+        }
+        File target = new Fixtures(installed).installedArchive("partial-siblings", archiveMembers, siblings);
+        FakeHost host = new FakeHost(filesDir);
+        Quarantine quarantine = new Quarantine(new File(filesDir, "quarantine"));
+
+        ScanRunner.Result scan = new ScanRunner(host).run();
+        ScanReport report = reportFor(scan, "partial.siblings");
+        check.that("truncated sibling enumeration withholds the archive-only action identity",
+                report != null && report.contentHash.length() == 0 && report.verdict().flagged(),
+                report == null ? "plugin not discovered"
+                        : report.verdict() + " hash=" + report.contentHash);
+        ScanRunner runner = new ScanRunner(host);
+        check.that("incomplete sibling enumeration is excluded from every action target list",
+                runner.actionTargets(scan, "flagged").isEmpty()
+                        && runner.selectedTargets(scan).isEmpty()
+                        && runner.uninstallTargets(scan).isEmpty(),
+                "action targets=" + runner.actionTargets(scan, "flagged").size());
+        String direct = runner.actOnOne(scan, report, false);
+        String directRemove = runner.actOnOne(scan, report, true);
+        check.that("direct actions refuse incomplete sibling enumeration",
+                target.isDirectory() && quarantine.list().isEmpty()
+                        && direct.contains("cannot reverify every file")
+                        && directRemove.contains("cannot reverify every file"),
+                direct + " / " + directRemove);
+        host.putFlag(ScanRunner.armKey(report), true);
+        ScanRunner.Result armed = new ScanRunner(host).run();
+        check.that("an unhashable incomplete installation is never acted on by its armed switch",
+                target.isDirectory() && quarantine.list().isEmpty()
+                        && armed.reports.size() > 0,
+                armed.commandOutcome);
+
+        host.type("quarantine flagged");
+        ScanRunner.Result quarantinePlan = new ScanRunner(host).run();
+        check.that("truncated sibling identity cannot authorize quarantine",
+                !quarantinePlan.commandOutcome.contains("confirm ") && target.isDirectory()
+                        && quarantine.list().isEmpty(),
+                quarantinePlan.commandOutcome);
+
+        host.type("remove flagged");
+        ScanRunner.Result removalPlan = new ScanRunner(host).run();
+        check.that("truncated sibling identity cannot authorize removal",
+                !removalPlan.commandOutcome.contains("confirm ") && target.isDirectory()
+                        && quarantine.list().isEmpty(),
+                removalPlan.commandOutcome);
+        deleteTree(target);
+        deleteTree(iso);
     }
 
     /** Creates a symlink, returning false when the platform or filesystem will not allow it. */

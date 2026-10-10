@@ -113,6 +113,28 @@ public abstract class PluginPackage {
     public abstract String contentHash(ScanBudget budget) throws IOException;
 
     /**
+     * Whether the package-level content digest covers everything a destructive action would move.
+     *
+     * <p>Most packages hash all of their members. Installed archive directories override this because
+     * MT Manager's extracted siblings are part of the directory action, but not the archive digest.
+     */
+    public boolean destructiveActionIdentityComplete() throws IOException {
+        return true;
+    }
+
+    /** Canonical package path, or an empty string when the final path component is a link. */
+    public String actionIdentityPath() throws IOException {
+        File absolute = location().getAbsoluteFile();
+        File parent = absolute.getParentFile();
+        if (parent == null) {
+            return "";
+        }
+        String actual = absolute.getCanonicalPath();
+        String expected = new File(parent.getCanonicalPath(), absolute.getName()).getPath();
+        return actual.equals(expected) ? actual : "";
+    }
+
+    /**
      * Members whose local headers disagree with the central directory, or that appear twice.
      *
      * <p>Only meaningful for archives. Duplicate names are a real packaging trick: a reviewer's tool
@@ -120,6 +142,10 @@ public abstract class PluginPackage {
      */
     public List<String> structuralAnomalies(ScanBudget budget) throws IOException {
         return Collections.emptyList();
+    }
+
+    boolean manifestListingIncomplete() {
+        return false;
     }
 
     public void close() {
@@ -153,6 +179,17 @@ public abstract class PluginPackage {
         }
         return (int) Math.max(cap, 0L);
     }
+
+    /** Stops recursive listing once a hard safety bound has been reached. */
+    private static final class StopListing extends RuntimeException {
+        private static final long serialVersionUID = 1L;
+
+        private StopListing() {
+            super(null, null, false, false);
+        }
+    }
+
+    private static final StopListing STOP_LISTING = new StopListing();
 
     /** Opens a path as a package, choosing the archive or directory reader. */
     public static PluginPackage open(File file) throws IOException {
@@ -362,6 +399,8 @@ public abstract class PluginPackage {
         private final File root;
         private List<Entry> cached;
         private boolean listingTruncated;
+        private boolean rootListingTruncated;
+        private final Set<String> incompleteWrapperDirectories = new HashSet<String>();
         private final List<String> anomalies = new ArrayList<String>();
 
         /** Enough anomalies to explain what went wrong, not enough for a hostile tree to fill memory. */
@@ -413,36 +452,66 @@ public abstract class PluginPackage {
          */
         private void walk(File dir, String prefix, int depth, List<Entry> out) {
             if (out.size() >= MAX_FILES) {
-                listingTruncated = true;
+                markListingTruncated(prefix);
                 noteAnomaly("directory holds more than " + MAX_FILES + " files; listing truncated");
                 return;
             }
             if (depth > MAX_DEPTH) {
-                listingTruncated = true;
+                markListingTruncated(prefix);
                 noteAnomaly("directory nested more than " + MAX_DEPTH + " levels deep; listing truncated");
                 return;
             }
-            File[] children = dir.listFiles();
-            if (children == null) {
-                listingTruncated = true;
-                noteAnomaly("could not list "
-                        + (prefix.length() == 0 ? "the plugin directory itself" : prefix));
+            if (!DirectoryListing.supportedFor(dir)) {
+                markListingTruncated(prefix);
+                noteAnomaly((prefix.length() == 0 ? "the plugin directory itself" : prefix)
+                        + " was not inspected: " + DirectoryListing.unsupportedReason());
                 return;
             }
-            for (int i = 0; i < children.length; i++) {
-                File child = children[i];
-                String name = prefix + child.getName();
-                if (escapesRoot(child)) {
-                    noteAnomaly("link pointing outside the plugin directory: " + name);
-                    continue;
-                }
-                if (child.isDirectory()) {
-                    out.add(new Entry(name + "/", 0L, 0L, true));
-                    walk(child, name + "/", depth + 1, out);
-                } else {
-                    long size = child.length();
-                    out.add(new Entry(name, size, size, false));
-                }
+            try {
+                DirectoryListing.forEachChild(dir, new DirectoryListing.Visitor() {
+                    @Override
+                    public void visit(File child) {
+                        if (out.size() >= MAX_FILES) {
+                            markListingTruncated(prefix);
+                            noteAnomaly("directory holds more than " + MAX_FILES + " files; listing truncated");
+                            throw STOP_LISTING;
+                        }
+                        String name = prefix + child.getName();
+                        String listingProblem = outsideRootProblem(child, name);
+                        if (listingProblem != null) {
+                            markListingTruncated(prefix);
+                            noteAnomaly(listingProblem);
+                            return;
+                        }
+                        if (child.isDirectory()) {
+                            out.add(new Entry(name + "/", 0L, 0L, true));
+                            walk(child, name + "/", depth + 1, out);
+                        } else if (child.isFile()) {
+                            long size = child.length();
+                            out.add(new Entry(name, size, size, false));
+                        } else {
+                            markListingTruncated(prefix);
+                            noteAnomaly("entry could not be inspected and was omitted: " + name);
+                        }
+                    }
+                });
+            } catch (StopListing ignored) {
+                return;
+            } catch (IOException e) {
+                markListingTruncated(prefix);
+                noteAnomaly("could not list "
+                        + (prefix.length() == 0 ? "the plugin directory itself" : prefix)
+                        + ": " + e.getMessage());
+            }
+        }
+
+        private void markListingTruncated(String prefix) {
+            listingTruncated = true;
+            if (prefix.length() == 0) {
+                rootListingTruncated = true;
+            } else if (prefix.indexOf('/') == prefix.length() - 1
+                    && prefix.lastIndexOf('/') == prefix.length() - 1) {
+                incompleteWrapperDirectories.add(prefix);
             }
         }
 
@@ -466,14 +535,18 @@ public abstract class PluginPackage {
             }
         }
 
-        private boolean escapesRoot(File child) {
+        private String outsideRootProblem(File child, String name) {
             try {
                 String canonicalRoot = root.getCanonicalPath();
                 String canonicalChild = child.getCanonicalPath();
-                return !canonicalChild.equals(canonicalRoot)
-                        && !canonicalChild.startsWith(canonicalRoot + File.separator);
+                if (!canonicalChild.equals(canonicalRoot)
+                        && !canonicalChild.startsWith(canonicalRoot + File.separator)) {
+                    return "link pointing outside the plugin directory: " + name;
+                }
+                return null;
             } catch (IOException e) {
-                return false;
+                return "could not resolve " + name + " while listing the plugin directory: "
+                        + e.getMessage();
             }
         }
 
@@ -541,7 +614,34 @@ public abstract class PluginPackage {
         @Override
         public List<String> structuralAnomalies(ScanBudget budget) throws IOException {
             entries();
+            if (listingTruncated) {
+                budget.markTruncated();
+            }
             return anomalies;
+        }
+
+        @Override
+        boolean manifestListingIncomplete() {
+            if (rootListingTruncated) {
+                return true;
+            }
+            String observedWrapper = null;
+            for (Entry entry : cached) {
+                if (entry.directory) {
+                    continue;
+                }
+                int slash = entry.name.indexOf('/');
+                if (slash < 0) {
+                    return false;
+                }
+                String wrapper = entry.name.substring(0, slash + 1);
+                if (!incompleteWrapperDirectories.contains(wrapper)
+                        || (observedWrapper != null && !observedWrapper.equals(wrapper))) {
+                    return false;
+                }
+                observedWrapper = wrapper;
+            }
+            return !incompleteWrapperDirectories.isEmpty();
         }
     }
 
@@ -551,9 +651,11 @@ public abstract class PluginPackage {
      *
      * <p>Members come from the archive. Regular files found in the folder (up to a small depth and
      * count) are added under {@link #BESIDE_PREFIX} so their contents are searched too: when MT
-     * Manager unpacks a v3 plugin's dex next to the package, that dex is where the code is. The
-     * package's identity stays the archive's hash; MT Manager rewriting its own extracted artefacts
-     * must not read as the plugin having changed.
+     * Manager unpacks a v3 plugin's dex next to the package, that dex is where the code is. The hash
+     * used for action re-verification identifies only {@code plugin.mtp}, not these siblings. A
+     * complete sibling listing therefore does not detect a sibling changed after scanning; sibling
+     * content is examined for findings but is not part of that identity. If sibling enumeration is
+     * incomplete, no identity is returned, so it cannot authorize an action.
      */
     static final class InstalledArchivePackage extends PluginPackage {
         private static final int MAX_SIBLINGS = 400;
@@ -562,6 +664,9 @@ public abstract class PluginPackage {
         private final File dir;
         private final ArchivePackage delegate;
         private List<Entry> cached;
+        private boolean listingTruncated;
+        private int siblingEntriesVisited;
+        private final List<String> listingProblems = new ArrayList<String>();
 
         InstalledArchivePackage(File dir, ArchivePackage delegate) {
             this.dir = dir;
@@ -598,7 +703,10 @@ public abstract class PluginPackage {
             try {
                 rootCanonical = dir.getCanonicalPath();
             } catch (IOException e) {
-                rootCanonical = null;
+                noteListingProblem("could not resolve the installed plugin directory; sibling files were not"
+                        + " inspected");
+                cached = out;
+                return out;
             }
             collectSiblings(dir, "", 0, out, rootCanonical);
             cached = out;
@@ -606,37 +714,76 @@ public abstract class PluginPackage {
         }
 
         private void collectSiblings(File folder, String prefix, int depth, List<Entry> out, String rootCanonical) {
-            if (depth > MAX_SIBLING_DEPTH || out.size() >= delegate.entriesCountHint() + MAX_SIBLINGS) {
+            if (depth > MAX_SIBLING_DEPTH) {
+                noteListingProblem("installed sibling directory nested beyond " + MAX_SIBLING_DEPTH
+                        + " levels was not inspected: " + prefix);
                 return;
             }
-            File[] children = folder.listFiles();
-            if (children == null) {
+            if (siblingEntriesVisited >= MAX_SIBLINGS
+                    || out.size() >= delegate.entriesCountHint() + MAX_SIBLINGS) {
+                noteListingProblem("installed sibling listing exceeded " + MAX_SIBLINGS
+                        + " entries; remaining files were not inspected");
                 return;
             }
-            for (int i = 0; i < children.length; i++) {
-                File child = children[i];
-                String name = prefix + child.getName();
-                if (depth == 0 && child.getName().equals(INSTALLED_ARCHIVE)) {
-                    continue;
-                }
-                if (rootCanonical != null && escapes(child, rootCanonical)) {
-                    continue;
-                }
-                if (child.isDirectory()) {
-                    collectSiblings(child, name + "/", depth + 1, out, rootCanonical);
-                } else if (child.isFile()) {
-                    long size = child.length();
-                    out.add(new Entry(BESIDE_PREFIX + name, size, size, false));
-                }
+            if (!DirectoryListing.supportedFor(folder)) {
+                noteListingProblem("installed sibling directory " + (prefix.length() == 0 ? "." : prefix)
+                        + " was not inspected: " + DirectoryListing.unsupportedReason());
+                return;
+            }
+            try {
+                DirectoryListing.forEachChild(folder, new DirectoryListing.Visitor() {
+                    @Override
+                    public void visit(File child) {
+                        String name = prefix + child.getName();
+                        if (depth == 0 && child.getName().equals(INSTALLED_ARCHIVE)) {
+                            return;
+                        }
+                        if (siblingEntriesVisited >= MAX_SIBLINGS
+                                || out.size() >= delegate.entriesCountHint() + MAX_SIBLINGS) {
+                            noteListingProblem("installed sibling listing exceeded " + MAX_SIBLINGS
+                                    + " entries; remaining files were not inspected");
+                            throw STOP_LISTING;
+                        }
+                        String pathProblem = siblingPathProblem(child, rootCanonical, name);
+                        if (pathProblem != null) {
+                            noteListingProblem(pathProblem);
+                            return;
+                        }
+                        siblingEntriesVisited++;
+                        if (child.isDirectory()) {
+                            collectSiblings(child, name + "/", depth + 1, out, rootCanonical);
+                        } else if (child.isFile()) {
+                            long size = child.length();
+                            out.add(new Entry(BESIDE_PREFIX + name, size, size, false));
+                        } else {
+                            noteListingProblem("installed sibling was not inspected: " + name);
+                        }
+                    }
+                });
+            } catch (StopListing ignored) {
+                return;
+            } catch (IOException e) {
+                noteListingProblem("could not list installed sibling directory: "
+                        + (prefix.length() == 0 ? "." : prefix) + " (" + e.getMessage() + ")");
             }
         }
 
-        private static boolean escapes(File child, String rootCanonical) {
+        private void noteListingProblem(String problem) {
+            listingTruncated = true;
+            if (listingProblems.size() < 40 && !listingProblems.contains(problem)) {
+                listingProblems.add(problem);
+            }
+        }
+
+        private static String siblingPathProblem(File child, String rootCanonical, String name) {
             try {
                 String canonical = child.getCanonicalPath();
-                return !canonical.equals(rootCanonical) && !canonical.startsWith(rootCanonical + File.separator);
+                if (!canonical.equals(rootCanonical) && !canonical.startsWith(rootCanonical + File.separator)) {
+                    return "installed sibling escaped the plugin directory and was not inspected: " + name;
+                }
+                return null;
             } catch (IOException e) {
-                return true;
+                return "installed sibling could not be resolved and was not inspected: " + name;
             }
         }
 
@@ -660,12 +807,40 @@ public abstract class PluginPackage {
 
         @Override
         public String contentHash(ScanBudget budget) throws IOException {
+            entries();
+            if (listingTruncated) {
+                return "";
+            }
             return delegate.contentHash(budget);
         }
 
         @Override
+        public boolean destructiveActionIdentityComplete() throws IOException {
+            List<Entry> all = entries();
+            if (listingTruncated) {
+                return false;
+            }
+            for (int i = 0; i < all.size(); i++) {
+                if (all.get(i).name.startsWith(BESIDE_PREFIX)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        @Override
         public List<String> structuralAnomalies(ScanBudget budget) throws IOException {
-            return delegate.structuralAnomalies(budget);
+            List<String> problems = new ArrayList<String>(delegate.structuralAnomalies(budget));
+            if (listingTruncated) {
+                budget.markTruncated();
+                problems.addAll(listingProblems);
+            }
+            return problems;
+        }
+
+        @Override
+        boolean manifestListingIncomplete() {
+            return delegate.manifestListingIncomplete();
         }
 
         @Override
@@ -732,8 +907,23 @@ public abstract class PluginPackage {
         }
 
         @Override
+        public boolean destructiveActionIdentityComplete() throws IOException {
+            return delegate.destructiveActionIdentityComplete();
+        }
+
+        @Override
+        public String actionIdentityPath() throws IOException {
+            return delegate.actionIdentityPath();
+        }
+
+        @Override
         public List<String> structuralAnomalies(ScanBudget budget) throws IOException {
             return delegate.structuralAnomalies(budget);
+        }
+
+        @Override
+        boolean manifestListingIncomplete() {
+            return delegate.manifestListingIncomplete();
         }
 
         @Override
