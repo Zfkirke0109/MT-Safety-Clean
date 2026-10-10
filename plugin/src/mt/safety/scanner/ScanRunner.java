@@ -854,7 +854,36 @@ public final class ScanRunner {
                 return directory.getAbsolutePath().equals(report.path)
                         && verifyActionIdentity(report) == ActionCheck.MATCHES;
             }
+
+            @Override
+            public boolean allowCopyTarget(File sourceDir, File copiedTarget) {
+                return sourceDir.getAbsolutePath().equals(report.path)
+                        && copiedTargetMatches(report, copiedTarget);
+            }
         });
+    }
+
+    private static boolean copiedTargetMatches(ScanReport report, File copiedTarget) {
+        PluginPackage pkg = null;
+        try {
+            pkg = PluginPackage.open(copiedTarget);
+            if (!pkg.destructiveActionIdentityComplete()) {
+                return false;
+            }
+            if (pkg.actionIdentityPath().length() == 0) {
+                return false;
+            }
+            String copiedHash = pkg.contentHash(ScanBudget.unlimited());
+            return copiedHash.length() > 0 && copiedHash.equals(report.contentHash);
+        } catch (java.io.IOException e) {
+            return false;
+        } catch (RuntimeException e) {
+            return false;
+        } finally {
+            if (pkg != null) {
+                pkg.close();
+            }
+        }
     }
 
     private static void append(StringBuilder sb, String message) {

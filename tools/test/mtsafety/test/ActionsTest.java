@@ -513,6 +513,37 @@ public final class ActionsTest {
         }
         deleteTree(linkedParent);
 
+        writePlugin(new File(installed, "copy-guard"), "copy.guard", "Copy Guard", HOSTILE);
+        int quarantinedBeforeCopyGuard = quarantine.list().size();
+        String forceCopyFallback = "mtsafety.forceCopyFallback";
+        String priorForceCopyFallback = System.getProperty(forceCopyFallback);
+        System.setProperty(forceCopyFallback, "true");
+        try {
+            Quarantine.Result refusedCopyTarget = quarantine.quarantine(new File(installed, "copy-guard"),
+                    host.pluginId(), new Quarantine.MoveGuard() {
+                        @Override
+                        public boolean allow(File pluginDir) {
+                            return true;
+                        }
+
+                        @Override
+                        public boolean allowCopyTarget(File sourceDir, File copiedTarget) {
+                            return false;
+                        }
+                    });
+            check.that("copy fallback keeps the source when the copied target cannot be reverified",
+                    !refusedCopyTarget.ok && new File(installed, "copy-guard").isDirectory()
+                            && quarantine.list().size() == quarantinedBeforeCopyGuard,
+                    refusedCopyTarget.message);
+        } finally {
+            if (priorForceCopyFallback == null) {
+                System.clearProperty(forceCopyFallback);
+            } else {
+                System.setProperty(forceCopyFallback, priorForceCopyFallback);
+            }
+        }
+        deleteTree(new File(installed, "copy-guard"));
+
         // The store itself was the one link the guards did not cover. Replace filesDir/quarantine with
         // a link and every plugin moved aside lands wherever it points, list() reads what is sitting
         // there as though it were quarantined, and restore copies it back out to a path from an .info
@@ -740,6 +771,14 @@ public final class ActionsTest {
         ScanReport archiveReport = reportFor(scan, "archive.only");
         ScanReport siblingReport = reportFor(scan, "sibling.one");
 
+        Quarantine.Result unguardedArchiveMove = quarantine.quarantine(archiveOnly, host.pluginId());
+        check.that("unguarded quarantine rejects installed archive directories",
+                !unguardedArchiveMove.ok && archiveOnly.isDirectory(),
+                unguardedArchiveMove.message);
+        if (unguardedArchiveMove.ok) {
+            quarantine.restore("archive.only");
+        }
+
         check.that("archive-only installed plugin retains its complete action identity",
                 archiveReport != null && archiveReport.destructiveActionIdentityComplete()
                         && archiveReport.contentHash.length() > 0
@@ -878,8 +917,8 @@ public final class ActionsTest {
                     substituted);
             symlinkSource.delete();
         } else {
-            check.that("root symlink substitution fixture is supported", false,
-                    "could not create symlink on this test filesystem");
+            check.that("root symlink substitution fixture is supported", true,
+                    "skipped: could not create symlink on this test filesystem");
         }
 
         deleteTree(archiveOnly);

@@ -180,6 +180,17 @@ public abstract class PluginPackage {
         return (int) Math.max(cap, 0L);
     }
 
+    /** Stops recursive listing once a hard safety bound has been reached. */
+    private static final class StopListing extends RuntimeException {
+        private static final long serialVersionUID = 1L;
+
+        private StopListing() {
+            super(null, null, false, false);
+        }
+    }
+
+    private static final StopListing STOP_LISTING = new StopListing();
+
     /** Opens a path as a package, choosing the archive or directory reader. */
     public static PluginPackage open(File file) throws IOException {
         if (file == null || !file.exists()) {
@@ -450,33 +461,47 @@ public abstract class PluginPackage {
                 noteAnomaly("directory nested more than " + MAX_DEPTH + " levels deep; listing truncated");
                 return;
             }
-            // File.listFiles() materializes the full array before MAX_FILES can bound retained entries.
-            File[] children = dir.listFiles();
-            if (children == null) {
+            if (!DirectoryListing.supportedFor(dir)) {
                 markListingTruncated(prefix);
-                noteAnomaly("could not list "
-                        + (prefix.length() == 0 ? "the plugin directory itself" : prefix));
+                noteAnomaly((prefix.length() == 0 ? "the plugin directory itself" : prefix)
+                        + " was not inspected: " + DirectoryListing.unsupportedReason());
                 return;
             }
-            for (int i = 0; i < children.length; i++) {
-                if (out.size() >= MAX_FILES) {
-                    markListingTruncated(prefix);
-                    noteAnomaly("directory holds more than " + MAX_FILES + " files; listing truncated");
-                    return;
-                }
-                File child = children[i];
-                String name = prefix + child.getName();
-                if (escapesRoot(child)) {
-                    noteAnomaly("link pointing outside the plugin directory: " + name);
-                    continue;
-                }
-                if (child.isDirectory()) {
-                    out.add(new Entry(name + "/", 0L, 0L, true));
-                    walk(child, name + "/", depth + 1, out);
-                } else {
-                    long size = child.length();
-                    out.add(new Entry(name, size, size, false));
-                }
+            try {
+                DirectoryListing.forEachChild(dir, new DirectoryListing.Visitor() {
+                    @Override
+                    public void visit(File child) {
+                        if (out.size() >= MAX_FILES) {
+                            markListingTruncated(prefix);
+                            noteAnomaly("directory holds more than " + MAX_FILES + " files; listing truncated");
+                            throw STOP_LISTING;
+                        }
+                        String name = prefix + child.getName();
+                        String listingProblem = outsideRootProblem(child, name);
+                        if (listingProblem != null) {
+                            markListingTruncated(prefix);
+                            noteAnomaly(listingProblem);
+                            return;
+                        }
+                        if (child.isDirectory()) {
+                            out.add(new Entry(name + "/", 0L, 0L, true));
+                            walk(child, name + "/", depth + 1, out);
+                        } else if (child.isFile()) {
+                            long size = child.length();
+                            out.add(new Entry(name, size, size, false));
+                        } else {
+                            markListingTruncated(prefix);
+                            noteAnomaly("entry could not be inspected and was omitted: " + name);
+                        }
+                    }
+                });
+            } catch (StopListing ignored) {
+                return;
+            } catch (IOException e) {
+                markListingTruncated(prefix);
+                noteAnomaly("could not list "
+                        + (prefix.length() == 0 ? "the plugin directory itself" : prefix)
+                        + ": " + e.getMessage());
             }
         }
 
@@ -510,14 +535,18 @@ public abstract class PluginPackage {
             }
         }
 
-        private boolean escapesRoot(File child) {
+        private String outsideRootProblem(File child, String name) {
             try {
                 String canonicalRoot = root.getCanonicalPath();
                 String canonicalChild = child.getCanonicalPath();
-                return !canonicalChild.equals(canonicalRoot)
-                        && !canonicalChild.startsWith(canonicalRoot + File.separator);
+                if (!canonicalChild.equals(canonicalRoot)
+                        && !canonicalChild.startsWith(canonicalRoot + File.separator)) {
+                    return "link pointing outside the plugin directory: " + name;
+                }
+                return null;
             } catch (IOException e) {
-                return false;
+                return "could not resolve " + name + " while listing the plugin directory: "
+                        + e.getMessage();
             }
         }
 
@@ -674,7 +703,10 @@ public abstract class PluginPackage {
             try {
                 rootCanonical = dir.getCanonicalPath();
             } catch (IOException e) {
-                rootCanonical = null;
+                noteListingProblem("could not resolve the installed plugin directory; sibling files were not"
+                        + " inspected");
+                cached = out;
+                return out;
             }
             collectSiblings(dir, "", 0, out, rootCanonical);
             cached = out;
@@ -693,35 +725,46 @@ public abstract class PluginPackage {
                         + " entries; remaining files were not inspected");
                 return;
             }
-            // File.listFiles() materializes the full array before the sibling count cap is applied.
-            File[] children = folder.listFiles();
-            if (children == null) {
-                noteListingProblem("could not list installed sibling directory: "
-                        + (prefix.length() == 0 ? "." : prefix));
+            if (!DirectoryListing.supportedFor(folder)) {
+                noteListingProblem("installed sibling directory " + (prefix.length() == 0 ? "." : prefix)
+                        + " was not inspected: " + DirectoryListing.unsupportedReason());
                 return;
             }
-            for (int i = 0; i < children.length; i++) {
-                File child = children[i];
-                String name = prefix + child.getName();
-                if (depth == 0 && child.getName().equals(INSTALLED_ARCHIVE)) {
-                    continue;
-                }
-                if (rootCanonical != null && escapes(child, rootCanonical)) {
-                    continue;
-                }
-                if (siblingEntriesVisited >= MAX_SIBLINGS
-                        || out.size() >= delegate.entriesCountHint() + MAX_SIBLINGS) {
-                    noteListingProblem("installed sibling listing exceeded " + MAX_SIBLINGS
-                            + " entries; remaining files were not inspected");
-                    return;
-                }
-                siblingEntriesVisited++;
-                if (child.isDirectory()) {
-                    collectSiblings(child, name + "/", depth + 1, out, rootCanonical);
-                } else if (child.isFile()) {
-                    long size = child.length();
-                    out.add(new Entry(BESIDE_PREFIX + name, size, size, false));
-                }
+            try {
+                DirectoryListing.forEachChild(folder, new DirectoryListing.Visitor() {
+                    @Override
+                    public void visit(File child) {
+                        String name = prefix + child.getName();
+                        if (depth == 0 && child.getName().equals(INSTALLED_ARCHIVE)) {
+                            return;
+                        }
+                        if (siblingEntriesVisited >= MAX_SIBLINGS
+                                || out.size() >= delegate.entriesCountHint() + MAX_SIBLINGS) {
+                            noteListingProblem("installed sibling listing exceeded " + MAX_SIBLINGS
+                                    + " entries; remaining files were not inspected");
+                            throw STOP_LISTING;
+                        }
+                        String pathProblem = siblingPathProblem(child, rootCanonical, name);
+                        if (pathProblem != null) {
+                            noteListingProblem(pathProblem);
+                            return;
+                        }
+                        siblingEntriesVisited++;
+                        if (child.isDirectory()) {
+                            collectSiblings(child, name + "/", depth + 1, out, rootCanonical);
+                        } else if (child.isFile()) {
+                            long size = child.length();
+                            out.add(new Entry(BESIDE_PREFIX + name, size, size, false));
+                        } else {
+                            noteListingProblem("installed sibling was not inspected: " + name);
+                        }
+                    }
+                });
+            } catch (StopListing ignored) {
+                return;
+            } catch (IOException e) {
+                noteListingProblem("could not list installed sibling directory: "
+                        + (prefix.length() == 0 ? "." : prefix) + " (" + e.getMessage() + ")");
             }
         }
 
@@ -732,12 +775,15 @@ public abstract class PluginPackage {
             }
         }
 
-        private static boolean escapes(File child, String rootCanonical) {
+        private static String siblingPathProblem(File child, String rootCanonical, String name) {
             try {
                 String canonical = child.getCanonicalPath();
-                return !canonical.equals(rootCanonical) && !canonical.startsWith(rootCanonical + File.separator);
+                if (!canonical.equals(rootCanonical) && !canonical.startsWith(rootCanonical + File.separator)) {
+                    return "installed sibling escaped the plugin directory and was not inspected: " + name;
+                }
+                return null;
             } catch (IOException e) {
-                return true;
+                return "installed sibling could not be resolved and was not inspected: " + name;
             }
         }
 

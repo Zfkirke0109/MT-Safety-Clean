@@ -78,6 +78,55 @@ public final class IncompleteScanCleanRegression {
         }
     }
 
+    private static final class InjectedRootListingFile extends File {
+        private static final long serialVersionUID = 1L;
+        private final String rootPath;
+        private final File injected;
+
+        InjectedRootListingFile(File root, File injected) {
+            super(root.getPath());
+            this.rootPath = root.getPath();
+            this.injected = injected;
+        }
+
+        @Override
+        public File[] listFiles() {
+            File[] children = super.listFiles();
+            if (children == null || !getPath().equals(rootPath)) {
+                return children;
+            }
+            File[] withInjected = Arrays.copyOf(children, children.length + 1);
+            withInjected[children.length] = injected;
+            return withInjected;
+        }
+    }
+
+    private static final class CanonicalOverrideFile extends File {
+        private static final long serialVersionUID = 1L;
+        private final String canonicalPath;
+        private final String failureMessage;
+
+        CanonicalOverrideFile(File parent, String name, String canonicalPath) {
+            super(parent, name);
+            this.canonicalPath = canonicalPath;
+            this.failureMessage = null;
+        }
+
+        CanonicalOverrideFile(File parent, String name, String failureMessage, boolean fail) {
+            super(parent, name);
+            this.canonicalPath = null;
+            this.failureMessage = fail ? failureMessage : null;
+        }
+
+        @Override
+        public String getCanonicalPath() throws IOException {
+            if (failureMessage != null) {
+                throw new IOException(failureMessage);
+            }
+            return canonicalPath;
+        }
+    }
+
     static void run(ActionsTest.Checker c, Fixtures fixtures) {
         File plugin = fixtures.directoryPlugin("benign-partial",
                 Fixtures.manifest("demo.partial", "Benign Partial", "demo.A"),
@@ -411,6 +460,40 @@ public final class IncompleteScanCleanRegression {
         members.put("manifest.json", Fixtures.bytes(Fixtures.manifest(
                 "demo.siblings", "Sibling Depth", "demo.A")));
         members.put("src/demo/A.java", Fixtures.bytes(BENIGN));
+
+        String forcedUnsupported = "mtsafety.forceDirectoryStreamUnsupported";
+        String priorUnsupported = System.getProperty(forcedUnsupported);
+        System.setProperty(forcedUnsupported, "true");
+        try {
+            ScanReport unsupportedDirectory = new PluginScanner(IocDatabase.empty()).scan(
+                    fixtures.directoryPlugin("no-stream-runtime",
+                            Fixtures.manifest("demo.nostream", "No Stream Runtime", "demo.A"),
+                            Fixtures.sources("src/demo/A.java", BENIGN)),
+                    ScanBudget.unlimited());
+            c.that("unsupported runtime fails closed for directory scans",
+                    unsupportedDirectory.coverage() == Coverage.PARTIAL && unsupportedDirectory.hasRule("SCN001")
+                            && unsupportedDirectory.contentHash.length() == 0,
+                    unsupportedDirectory.coverage() + " :: "
+                            + ReportFormatter.summaryLine(unsupportedDirectory));
+
+            File unsupportedInstalled = fixtures.installedArchive("no-stream-installed", members, null);
+            ScanReport unsupportedInstalledReport = new PluginScanner(IocDatabase.empty()).scan(
+                    unsupportedInstalled, ScanBudget.unlimited());
+            c.that("unsupported runtime fails closed for installed sibling enumeration",
+                    unsupportedInstalledReport.coverage() == Coverage.PARTIAL
+                            && unsupportedInstalledReport.hasRule("SCN001")
+                            && unsupportedInstalledReport.contentHash.length() == 0
+                            && !unsupportedInstalledReport.destructiveActionIdentityComplete(),
+                    unsupportedInstalledReport.coverage() + " :: "
+                            + ReportFormatter.summaryLine(unsupportedInstalledReport));
+        } finally {
+            if (priorUnsupported == null) {
+                System.clearProperty(forcedUnsupported);
+            } else {
+                System.setProperty(forcedUnsupported, priorUnsupported);
+            }
+        }
+
         File installed = fixtures.installedArchive("sibling-depth", members, null);
         File sibling = new File(installed, "a/b/c/d");
         if (!sibling.mkdirs()) {
@@ -435,6 +518,35 @@ public final class IncompleteScanCleanRegression {
                         && siblingListingFailure.contentHash.length() == 0,
                 siblingListingFailure.coverage() + " :: "
                         + ReportFormatter.summaryLine(siblingListingFailure));
+
+        File siblingEscape = fixtures.installedArchive("sibling-escape", members, null);
+        File outsideSiblingPath = new File(fixtures.root(), "outside-sibling-target");
+        ScanReport siblingEscapeReport = new PluginScanner(IocDatabase.empty()).scan(
+                new InjectedRootListingFile(siblingEscape,
+                        new CanonicalOverrideFile(siblingEscape, "escape-link",
+                                outsideSiblingPath.getAbsolutePath())),
+                ScanBudget.unlimited());
+        c.that("escaping installed sibling path is reported as incomplete coverage",
+                siblingEscapeReport.coverage() == Coverage.PARTIAL
+                        && siblingEscapeReport.hasRule("SCN001")
+                        && siblingEscapeReport.contentHash.length() == 0
+                        && !siblingEscapeReport.destructiveActionIdentityComplete(),
+                siblingEscapeReport.coverage() + " :: "
+                        + ReportFormatter.summaryLine(siblingEscapeReport));
+
+        File siblingCanonicalFailure = fixtures.installedArchive("sibling-canonical-failure", members, null);
+        ScanReport siblingCanonicalFailureReport = new PluginScanner(IocDatabase.empty()).scan(
+                new InjectedRootListingFile(siblingCanonicalFailure,
+                        new CanonicalOverrideFile(siblingCanonicalFailure, "broken-link",
+                                "simulated canonical failure", true)),
+                ScanBudget.unlimited());
+        c.that("failed canonicalization of an installed sibling is reported as incomplete coverage",
+                siblingCanonicalFailureReport.coverage() == Coverage.PARTIAL
+                        && siblingCanonicalFailureReport.hasRule("SCN001")
+                        && siblingCanonicalFailureReport.contentHash.length() == 0
+                        && !siblingCanonicalFailureReport.destructiveActionIdentityComplete(),
+                siblingCanonicalFailureReport.coverage() + " :: "
+                        + ReportFormatter.summaryLine(siblingCanonicalFailureReport));
 
         Map<String, byte[]> sidecars = new LinkedHashMap<String, byte[]>();
         for (int i = 0; i < 401; i++) {
@@ -585,6 +697,21 @@ public final class IncompleteScanCleanRegression {
                 bounded.coverage() == Coverage.PARTIAL && bounded.hasRule("SCN001")
                         && !boundedEvidence.contains("after-limit.java"),
                 bounded.coverage() + " :: " + boundedEvidence);
+
+        Map<String, byte[]> keepEarlyFindings = new LinkedHashMap<String, byte[]>();
+        keepEarlyFindings.put("first-risky.java", Fixtures.bytes("package demo; public class First {"
+                + " void f() throws Exception { Runtime.getRuntime().exec(\"ls\"); } }"));
+        keepEarlyFindings.put("big.txt", Fixtures.bytes(sb.toString()));
+        keepEarlyFindings.put("after-cutoff.java", Fixtures.bytes("package demo; public class Later {"
+                + " void f() throws Exception { Runtime.getRuntime().exec(\"id\"); } }"));
+        ScanReport retained = scanWithJar(fixtures, "nest-retain-early-findings.mtp",
+                Fixtures.deflatedJar(keepEarlyFindings));
+        String retainedEvidence = ReportFormatter.plainText(retained);
+        c.that("nested cutoff keeps earlier findings but does not inspect later members",
+                retained.coverage() == Coverage.PARTIAL && retained.hasRule("SCN001")
+                        && retainedEvidence.contains("first-risky.java")
+                        && !retainedEvidence.contains("after-cutoff.java"),
+                retained.coverage() + " :: " + retainedEvidence);
 
         Map<String, byte[]> directoryPayload = new LinkedHashMap<String, byte[]>();
         directoryPayload.put("folder/", Fixtures.bytes(sb.toString()));

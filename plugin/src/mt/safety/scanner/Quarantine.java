@@ -10,8 +10,10 @@ import java.util.ArrayList;
 import java.util.List;
 
 import mt.safety.scanner.core.Bytes;
+import mt.safety.scanner.core.DirectoryListing;
 import mt.safety.scanner.core.Json;
 import mt.safety.scanner.core.PluginManifest;
+import mt.safety.scanner.core.PluginPackage;
 
 /**
  * Moves a plugin out of the way without destroying it.
@@ -30,10 +32,16 @@ public final class Quarantine {
 
     public interface MoveGuard {
         boolean allow(File pluginDir);
+
+        default boolean allowCopyTarget(File sourceDir, File copiedTarget) {
+            return true;
+        }
     }
 
     private static final String INFO_FILE = "quarantine-info.json";
     private static final int MAX_DEPTH = 24;
+    /** Test seam for deterministic copy-fallback coverage. */
+    private static final String FORCE_COPY_FALLBACK_PROPERTY = "mtsafety.forceCopyFallback";
 
     /** What happened, in a sentence fit to show the user. */
     public static final class Result {
@@ -137,6 +145,10 @@ public final class Quarantine {
      * so a mistyped command cannot take out the scanner or an unrelated folder.
      */
     public Result quarantine(File pluginDir, String ownPluginId) {
+        if (requiresGuardedArchiveMove(pluginDir)) {
+            return new Result(false, "Installed archive directories must be quarantined from a scan-"
+                    + "verified action; nothing was moved.");
+        }
         return quarantine(pluginDir, ownPluginId, null);
     }
 
@@ -147,6 +159,11 @@ public final class Quarantine {
     public Result quarantine(File pluginDir, String ownPluginId, MoveGuard guard) {
         if (pluginDir == null || !pluginDir.isDirectory()) {
             return new Result(false, "Not a directory: " + pluginDir);
+        }
+        if (!DirectoryListing.supportedFor(pluginDir)) {
+            return new Result(false, "This runtime cannot safely enumerate every file in "
+                    + pluginDir.getAbsolutePath() + " (" + DirectoryListing.unsupportedReason()
+                    + "), so nothing was done.");
         }
         if (!new File(pluginDir, "manifest.json").isFile()
                 && !new File(pluginDir, mt.safety.scanner.core.PluginPackage.INSTALLED_ARCHIVE).isFile()) {
@@ -186,7 +203,7 @@ public final class Quarantine {
         if (rejected != null) {
             return rejected;
         }
-        boolean moved = pluginDir.renameTo(target);
+        boolean moved = !Boolean.getBoolean(FORCE_COPY_FALLBACK_PROPERTY) && pluginDir.renameTo(target);
         if (!moved) {
             rejected = checkMoveGuard(pluginDir, guard);
             if (rejected != null) {
@@ -200,6 +217,11 @@ public final class Quarantine {
                 return new Result(false, "Could not move the plugin: " + e.getMessage());
             }
             rejected = checkMoveGuard(pluginDir, guard);
+            if (rejected != null) {
+                deleteTree(target, 0);
+                return new Result(false, rejected.message + " The source was left in place.");
+            }
+            rejected = checkCopyTargetGuard(pluginDir, target, guard);
             if (rejected != null) {
                 deleteTree(target, 0);
                 return new Result(false, rejected.message + " The source was left in place.");
@@ -235,6 +257,27 @@ public final class Quarantine {
             return new Result(false, "The plugin's complete contents cannot be reverified; nothing was moved.");
         }
         return null;
+    }
+
+    private Result checkCopyTargetGuard(File sourceDir, File copiedTarget, MoveGuard guard) {
+        if (guard == null) {
+            return null;
+        }
+        String escaping = findEscapingLink(copiedTarget);
+        if (escaping != null) {
+            return new Result(false, "The copied plugin contains a link escaping its own folder ("
+                    + escaping + "); nothing was moved.");
+        }
+        if (!guard.allowCopyTarget(sourceDir, copiedTarget)) {
+            return new Result(false, "The copied plugin could not be reverified; nothing was moved.");
+        }
+        return null;
+    }
+
+    private static boolean requiresGuardedArchiveMove(File pluginDir) {
+        return pluginDir != null && pluginDir.isDirectory()
+                && !new File(pluginDir, "manifest.json").isFile()
+                && new File(pluginDir, PluginPackage.INSTALLED_ARCHIVE).isFile();
     }
 
     /** Puts a quarantined plugin back where it came from. */
@@ -306,43 +349,49 @@ public final class Quarantine {
 
     /** Everything currently held in quarantine. */
     public List<Item> list() {
-        List<Item> out = new ArrayList<Item>();
+        final List<Item> out = new ArrayList<Item>();
         if (storeProblem() != null) {
             // Whatever is behind a linked store is not this plugin's to report as quarantined.
             return out;
         }
-        File[] children = store.listFiles();
-        if (children == null) {
+        if (!DirectoryListing.supportedFor(store)) {
             return out;
         }
-        for (int i = 0; i < children.length; i++) {
-            File child = children[i];
-            if (!child.isDirectory()) {
-                continue;
-            }
-            String pluginId = "";
-            String originalPath = "";
-            String stamp = "";
-            File info = new File(child, INFO_FILE);
-            if (info.isFile()) {
-                try {
-                    InputStream in = new FileInputStream(info);
-                    try {
-                        java.util.Map<String, Object> parsed =
-                                Json.parseObject(Bytes.text(Bytes.readAtMost(in, 64 * 1024)));
-                        pluginId = Json.str(parsed, "pluginId", "");
-                        originalPath = Json.str(parsed, "originalPath", "");
-                        stamp = Json.str(parsed, "quarantinedAt", "");
-                    } finally {
-                        in.close();
+        try {
+            DirectoryListing.forEachChild(store, new DirectoryListing.Visitor() {
+                @Override
+                public void visit(File child) {
+                    if (!child.isDirectory()) {
+                        return;
                     }
-                } catch (IOException e) {
-                    // Fall through with whatever was read.
-                } catch (Json.JsonException e) {
-                    // Fall through with whatever was read.
+                    String pluginId = "";
+                    String originalPath = "";
+                    String stamp = "";
+                    File info = new File(child, INFO_FILE);
+                    if (info.isFile()) {
+                        try {
+                            InputStream in = new FileInputStream(info);
+                            try {
+                                java.util.Map<String, Object> parsed =
+                                        Json.parseObject(Bytes.text(Bytes.readAtMost(in, 64 * 1024)));
+                                pluginId = Json.str(parsed, "pluginId", "");
+                                originalPath = Json.str(parsed, "originalPath", "");
+                                stamp = Json.str(parsed, "quarantinedAt", "");
+                            } finally {
+                                in.close();
+                            }
+                        } catch (IOException e) {
+                            // Fall through with whatever was read.
+                        } catch (Json.JsonException e) {
+                            // Fall through with whatever was read.
+                        }
+                    }
+                    out.add(new Item(child, pluginId, originalPath, stamp));
                 }
-            }
-            out.add(new Item(child, pluginId, originalPath, stamp));
+            });
+        } catch (IOException ignored) {
+            // A listing failure means "do not trust this as a quarantine list".
+            return new ArrayList<Item>();
         }
         return out;
     }
@@ -452,24 +501,32 @@ public final class Quarantine {
         if (depth > MAX_DEPTH) {
             return dir.getName();
         }
-        File[] children = dir.listFiles();
-        if (children == null) {
-            return null;
+        if (!DirectoryListing.supportedFor(dir)) {
+            return dir.getName();
         }
-        for (int i = 0; i < children.length; i++) {
-            File child = children[i];
-            String canonical = child.getCanonicalPath();
-            if (!canonical.equals(rootCanonical) && !canonical.startsWith(rootCanonical + File.separator)) {
-                return child.getName();
-            }
-            if (child.isDirectory()) {
-                String found = walkForEscape(child, rootCanonical, depth + 1);
-                if (found != null) {
-                    return found;
+        final String[] found = {null};
+        try {
+            DirectoryListing.forEachChild(dir, new DirectoryListing.Visitor() {
+                @Override
+                public void visit(File child) throws IOException {
+                    if (found[0] != null) {
+                        return;
+                    }
+                    String canonical = child.getCanonicalPath();
+                    if (!canonical.equals(rootCanonical)
+                            && !canonical.startsWith(rootCanonical + File.separator)) {
+                        found[0] = child.getName();
+                        return;
+                    }
+                    if (child.isDirectory()) {
+                        found[0] = walkForEscape(child, rootCanonical, depth + 1);
+                    }
                 }
-            }
+            });
+        } catch (IOException e) {
+            return dir.getName();
         }
-        return null;
+        return found[0];
     }
 
     private static void copyTree(File from, File to, int depth) throws IOException {
@@ -480,13 +537,16 @@ public final class Quarantine {
             if (!to.isDirectory() && !to.mkdirs()) {
                 throw new IOException("could not create " + to.getAbsolutePath());
             }
-            File[] children = from.listFiles();
-            if (children == null) {
-                return;
+            if (!DirectoryListing.supportedFor(from)) {
+                throw new IOException("could not list " + from.getAbsolutePath() + ": "
+                        + DirectoryListing.unsupportedReason());
             }
-            for (int i = 0; i < children.length; i++) {
-                copyTree(children[i], new File(to, children[i].getName()), depth + 1);
-            }
+            DirectoryListing.forEachChild(from, new DirectoryListing.Visitor() {
+                @Override
+                public void visit(File child) throws IOException {
+                    copyTree(child, new File(to, child.getName()), depth + 1);
+                }
+            });
             return;
         }
         InputStream in = new FileInputStream(from);
@@ -541,11 +601,18 @@ public final class Quarantine {
             return false;
         }
         if (file.isDirectory() && !escapes(file, rootCanonical)) {
-            File[] children = file.listFiles();
-            if (children != null) {
-                for (int i = 0; i < children.length; i++) {
-                    deleteTree(children[i], rootCanonical, depth + 1);
-                }
+            if (!DirectoryListing.supportedFor(file)) {
+                return false;
+            }
+            try {
+                DirectoryListing.forEachChild(file, new DirectoryListing.Visitor() {
+                    @Override
+                    public void visit(File child) {
+                        deleteTree(child, rootCanonical, depth + 1);
+                    }
+                });
+            } catch (IOException e) {
+                return false;
             }
         }
         return file.delete();
