@@ -134,7 +134,8 @@ public final class ScanReport {
 
     /** Coverage notices describe scan limits rather than findings against the package. */
     public static boolean isCoverageNotice(Signal signal) {
-        return signal != null && ("SCN001".equals(signal.ruleId) || "MFT012".equals(signal.ruleId));
+        return signal != null && ("SCN001".equals(signal.ruleId) || "MFT012".equals(signal.ruleId)
+                || "MFT013".equals(signal.ruleId));
     }
 
     public Verdict verdict() {
@@ -151,7 +152,15 @@ public final class ScanReport {
         if (verdict == Verdict.UNREADABLE) {
             return Coverage.UNSUPPORTED_OR_UNREADABLE;
         }
-        return truncated ? Coverage.PARTIAL : Coverage.COMPLETE;
+        if (truncated) {
+            return Coverage.PARTIAL;
+        }
+        for (Signal signal : signals) {
+            if (isCoverageNotice(signal)) {
+                return Coverage.PARTIAL;
+            }
+        }
+        return Coverage.COMPLETE;
     }
 
     /**

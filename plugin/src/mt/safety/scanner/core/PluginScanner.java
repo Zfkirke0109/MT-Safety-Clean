@@ -248,6 +248,10 @@ public final class PluginScanner {
                 }
             }
         }
+        if (pkg.manifestListingIncomplete()) {
+            budget.markTruncated();
+            return PluginManifest.unreadable("package listing was incomplete; manifest presence is unknown");
+        }
         return PluginManifest.missing();
     }
 

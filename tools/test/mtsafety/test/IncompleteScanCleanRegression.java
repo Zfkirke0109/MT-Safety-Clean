@@ -50,14 +50,31 @@ public final class IncompleteScanCleanRegression {
 
     private static final class ListingFailureFile extends File {
         private static final long serialVersionUID = 1L;
+        private final String failurePath;
 
         ListingFailureFile(File file) {
+            this(file, file);
+        }
+
+        ListingFailureFile(File file, File failure) {
             super(file.getPath());
+            failurePath = failure.getPath();
         }
 
         @Override
         public File[] listFiles() {
-            return null;
+            if (getPath().equals(failurePath)) {
+                return null;
+            }
+            File[] children = super.listFiles();
+            if (children != null) {
+                for (int i = 0; i < children.length; i++) {
+                    if (children[i].getPath().equals(failurePath)) {
+                        children[i] = new ListingFailureFile(children[i], new File(failurePath));
+                    }
+                }
+            }
+            return children;
         }
     }
 
@@ -95,6 +112,7 @@ public final class IncompleteScanCleanRegression {
                 overview.contains("1 clean") && overview.contains("1 incomplete"), overview);
 
         lowSeverityCoverage(c, fixtures, partial);
+        externalCodeCoverage(c, fixtures);
         directoryCutoffs(c, fixtures);
 
         ScanReport trusted = scanTrusted(plugin, ScanBudget.unlimited());
@@ -258,6 +276,26 @@ public final class IncompleteScanCleanRegression {
                         && !overview.contains("no findings in inspected content"), overview);
     }
 
+    private static void externalCodeCoverage(ActionsTest.Checker c, Fixtures fixtures) {
+        Map<String, byte[]> members = new LinkedHashMap<String, byte[]>();
+        members.put("manifest.json", Fixtures.bytes(
+                        Fixtures.v3Manifest("demo.host.code", "Host Compiled Code", null, "demo.Main")));
+        File installed = fixtures.installedArchive("host-compiled-code", members, null);
+        ScanReport report = new PluginScanner(IocDatabase.empty()).scan(installed, ScanBudget.unlimited());
+        String text = ReportFormatter.plainText(report);
+        String json = ReportFormatter.json(Arrays.asList(report));
+        c.that("host-compiled code outside the archive is a coverage limitation, not a package finding",
+                        report.verdict() == Verdict.CLEAN && report.hasRule("MFT013")
+                                && report.coverage() == Coverage.PARTIAL
+                                && ReportFormatter.summaryLine(report).contains("inspection incomplete")
+                                && report.dispositionAdvice().contains("No findings in inspected content")
+                                && text.contains("Coverage notices:") && text.contains("MFT013")
+                                && ReportFormatter.overview(Arrays.asList(report)).contains("1 incomplete")
+                                && json.contains("\"coverage\": \"PARTIAL\"")
+                                && json.contains("\"truncated\": false"),
+                        report.coverage() + " :: " + ReportFormatter.summaryLine(report) + " :: " + text);
+    }
+
     private static void directoryCutoffs(ActionsTest.Checker c, Fixtures fixtures) {
         File deep = fixtures.directoryPlugin("deep-directory",
                 Fixtures.manifest("demo.deep", "Deep Directory", "demo.A"),
@@ -284,7 +322,8 @@ public final class IncompleteScanCleanRegression {
                 new ListingFailureFile(listed), ScanBudget.unlimited());
         c.that("null directory listing is partial, records SCN001, and yields no hash",
                 listingFailure.coverage() == Coverage.PARTIAL && listingFailure.hasRule("SCN001")
-                        && listingFailure.contentHash.length() == 0,
+                        && listingFailure.contentHash.length() == 0 && listingFailure.hasRule("MFT012")
+                        && !listingFailure.hasRule("MFT001"),
                 listingFailure.coverage() + " :: " + ReportFormatter.summaryLine(listingFailure));
 
         File wide = fixtures.directoryPlugin("wide-directory",
@@ -320,6 +359,19 @@ public final class IncompleteScanCleanRegression {
                 siblings.coverage() == Coverage.PARTIAL && siblings.hasRule("SCN001")
                         && !ReportFormatter.summaryLine(siblings).startsWith("Clean"),
                 siblings.coverage() + " :: " + ReportFormatter.summaryLine(siblings));
+
+        Map<String, byte[]> blockedSidecar = new LinkedHashMap<String, byte[]>();
+        blockedSidecar.put("blocked/payload.txt", Fixtures.bytes("not listed"));
+        File siblingListing = fixtures.installedArchive("sibling-listing-failure", members, blockedSidecar);
+        ScanReport siblingListingFailure = new PluginScanner(IocDatabase.empty()).scan(
+                new ListingFailureFile(siblingListing, new File(siblingListing, "blocked")),
+                ScanBudget.unlimited());
+        c.that("null installed-sibling listing is partial without claiming the archive manifest is missing",
+                siblingListingFailure.coverage() == Coverage.PARTIAL && siblingListingFailure.hasRule("SCN001")
+                        && !siblingListingFailure.hasRule("MFT001")
+                        && siblingListingFailure.contentHash.length() > 0,
+                siblingListingFailure.coverage() + " :: "
+                        + ReportFormatter.summaryLine(siblingListingFailure));
 
         Map<String, byte[]> sidecars = new LinkedHashMap<String, byte[]>();
         for (int i = 0; i < 401; i++) {

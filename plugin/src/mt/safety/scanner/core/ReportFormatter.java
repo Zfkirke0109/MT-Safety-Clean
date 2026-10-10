@@ -111,8 +111,8 @@ public final class ReportFormatter {
         List<Signal> signals = report.signalsBySeverity();
         boolean packageFindings = report.hasPackageFindings();
         if (report.coverage() == Coverage.PARTIAL) {
-            sb.append("\nCoverage warning: inspection incomplete (see SCN001 below); this is not a threat"
-                    + " finding.\n");
+            sb.append("\nCoverage warning: inspection was incomplete or some code was not in view; see"
+                    + " coverage notices below. This is not a threat finding.\n");
         }
         if (report.coverage() == Coverage.COMPLETE) {
             if (!packageFindings) {

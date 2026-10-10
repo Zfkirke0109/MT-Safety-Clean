@@ -40,11 +40,17 @@ public final class ManifestRules {
             return;
         }
         if (manifest.unreadable) {
+            boolean presenceUnknown = String.valueOf(manifest.parseError)
+                    .startsWith("package listing was incomplete");
             report.add(new Signal("MFT012", Category.MANIFEST, Severity.LOW,
-                    "manifest.json was not read",
-                    "The manifest is present but the scanner could not read it, so nothing below is"
-                            + " based on what this plugin declares about itself. This is a limit of the"
-                            + " scan, not a finding against the package.")
+                    presenceUnknown ? "manifest.json could not be confirmed" : "manifest.json was not read",
+                    presenceUnknown
+                            ? "The package listing was incomplete, so the scanner could not establish whether"
+                                    + " manifest.json was present. This is a limit of the scan, not a finding"
+                                    + " against the package."
+                            : "The scanner could not read manifest.json, so nothing below is based on what"
+                                    + " this plugin declares about itself. This is a limit of the scan, not"
+                                    + " a finding against the package.")
                     .withEvidence("manifest.json", String.valueOf(manifest.parseError)));
             return;
         }

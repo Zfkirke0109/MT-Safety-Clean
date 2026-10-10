@@ -122,6 +122,10 @@ public abstract class PluginPackage {
         return Collections.emptyList();
     }
 
+    boolean manifestListingIncomplete() {
+        return false;
+    }
+
     public void close() {
     }
 
@@ -552,6 +556,11 @@ public abstract class PluginPackage {
             }
             return anomalies;
         }
+
+        @Override
+        boolean manifestListingIncomplete() {
+            return listingTruncated;
+        }
     }
 
     /**
@@ -711,6 +720,11 @@ public abstract class PluginPackage {
         }
 
         @Override
+        boolean manifestListingIncomplete() {
+            return delegate.manifestListingIncomplete();
+        }
+
+        @Override
         public void close() {
             delegate.close();
         }
@@ -776,6 +790,11 @@ public abstract class PluginPackage {
         @Override
         public List<String> structuralAnomalies(ScanBudget budget) throws IOException {
             return delegate.structuralAnomalies(budget);
+        }
+
+        @Override
+        boolean manifestListingIncomplete() {
+            return delegate.manifestListingIncomplete();
         }
 
         @Override
