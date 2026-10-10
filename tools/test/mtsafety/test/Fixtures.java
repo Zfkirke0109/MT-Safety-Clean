@@ -200,7 +200,7 @@ public final class Fixtures {
                 new java.util.zip.ZipOutputStream(new FileOutputStream(file))) {
             for (Map.Entry<String, byte[]> member : members.entrySet()) {
                 java.util.zip.ZipEntry entry = new java.util.zip.ZipEntry(member.getKey());
-                entry.setTime(315532800000L);
+                entry.setTime(0L);
                 zip.putNextEntry(entry);
                 zip.write(member.getValue());
                 zip.closeEntry();
@@ -221,12 +221,24 @@ public final class Fixtures {
         return rawArchiveInto(file, members, false, memberName);
     }
 
+    /** A duplicate of the first member with different, inert contents. */
+    public File conflictingDuplicateArchive(String name, Map<String, byte[]> members, byte[] duplicateContents) {
+        File file = new File(root, name);
+        file.getParentFile().mkdirs();
+        return rawArchiveInto(file, members, true, null, duplicateContents);
+    }
+
     private File rawArchiveInto(File file, Map<String, byte[]> members, boolean duplicateFirstMember) {
         return rawArchiveInto(file, members, duplicateFirstMember, null);
     }
 
     private File rawArchiveInto(File file, Map<String, byte[]> members, boolean duplicateFirstMember,
             String method95Member) {
+        return rawArchiveInto(file, members, duplicateFirstMember, method95Member, null);
+    }
+
+    private File rawArchiveInto(File file, Map<String, byte[]> members, boolean duplicateFirstMember,
+            String method95Member, byte[] duplicateContents) {
         file.getParentFile().mkdirs();
 
         List<String> names = new ArrayList<String>(members.keySet());
@@ -240,7 +252,8 @@ public final class Fixtures {
         try {
             for (int i = 0; i < names.size(); i++) {
                 String memberName = names.get(i);
-                byte[] data = members.get(memberName);
+                byte[] data = duplicateFirstMember && i == 1 && duplicateContents != null
+                        ? duplicateContents : members.get(memberName);
                 int offset = body.size();
                 CRC32 crc = new CRC32();
                 crc.update(data);

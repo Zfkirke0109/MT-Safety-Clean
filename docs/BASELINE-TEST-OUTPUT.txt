@@ -1,0 +1,284 @@
+==> compiling core
+    ok
+==> running tests
+  ok   JSON parses nested structures
+  ok   JSON handles escapes
+  ok   JSON rejects trailing junk
+  ok   JSON rejects a leading plus on a number
+  ok   JSON rejects other malformed numbers
+  ok   JSON still accepts well-formed numbers
+  ok   JSON rejects numbers that overflow to infinity
+  ok   JSON rejects unterminated input
+  ok   JSON refuses to recurse without limit
+  ok   JSON quoting escapes control characters
+  ok   Base64 round-trips
+  ok   Base64 rejects non-Base64 input
+  ok   entropy tells text from random
+  ok   magic bytes are recognised
+  ok   strings are pulled out of binary
+  ok   SHA-256 matches the known value for the empty input
+  ok   a one-character difference is confusable
+  ok   homoglyph substitution is seen through
+  ok   unrelated names are not confusable
+  ok   short names are not compared
+  ok   benign translator is not flagged
+  ok   benign translator's network use is excused
+  ok   benign utility is clean
+  ok   archive and directory agree
+  ok   wrapping folder is unwrapped, not treated as unknown content
+  ok   data theft across two files is caught
+  ok   the drop endpoint is named in the report
+  ok   an encoded payload is decoded and recognised
+  ok   ransomware behaviour is caught
+  ok   remote shell is caught
+  ok   the hardcoded address is reported
+  ok   clipboard surveillance is caught
+  ok   reaching into MT Manager's own files is caught
+  ok   path traversal is critical
+  ok   duplicate archive members are caught
+  ok   a bundled native library is reported
+  ok   contents are judged, not file extensions
+  ok   a packed payload is reported
+  ok   a package with no manifest is reported
+  ok   an unparsable manifest is reported
+  ok   invisible characters in metadata are reported
+  ok   a missing declared entry point is reported
+  ok   near-identical plugin identities are flagged on both
+  ok   a risky plugin is flagged before being trusted
+  ok   a trusted hash changes the verdict
+  ok   trust does not carry over to a modified package
+  ok   trust does not silence a critical finding
+  ok   a denylisted plugin id is reported as known bad
+  ok   a pattern from the user's own list fires
+  ok   the indicator file round-trips
+  ok   the text report names the verdict and the rule
+  ok   the JSON report parses
+  ok   an exhausted budget is reported honestly
+  ok   a payload renamed to .png is still caught
+  ok   a genuine PNG is not reported as a payload
+  ok   small files do not exhaust the byte budget
+  ok   one large plugin does not starve the rest of the scan
+  ok   an unread manifest is not reported as a missing one
+  ok   a comment cannot claim the translation-engine excuse
+  ok   rescoring does not duplicate derived findings
+  ok   ordinary for-loops are not reported as obfuscation
+  ok   saying unofficial is not a claim of being official
+  ok   claiming to be official is still reported
+  ok   two plugins claiming the same identity are both flagged
+  ok   a failed save is reported, not swallowed
+  ok   replacing the indicator list keeps its contents and leaves no debris
+  ok   an unread manifest is not reported as malformed
+  ok   an unread manifest is not treated as evidence against the package
+  ok   a malformed manifest is still reported as malformed
+  ok   a .png that is really text is still searched
+  ok   a genuine image is still skipped and reports nothing
+  ok   the jar fixture really does hide its contents from a raw search
+  ok   a payload inside a bundled jar is found
+  ok   evidence names the file inside the jar
+  ok   executable code inside a bundled jar is reported
+  ok   an ordinary bundled library stays clean
+  ok   every media format the disguise rule relies on is one the detector can confirm
+  ok   the polyglot fixture really is a valid PNG by the detector's own reckoning
+  ok   a payload appended after a valid image header is still found
+  ok   a plugin whose assets are real images stays clean
+  ok   a v3 package's own compiled output is not reported
+  ok   but bytecode dropped somewhere the build never puts it still is
+  ok   a multidex output is accepted and a lookalike name is not
+  ok   the fixture really does withhold its sizes until after the data
+  ok   a member that inflates past the walk's allowance stops the walk
+  ok   an archive that does not expand is not accused of expanding
+  ok   and the walk does not invent missing members out of stopping early
+  ok   an archive that withholds its sizes is still walked when there is room for it
+  ok   a directory too deep to list fully has no verifiable identity
+  ok   and says so, naming the cutoff, rather than reporting a package it did not read
+  ok   a package the budget can afford to hash still gets an identity
+  ok   a hash the budget can only part-pay for is not computed at all
+  ok   and the report says so rather than implying full coverage
+  ok   a non-integer is not truncated into an integer field
+  ok   a value past the int range is not saturated
+  ok   whole numbers still read as integers
+  ok   a package's identity can be read from a folder and from an archive
+  ok   quarantine moves the plugin out of its folder
+  ok   restore puts it back and empties the quarantine
+  ok   restore refuses to move this scanner itself
+  ok   both languages document the destructive commands
+  ok   the two help strings really are different translations
+  ok   a member outside the wrapper folder is still scanned
+  ok   a genuinely wrapped package is still unwrapped
+  ok   a download beside its installed copy is not called impersonation
+  ok   the report carries no terminal escape sequences out of a package
+  ok   the C1 controls a terminal acts on are stripped too
+  ok   zip detection requires the whole signature
+  ok   a v3 package is not flagged for carrying compiled code
+  ok   a native library is still reported in a v3 package
+  ok   only the expected compiled outputs are exempt in a v3 package
+  ok   a budget-limited archive walk does not invent structural findings
+  ok   a complete walk still reports nothing wrong with a sound archive
+  ok   a real v3 translator is clean, not suspicious
+  ok   its declared classes are found in the dex, so MFT006 does not fire
+  ok   a {key} name is resolved from the language file, not shown raw
+  ok   hardcoding a class under bin.mt.plugin is not treated as reaching into MT
+  ok   the translation-engine trait is recognised from the dex
+  ok   a v3 installed plugin is marked installed, so the UI can act on it
+  ok   a markdown previewer is not called malicious for a syntax-highlighter word list
+  ok   shell words in a data file do not trip the command-execution rules
+  ok   an XMP or SVG namespace URL in an asset is not a plain-HTTP finding
+  ok   a v3 plugin whose dex MT Manager extracted beside it is not accused of missing classes
+  ok   a manifest with comments MT Manager accepts is read, not called invalid JSON
+  ok   but the non-standard JSON is noted at low severity
+  ok   a v3 package whose dex hides a real payload is still caught
+  ok   the payload's capabilities are read out of the dex string table
+  ok   a plugin whose code MT Manager keeps beside the package is clean, not worth a look
+  ok   its declared classes are not reported as missing
+  ok   and MT Manager's own encrypted output is not called a packed member
+  ok   a download that declares a class and ships no code is still reported
+  ok   plugin SDK version 1 is recognised
+  ok   an inline data: URI image in a bundled library is not an encoded payload
+  ok   an XML namespace URL is not a plain-HTTP finding
+  ok   a Base64 blob that is not part of a data: URI is still reported
+  ok   distinct plugins sharing a {name} placeholder are not called lookalikes
+  ok   the epoch is day zero
+  ok   a leap day is counted
+  ok   a century that is not a leap year is counted
+  ok   an unreadable date is reported as unknown, not as day zero
+  ok   age is whole days since the date
+  ok   the rule catalogue carries a version and a readable date
+  ok   the rule count matches the catalogue actually loaded
+  ok   an indicator file's version, date and source are read
+  ok   recording a trust decision does not erase the file's provenance
+  ok   a file with no date says so rather than implying it is current
+  ok   an import adds what is new
+  ok   and keeps the user's own decisions
+  ok   the newer date wins, so the age shown is the age of what was added
+  ok   importing the same list twice adds nothing the second time
+  ok   importing an older list does not roll the date backwards
+  ok   a literal pattern matches where it occurs
+  ok   ?? matches any one byte
+  ok   a? fixes the high nibble
+  ok   ?a fixes the low nibble
+  ok   a pattern needs at least two fixed bytes, or it would match everything
+  ok   * matches any run, including none
+  ok   {n} is exactly n bytes
+  ok   {n-m} is a range
+  ok   {-m} and {n-} are open ranges
+  ok   (aa|bb) is a choice
+  ok   alternatives of different lengths are refused
+  ok   an offset pins the pattern
+  ok   n,m allows a shift of up to m
+  ok   EOF-n counts from the end
+  ok   syntax outside the implemented set is refused, not loaded to never fire
+  ok   leading fixed bytes are exposed for bucketing
+  ok   a pathological pattern gives up quickly rather than freezing the phone
+  ok   and a satisfiable one with the same shape still matches
+  ok   every signature file in the folder is read
+  ok   hash entries are counted, comments and bad lines are not
+  ok   patterns load, minus the ignored, the unsupported offset and the unscanned target
+  ok   problems are reported with file and line
+  ok   the clean list is kept apart from the detections
+  ok   an md5 entry with a size matches that exact file
+  ok   and not a file of another size
+  ok   a sha256 entry with * matches at any size
+  ok   a PUA. name is flagged as unwanted rather than malicious
+  ok   a clean-listed file is recognised as such
+  ok   an untargeted pattern matches in any file
+  ok   a pattern targeted at ELF files is only tried on ELF files
+  ok   an .ign2 file switches a signature off by name
+  ok   file types are told apart by their leading bytes
+  ok   an instant is rendered as the date it falls on
+  ok   the folder stamp changes when a file is added, so a cache cannot go stale
+  ok   a packed .cvd is explained rather than silently ignored
+  ok   the pattern cap holds and the overflow is counted
+  ok   a capped database still matches what it did load
+  ok   a member whose hash is in the database makes the package known bad
+  ok   the evidence names the member and the signature
+  ok   a byte pattern found in compiled code makes the package known bad
+  ok   a PUA signature is high severity, not a conviction
+  ok   a clean-listed member is never reported
+  ok   a hash is checked inside an archived library too
+  ok   a trusted hash does not silence a signature match
+  ok   with no database loaded the same package is judged on capability alone
+  ok   the walk reaches every readable file outside the excluded area
+  ok   a hashed file, a deep pattern and a dex inside an apk are all found
+  ok   nothing under the excluded area is reported
+  ok   a file larger than the in-memory read is hashed in full
+  ok   a scan that ran out of budget says so instead of reporting a clean folder
+  ok   the file scan report lists every hit with its signature
+  ok   with no signature files the screen says so and how to get some
+  ok   without signatures the carrier plugin is judged clean on capability alone
+  ok   a file scan without signatures explains what it needs
+  ok   importing a signature file copies it into the plugin's signature folder
+  ok   the import says the next scan will use it
+  ok   the scan that follows the import uses it
+  ok   the About section shows what is loaded and how old it is
+  ok   a second file adds to the first
+  ok   importing the same file again replaces it
+  ok   a packed bundle is refused with the command that unpacks it
+  ok   a file with nothing usable in it is not copied into the folder
+  ok   the files command reports what it checked and what matched
+  ok   the full list is written next to the other reports
+  ok   matched files are listed on the screen
+  ok   a path that cannot be read is refused
+  ok   both languages document the files and import commands
+  ok   the scan finds the installed plugins
+  ok   verdicts split as expected
+  ok   arming alone moves nothing
+  ok   the armed switch quarantines that plugin on the next build
+  ok   the switch is cleared afterwards, so it cannot fire twice
+  ok   a quarantined plugin is not rediscovered as installed
+  ok   a bulk action lists what it would do and waits
+  ok   the plan covers only the malicious one
+  ok   a wrong confirmation code does nothing
+  ok   the confirmed action quarantines exactly the malicious plugin
+  ok   a plan that no longer matches the installed plugins is refused
+  ok   a cancelled plan cannot be confirmed later
+  ok   remove deletes the plugin and keeps no quarantined copy
+  ok   removal leaves the other plugins alone
+  ok   the scanner is never included in a bulk action
+  ok   remove without a scope explains itself instead of guessing
+  ok   the overlap plan covers both flagged plugins
+  ok   a confirmation is refused once an armed switch has changed the set
+  ok   the armed switch still did its own job
+  ok   duplicate plugin ids do not confuse which copy is acted on
+  ok   a newline in a plugin id cannot reach a package the plan did not list
+  ok   plugins sharing a directory name both survive the move intact
+  ok   a deleted plugin is reported as deleted, not as quarantined
+  ok   plugins with similar ids get different switches
+  ok   arming one of them quarantines that one and not its near-namesake
+  ok   a switch armed against one package does not act on its replacement
+  ok   a plugin cannot write extra lines into the confirmation prompt
+  ok   a scan that ran out of budget reports no content hash
+  ok   quarantining one plugin by name updates the screen it came from
+  ok   a plugin containing a link out of its folder is not moved
+  ok   nothing outside the plugin was touched
+  ok   a linked quarantine store root is refused
+  ok   a linked quarantine store root is not listed or used
+  ok   a scope with no targets reports so
+  ok   an older plan is not left armed after a command that matched nothing
+  ok   a plugin directory that is itself a link is not moved
+  ok   a plugin reached through a linked ancestor is still movable
+  ok   a linked quarantine store is refused rather than moved into
+  ok   and what is behind it is not reported as quarantined
+  ok   and purge will not delete through it
+  ok   purging a linked quarantine entry removes the link, not its target
+  ok   a typed quarantine still moves an unchanged package
+  ok   a display name cannot carry terminal controls into the confirmation
+  ok   turning a selection switch on does not move anything by itself
+  ok   the selected plugin is what the uninstall button would act on
+  ok   the uninstall button deletes the selected plugin
+  ok   and leaves one that was not selected
+  ok   the selection is cleared, so it cannot fire again
+  ok   a plugin can be parked in quarantine first
+  ok   the uninstall button empties the quarantine store
+  ok   the fixture really does sit at worth-a-look or above
+  ok   quarantine-all covers everything flagged
+  ok   quarantine-all plans rather than acting immediately
+  ok   quarantine-all issues a confirmation code
+  ok   confirming quarantine-all moves the worth-a-look plugin aside
+  ok   a package that changed after the scan is not acted on
+  ok   quarantining one plugin by name is refused after the package changes
+  ok   a plugin name cannot inject C1 controls into the confirmation prompt
+  ok   the first copy is quarantined
+  ok   removal deletes the copy it just made and leaves the older one
+
+278 checks passed, 0 failed
+All good.

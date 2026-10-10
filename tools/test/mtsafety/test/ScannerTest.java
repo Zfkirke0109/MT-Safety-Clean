@@ -127,15 +127,15 @@ public final class ScannerTest {
                 Fixtures.manifest("demo.backup", "Local Backup", "demo.BackupReader"),
                 Fixtures.sources(
                         "src/demo/BackupReader.java",
-                        "package demo;\npublic class BackupReader { public long localBackupSize() {"
-                                + " return new java.io.File(\"/data/data/com.example.notes/files/export.db\").length();"
+                        "package demo;\npublic class BackupReader { public java.io.File[] localBackupFiles() {"
+                                + " return new java.io.File(\"/storage/emulated/0/Documents/\").listFiles();"
                                 + " } }\n",
                         "src/demo/SyncStatus.java",
                         "package demo;\npublic class SyncStatus { public void ping() throws Exception {"
                                 + " new java.net.URL(\"https://backup.example.test/status\").openConnection();"
                                 + " } }\n")));
-        check("disconnected backup and network APIs are only capability co-occurrence",
-                backupReport.hasRule("SEN001") && backupReport.hasRule("NET001")
+        check("disconnected backup-file and network APIs are only capability co-occurrence",
+                backupReport.hasRule("SEN006") && backupReport.hasRule("NET001")
                         && backupReport.hasRule("CMB101"),
                 backupReport.verdict() + " :: " + summarise(backupReport));
 
@@ -309,7 +309,8 @@ public final class ScannerTest {
         Map<String, byte[]> dupe = new LinkedHashMap<String, byte[]>();
         dupe.put("src/demo/A.java", Fixtures.bytes(benign));
         dupe.put("manifest.json", Fixtures.bytes(Fixtures.manifest("x.dupe", "Dupe", "demo.A")));
-        ScanReport dupeReport = scan(fixtures.rawArchive("dupe.mtp", dupe, true));
+        ScanReport dupeReport = scan(fixtures.conflictingDuplicateArchive("dupe.mtp", dupe,
+                Fixtures.bytes("package demo;\npublic class A { public int n() { return 2; } }\n")));
         check("duplicate archive members are caught", dupeReport.hasRule("ARC005"),
                 summarise(dupeReport));
 
