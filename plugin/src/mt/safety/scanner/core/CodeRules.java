@@ -234,17 +234,28 @@ public final class CodeRules {
                     report.addError("could not read " + parentName + "!" + ze.getName() + ": "
                             + e.getMessage());
                     budget.markTruncated();
-                    continue;
+                    // Do not ask ZipInputStream for another entry: it would first drain the
+                    // unread remainder of this potentially enormous or corrupt member.
+                    break;
                 }
-                if (child.length >= granted) {
-                    // The allowance was filled. One more byte, if there is one, proves the member was
-                    // cut short; this never inflates more than a single extra byte.
+                // ZIP streams do not expose a reliable entry size before inflation. Probe at most
+                // one byte when the allowance is exactly filled; an additional byte proves truncation.
+                // Importantly, getNextEntry() implicitly inflates the rest of the *current* entry.
+                boolean completeChild = child.length < granted;
+                boolean memberCutShort = false;
+                if (!completeChild) {
                     try {
                         if (zin.read() >= 0) {
+                            memberCutShort = true;
                             budget.markTruncated();
+                        } else {
+                            completeChild = true;
                         }
                     } catch (IOException e) {
+                        memberCutShort = true;
                         budget.markTruncated();
+                        report.addError("could not verify end of " + parentName + "!" + ze.getName()
+                                + ": " + e.getMessage());
                     }
                 }
                 if (child.length == 0) {
@@ -271,17 +282,22 @@ public final class CodeRules {
                 Scope childScope = classify(synthetic.extension());
                 String childText = childScope == Scope.BINARY
                         ? Bytes.extractedText(child, 6) : Bytes.text(child);
-                // A member that filled its whole allowance may have been cut short, so only a
-                // shorter read is known to be complete enough for a whole-file hash.
-                SignatureRules.match(report, byRule, synthetic, child, child.length < granted, signatures);
+                // Only compare whole-file hashes when the member really reached EOF.
+                // Pattern matching on the bounded prefix remains useful for partial members.
+                SignatureRules.match(report, byRule, synthetic, child, completeChild, signatures);
                 matchIndicators(report, byRule, synthetic, childScope, childText);
                 matchPairs(report, byRule, synthetic, childScope, childText);
                 matchUserPatterns(report, byRule, synthetic, childText, database);
                 checkEncodedPayloads(report, byRule, synthetic, childText);
 
-                if (Bytes.looksLikeZip(child)) {
+                if (!memberCutShort && Bytes.looksLikeZip(child)) {
                     scanNestedArchive(report, byRule, childName, child, budget, database, signatures,
                             depth + 1);
+                }
+                if (memberCutShort) {
+                    // Preserve findings in the inspected prefix, but never call getNextEntry()
+                    // after a bounded read stopped short: it would inflate the skipped tail.
+                    break;
                 }
             }
         } catch (IOException e) {
