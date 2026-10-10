@@ -125,6 +125,8 @@ public final class CodeRules {
                 data = pkg.read(entry, limit, budget);
             } catch (IOException e) {
                 report.addError("could not read " + entry.name + ": " + e.getMessage());
+                // A member that cannot be read is content that was not inspected.
+                budget.markTruncated();
                 continue;
             }
             if (data.length == 0) {
@@ -227,6 +229,7 @@ public final class CodeRules {
                 } catch (IOException e) {
                     report.addError("could not read " + parentName + "!" + ze.getName() + ": "
                             + e.getMessage());
+                    budget.markTruncated();
                     continue;
                 }
                 if (child.length == 0) {
@@ -268,9 +271,11 @@ public final class CodeRules {
             }
         } catch (IOException e) {
             report.addError("could not open " + parentName + ": " + e.getMessage());
+            budget.markTruncated();
         } catch (RuntimeException e) {
             // A malformed archive must not take the scan down with it.
             report.addError("could not read inside " + parentName + ": " + e);
+            budget.markTruncated();
         } finally {
             PluginPackage.closeQuietly(zin);
         }

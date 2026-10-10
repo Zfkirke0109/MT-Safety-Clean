@@ -209,6 +209,6 @@ public final class ScanReport {
 
     /** Short one-line summary used in list views. */
     public String headline() {
-        return verdict.label() + " (" + score + ") - " + manifest.displayName();
+        return dispositionLabel() + " (" + score + ") - " + manifest.displayName();
     }
 }

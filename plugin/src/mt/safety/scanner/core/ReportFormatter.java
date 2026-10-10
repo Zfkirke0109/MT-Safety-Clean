@@ -35,8 +35,12 @@ public final class ReportFormatter {
         int clean = 0;
         int incomplete = 0;
         int unreadable = 0;
+        int partial = 0;
         for (int i = 0; i < reports.size(); i++) {
             ScanReport current = reports.get(i);
+            if (current.coverage() == Coverage.PARTIAL) {
+                partial++;
+            }
             if (current.coverage() == Coverage.PARTIAL
                     && (current.verdict() == Verdict.CLEAN || current.verdict() == Verdict.TRUSTED)) {
                 incomplete++;
@@ -72,6 +76,9 @@ public final class ReportFormatter {
         if (unreadable > 0) {
             sb.append(", ").append(unreadable).append(" unreadable");
         }
+        if (partial > 0) {
+            sb.append("; ").append(partial).append(" with incomplete coverage");
+        }
         return sb.toString();
     }
 
@@ -98,11 +105,23 @@ public final class ReportFormatter {
         sb.append("Coverage: ").append(report.coverage().label()).append('\n');
 
         List<Signal> signals = report.signalsBySeverity();
-        if (signals.isEmpty()) {
+        boolean threatFindings = false;
+        for (int i = 0; i < signals.size(); i++) {
+            if (!"SCN001".equals(signals.get(i).ruleId)) {
+                threatFindings = true;
+                break;
+            }
+        }
+        if (report.coverage() == Coverage.PARTIAL) {
+            sb.append("\nCoverage warning: inspection incomplete (see SCN001 below); this is not a threat"
+                    + " finding.\n");
+        }
+        if (report.coverage() == Coverage.COMPLETE ? signals.isEmpty() : !threatFindings) {
             sb.append(report.coverage() == Coverage.COMPLETE
                     ? "\nNo findings.\n"
                     : "\nNo findings in inspected content; inspection incomplete.\n");
-        } else {
+        }
+        if (!signals.isEmpty()) {
             sb.append("\nFindings (worst first):\n");
             for (int i = 0; i < signals.size(); i++) {
                 Signal signal = signals.get(i);

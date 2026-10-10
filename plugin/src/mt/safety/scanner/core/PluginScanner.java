@@ -78,8 +78,10 @@ public final class PluginScanner {
             if (report.truncated()) {
                 report.add(new Signal("SCN001", Category.PROVENANCE, Severity.INFO,
                         "The scan did not read the whole package",
-                        "The package was too large, or too slow to read, to examine completely. Findings below"
-                                + " are real, but absence of findings proves less than usual."));
+                        "Part of the package was not inspected: it was too large or too slow to read, or a"
+                                + " member could not be read. Findings below are real, but absence of"
+                                + " findings proves less than usual. This is a coverage warning, not"
+                                + " evidence of malware."));
             }
             for (int i = 0; i < database.loadErrors().size(); i++) {
                 report.addError(database.loadErrors().get(i));
@@ -241,6 +243,7 @@ public final class PluginScanner {
                     }
                     return PluginManifest.parse(data);
                 } catch (IOException e) {
+                    budget.markTruncated();
                     return PluginManifest.unreadable("could not be read: " + e.getMessage());
                 }
             }
