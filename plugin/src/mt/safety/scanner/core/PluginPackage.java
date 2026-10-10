@@ -113,6 +113,28 @@ public abstract class PluginPackage {
     public abstract String contentHash(ScanBudget budget) throws IOException;
 
     /**
+     * Whether the package-level content digest covers everything a destructive action would move.
+     *
+     * <p>Most packages hash all of their members. Installed archive directories override this because
+     * MT Manager's extracted siblings are part of the directory action, but not the archive digest.
+     */
+    public boolean destructiveActionIdentityComplete() throws IOException {
+        return true;
+    }
+
+    /** Canonical package path, or an empty string when the final path component is a link. */
+    public String actionIdentityPath() throws IOException {
+        File absolute = location().getAbsoluteFile();
+        File parent = absolute.getParentFile();
+        if (parent == null) {
+            return "";
+        }
+        String actual = absolute.getCanonicalPath();
+        String expected = new File(parent.getCanonicalPath(), absolute.getName()).getPath();
+        return actual.equals(expected) ? actual : "";
+    }
+
+    /**
      * Members whose local headers disagree with the central directory, or that appear twice.
      *
      * <p>Only meaningful for archives. Duplicate names are a real packaging trick: a reviewer's tool
@@ -747,6 +769,20 @@ public abstract class PluginPackage {
         }
 
         @Override
+        public boolean destructiveActionIdentityComplete() throws IOException {
+            List<Entry> all = entries();
+            if (listingTruncated) {
+                return false;
+            }
+            for (int i = 0; i < all.size(); i++) {
+                if (all.get(i).name.startsWith(BESIDE_PREFIX)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        @Override
         public List<String> structuralAnomalies(ScanBudget budget) throws IOException {
             List<String> problems = new ArrayList<String>(delegate.structuralAnomalies(budget));
             if (listingTruncated) {
@@ -822,6 +858,16 @@ public abstract class PluginPackage {
         @Override
         public String contentHash(ScanBudget budget) throws IOException {
             return delegate.contentHash(budget);
+        }
+
+        @Override
+        public boolean destructiveActionIdentityComplete() throws IOException {
+            return delegate.destructiveActionIdentityComplete();
+        }
+
+        @Override
+        public String actionIdentityPath() throws IOException {
+            return delegate.actionIdentityPath();
         }
 
         @Override

@@ -61,6 +61,13 @@ public final class PluginScanner {
 
             ScanReport report = new ScanReport(pkg.label(), path.getAbsolutePath(), pkg.archive(),
                     pkg.installed(), manifest, hash);
+            try {
+                String identityPath = pkg.actionIdentityPath();
+                report.setDestructiveActionIdentity(hash.length() > 0
+                        && pkg.destructiveActionIdentityComplete(), identityPath);
+            } catch (IOException e) {
+                report.setDestructiveActionIdentity(false, "");
+            }
             if (prefix != null) {
                 report.add(new Signal("ARC008", Category.ARCHIVE, Severity.LOW,
                         "Plugin contents sit inside a wrapping folder",

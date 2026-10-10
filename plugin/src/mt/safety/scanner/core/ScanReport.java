@@ -42,6 +42,8 @@ public final class ScanReport {
     private int filesScanned;
     private long elapsedMs;
     private String verdictReason = "";
+    private boolean destructiveActionIdentityComplete;
+    private String actionIdentityPath = "";
 
     public ScanReport(String label, String path, boolean archive, boolean installed, PluginManifest manifest,
             String contentHash) {
@@ -235,6 +237,20 @@ public final class ScanReport {
 
     public void setElapsedMs(long elapsedMs) {
         this.elapsedMs = elapsedMs;
+    }
+
+    /** True only when the package digest identifies every file a destructive action would affect. */
+    public boolean destructiveActionIdentityComplete() {
+        return destructiveActionIdentityComplete;
+    }
+
+    public String actionIdentityPath() {
+        return actionIdentityPath;
+    }
+
+    public void setDestructiveActionIdentity(boolean complete, String canonicalPath) {
+        destructiveActionIdentityComplete = complete && canonicalPath != null && canonicalPath.length() > 0;
+        actionIdentityPath = destructiveActionIdentityComplete ? canonicalPath : "";
     }
 
     /** Short one-line summary used in list views. */

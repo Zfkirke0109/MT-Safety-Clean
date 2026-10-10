@@ -70,6 +70,12 @@ public final class ScanRunner {
     /** How many matched files the screen lists before pointing at the report file. */
     private static final int MAX_FILE_HIT_ROWS = 20;
 
+    private enum ActionCheck {
+        MATCHES,
+        IDENTITY_UNAVAILABLE,
+        CONTENT_CHANGED
+    }
+
     /**
      * The last signature database loaded, kept while its folder is unchanged.
      *
@@ -303,16 +309,19 @@ public final class ScanRunner {
                 continue;
             }
             host.putFlag(key, false);
+            ActionCheck check = verifyActionIdentity(report);
+            if (check != ActionCheck.MATCHES) {
+                append(done, check == ActionCheck.IDENTITY_UNAVAILABLE
+                        ? strings.destructiveActionsUnavailable(flatten(report.manifest.displayName()))
+                        : strings.changedSinceScan(flatten(report.manifest.displayName())));
+                continue;
+            }
             if (!report.installed) {
                 // A file sitting in a downloads folder is not something this plugin should delete.
                 append(done, strings.notInstalled(report.manifest.displayName()));
                 continue;
             }
-            if (!stillMatches(report)) {
-                append(done, strings.changedSinceScan(flatten(report.manifest.displayName())));
-                continue;
-            }
-            Quarantine.Result moved = quarantine.quarantine(new File(report.path), host.pluginId());
+            Quarantine.Result moved = quarantineVerified(quarantine, report);
             if (moved.ok) {
                 result.actioned.put(report.path, "quarantined");
             }
@@ -439,10 +448,13 @@ public final class ScanRunner {
      */
     private String moveTarget(Quarantine quarantine, ScanReport match, boolean permanent, Result result,
             int[] counts) {
-        if (!stillMatches(match)) {
-            return strings.changedSinceScan(flatten(match.manifest.displayName()));
+        ActionCheck check = verifyActionIdentity(match);
+        if (check != ActionCheck.MATCHES) {
+            return check == ActionCheck.IDENTITY_UNAVAILABLE
+                    ? strings.destructiveActionsUnavailable(flatten(match.manifest.displayName()))
+                    : strings.changedSinceScan(flatten(match.manifest.displayName()));
         }
-        Quarantine.Result moved = quarantine.quarantine(new File(match.path), host.pluginId());
+        Quarantine.Result moved = quarantineVerified(quarantine, match);
         if (!moved.ok) {
             return moved.message;
         }
@@ -508,7 +520,10 @@ public final class ScanRunner {
             if (!report.installed || result.actioned.containsKey(report.path)) {
                 continue;
             }
-            if (report.contentHash == null || report.contentHash.length() == 0) {
+            if (!hasActionIdentity(report)) {
+                if (report.contentHash != null && report.contentHash.length() > 0) {
+                    host.putFlag(selectKey(report), false);
+                }
                 continue;
             }
             if (host.pluginId().equals(report.manifest.pluginId)) {
@@ -533,6 +548,24 @@ public final class ScanRunner {
         return out;
     }
 
+    private int unverifiableUninstallTargetCount(Result result) {
+        int count = 0;
+        for (int i = 0; i < result.reports.size(); i++) {
+            ScanReport report = result.reports.get(i);
+            if (!report.installed || result.actioned.containsKey(report.path)
+                    || host.pluginId().equals(report.manifest.pluginId)) {
+                continue;
+            }
+            boolean selected = host.configFlag(selectKey(report), false);
+            boolean malicious = report.verdict() == Verdict.LIKELY_MALICIOUS
+                    || report.verdict() == Verdict.KNOWN_BAD;
+            if ((selected || malicious) && !hasActionIdentity(report)) {
+                count++;
+            }
+        }
+        return count;
+    }
+
     /** How many plugins are sitting in quarantine, which the uninstall button also clears out. */
     public int quarantinedCount() {
         return new Quarantine(new File(host.filesDir(), "quarantine")).list().size();
@@ -548,10 +581,11 @@ public final class ScanRunner {
      */
     public String uninstallSelection(Result result) {
         Quarantine quarantine = new Quarantine(new File(host.filesDir(), "quarantine"));
+        int unverifiable = unverifiableUninstallTargetCount(result);
         List<ScanReport> targets = uninstallTargets(result);
         List<Quarantine.Item> held = quarantine.list();
         if (targets.isEmpty() && held.isEmpty()) {
-            return strings.nothingSelected();
+            return unverifiable > 0 ? strings.noneVerifiable(unverifiable) : strings.nothingSelected();
         }
         int[] counts = new int[2];
         StringBuilder problems = new StringBuilder();
@@ -578,14 +612,19 @@ public final class ScanRunner {
         if (counts[1] > 0) {
             summary = summary + "   " + strings.someOnlyQuarantined(counts[1]);
         }
+        if (unverifiable > 0) {
+            summary = summary + "   " + strings.someUnverifiable(unverifiable);
+        }
         return problems.length() == 0 ? summary : summary + "   " + problems;
     }
 
     /** Quarantines, or removes, every installed plugin a scope covers. For the v3 "all" button. */
     public String actOnScope(Result result, String scope, boolean remove) {
-        List<ScanReport> targets = actionTargets(result, scope);
+        List<ScanReport> all = bulkTargets(scope, result);
+        List<ScanReport> targets = verifiable(all);
+        int unverifiable = all.size() - targets.size();
         if (targets.isEmpty()) {
-            return strings.nothingMatches(scope);
+            return unverifiable > 0 ? strings.noneVerifiable(unverifiable) : strings.nothingMatches(scope);
         }
         Quarantine quarantine = new Quarantine(new File(host.filesDir(), "quarantine"));
         int[] counts = new int[2];
@@ -600,6 +639,9 @@ public final class ScanRunner {
                 : strings.bulkDone("quarantine", counts[1]);
         if (remove && counts[1] > 0) {
             summary = summary + "   " + strings.someOnlyQuarantined(counts[1]);
+        }
+        if (unverifiable > 0) {
+            summary = summary + "   " + strings.someUnverifiable(unverifiable);
         }
         return problems.length() == 0 ? summary : summary + "   " + problems;
     }
@@ -648,7 +690,7 @@ public final class ScanRunner {
     }
 
     /**
-     * The subset whose contents the scan managed to hash.
+     * The subset whose full action identity the scan can verify.
      *
      * <p>A package with no hash cannot be re-identified when the confirmation arrives, so it is left
      * out of both the displayed list and the stored plan. Those two have to agree: a plan that
@@ -659,7 +701,7 @@ public final class ScanRunner {
         List<ScanReport> out = new ArrayList<ScanReport>();
         for (int i = 0; i < reports.size(); i++) {
             ScanReport report = reports.get(i);
-            if (report.contentHash != null && report.contentHash.length() > 0) {
+            if (hasActionIdentity(report)) {
                 out.add(report);
             }
         }
@@ -713,7 +755,8 @@ public final class ScanRunner {
             }
             // No wildcard: a report whose hash could not be computed, or a plan that recorded none,
             // cannot prove the package here is the one that was listed, and this deletes things.
-            if (report.path.equals(path) && sha.length() > 0 && sha.equals(report.contentHash)) {
+            if (report.path.equals(path) && hasActionIdentity(report)
+                    && sha.length() > 0 && sha.equals(report.contentHash)) {
                 return report;
             }
         }
@@ -770,31 +813,48 @@ public final class ScanRunner {
         return flat.length() == 0 ? "(unnamed)" : flat;
     }
 
-    /**
-     * True when the package at a report's path still has the contents the scan saw.
-     *
-     * <p>The scan is a snapshot taken earlier in this build, and MT Manager or a running plugin can
-     * change the filesystem in between. Re-reading costs one more hash per target, which is a small
-     * price on the path that moves and deletes a user's plugins.
-     */
-    private static boolean stillMatches(ScanReport report) {
-        if (report.contentHash == null || report.contentHash.length() == 0) {
-            return false;
+    /** Rechecks the identity needed before moving or deleting the whole installed package directory. */
+    private static ActionCheck verifyActionIdentity(ScanReport report) {
+        if (!hasActionIdentity(report)) {
+            return ActionCheck.IDENTITY_UNAVAILABLE;
         }
         PluginPackage pkg = null;
         try {
             pkg = PluginPackage.open(new File(report.path));
+            if (!pkg.destructiveActionIdentityComplete()) {
+                return ActionCheck.IDENTITY_UNAVAILABLE;
+            }
+            String nowPath = pkg.actionIdentityPath();
+            if (nowPath.length() == 0 || !nowPath.equals(report.actionIdentityPath())) {
+                return ActionCheck.IDENTITY_UNAVAILABLE;
+            }
             String now = pkg.contentHash(ScanBudget.unlimited());
-            return now.length() > 0 && now.equals(report.contentHash);
+            return now.length() > 0 && now.equals(report.contentHash)
+                    ? ActionCheck.MATCHES : ActionCheck.CONTENT_CHANGED;
         } catch (java.io.IOException e) {
-            return false;
+            return ActionCheck.IDENTITY_UNAVAILABLE;
         } catch (RuntimeException e) {
-            return false;
+            return ActionCheck.IDENTITY_UNAVAILABLE;
         } finally {
             if (pkg != null) {
                 pkg.close();
             }
         }
+    }
+
+    private static boolean hasActionIdentity(ScanReport report) {
+        return report != null && report.destructiveActionIdentityComplete()
+                && report.contentHash != null && report.contentHash.length() > 0;
+    }
+
+    private Quarantine.Result quarantineVerified(Quarantine quarantine, final ScanReport report) {
+        return quarantine.quarantine(new File(report.path), host.pluginId(), new Quarantine.MoveGuard() {
+            @Override
+            public boolean allow(File directory) {
+                return directory.getAbsolutePath().equals(report.path)
+                        && verifyActionIdentity(report) == ActionCheck.MATCHES;
+            }
+        });
     }
 
     private static void append(StringBuilder sb, String message) {
@@ -853,15 +913,19 @@ public final class ScanRunner {
             rows.add(Row.text(strings.verdictLabel() + ": " + report.dispositionLabel()
                     + "  (" + report.score() + ")", report.dispositionAdvice()));
             // A switch to select this plugin for the uninstall button. Offered for anything the scan
-            // flagged at all, since "worth a look" is exactly what a user wants to sweep, and only for
-            // installed packages that were hashed: without a hash the key is the same for whatever
-            // replaces this directory, and a stale selection would act on the replacement.
+            // flagged at all, since "worth a look" is exactly what a user wants to sweep, and only when
+            // the package hash identifies the complete installed directory action.
             if (report.installed && report.verdict().flagged()
-                    && report.contentHash != null && report.contentHash.length() > 0
+                    && hasActionIdentity(report)
                     && !host.pluginId().equals(report.manifest.pluginId)
                     && !result.actioned.containsKey(report.path)) {
                 rows.add(Row.toggle(strings.selectThis(), strings.selectThisHelp(),
                         selectKey(report), report));
+            } else if (report.installed && report.verdict().flagged()
+                    && !host.pluginId().equals(report.manifest.pluginId)
+                    && !result.actioned.containsKey(report.path)) {
+                rows.add(Row.text(strings.destructiveActionsUnavailableTitle(),
+                        strings.destructiveActionsUnavailableHelp()));
             }
             if (report.manifest.pluginId.length() > 0) {
                 rows.add(Row.text(report.manifest.pluginId,
@@ -1139,10 +1203,14 @@ public final class ScanRunner {
                     || argument.equals(new File(report.path).getName())
                     || argument.equalsIgnoreCase(report.manifest.displayName());
             if (match) {
-                if (!stillMatches(report)) {
+                ActionCheck check = verifyActionIdentity(report);
+                if (check != ActionCheck.MATCHES) {
+                    if (check == ActionCheck.IDENTITY_UNAVAILABLE) {
+                        return strings.destructiveActionsUnavailable(flatten(report.manifest.displayName()));
+                    }
                     return strings.changedSinceScan(flatten(report.manifest.displayName()));
                 }
-                Quarantine.Result moved = quarantine.quarantine(new File(report.path), host.pluginId());
+                Quarantine.Result moved = quarantineVerified(quarantine, report);
                 if (moved.ok) {
                     // Recorded so the rebuilt screen shows this as moved rather than still installed
                     // with a live switch: the scan ran before this command did.

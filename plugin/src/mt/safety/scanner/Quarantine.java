@@ -28,6 +28,10 @@ import mt.safety.scanner.core.PluginManifest;
  */
 public final class Quarantine {
 
+    public interface MoveGuard {
+        boolean allow(File pluginDir);
+    }
+
     private static final String INFO_FILE = "quarantine-info.json";
     private static final int MAX_DEPTH = 24;
 
@@ -133,6 +137,14 @@ public final class Quarantine {
      * so a mistyped command cannot take out the scanner or an unrelated folder.
      */
     public Result quarantine(File pluginDir, String ownPluginId) {
+        return quarantine(pluginDir, ownPluginId, null);
+    }
+
+    /**
+     * Moves {@code pluginDir} only if {@code guard} still approves it immediately before filesystem
+     * mutation. The guard is checked again around the copy fallback, which is not atomic.
+     */
+    public Result quarantine(File pluginDir, String ownPluginId, MoveGuard guard) {
         if (pluginDir == null || !pluginDir.isDirectory()) {
             return new Result(false, "Not a directory: " + pluginDir);
         }
@@ -170,14 +182,27 @@ public final class Quarantine {
         }
         String originalPath = pluginDir.getAbsolutePath();
 
+        Result rejected = checkMoveGuard(pluginDir, guard);
+        if (rejected != null) {
+            return rejected;
+        }
         boolean moved = pluginDir.renameTo(target);
         if (!moved) {
+            rejected = checkMoveGuard(pluginDir, guard);
+            if (rejected != null) {
+                return rejected;
+            }
             // A rename across storage volumes fails, so fall back to copying and then removing.
             try {
                 copyTree(pluginDir, target, 0);
             } catch (IOException e) {
                 deleteTree(target, 0);
                 return new Result(false, "Could not move the plugin: " + e.getMessage());
+            }
+            rejected = checkMoveGuard(pluginDir, guard);
+            if (rejected != null) {
+                deleteTree(target, 0);
+                return new Result(false, rejected.message + " The source was left in place.");
             }
             if (!deleteTree(pluginDir, 0)) {
                 return new Result(false, "Copied the plugin to quarantine but could not remove the original"
@@ -195,6 +220,21 @@ public final class Quarantine {
         }
         return new Result(true, "Quarantined " + (pluginId.length() > 0 ? pluginId : pluginDir.getName())
                 + ". Restart MT Manager, then check its plugin list. Use \"restore\" to undo.", target);
+    }
+
+    private Result checkMoveGuard(File pluginDir, MoveGuard guard) {
+        if (guard == null) {
+            return null;
+        }
+        String escaping = findEscapingLink(pluginDir);
+        if (escaping != null) {
+            return new Result(false, "A link appeared in the plugin folder (" + escaping
+                    + "); nothing was moved.");
+        }
+        if (!guard.allow(pluginDir)) {
+            return new Result(false, "The plugin's complete contents cannot be reverified; nothing was moved.");
+        }
+        return null;
     }
 
     /** Puts a quarantined plugin back where it came from. */
