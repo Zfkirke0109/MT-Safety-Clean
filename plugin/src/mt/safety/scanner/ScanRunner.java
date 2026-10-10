@@ -8,6 +8,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import mt.safety.scanner.core.Bytes;
+import mt.safety.scanner.core.Coverage;
 import mt.safety.scanner.core.CodePatterns;
 import mt.safety.scanner.core.Dates;
 import mt.safety.scanner.core.Discovery;
@@ -849,8 +850,8 @@ public final class ScanRunner {
                 rows.add(Row.text(removed ? strings.actedOnRemoved() : strings.actedOn(),
                         removed ? strings.actedOnRemovedHelp() : strings.actedOnHelp()));
             }
-            rows.add(Row.text(strings.verdictLabel() + ": " + report.verdict().label()
-                    + "  (" + report.score() + ")", report.verdict().advice()));
+            rows.add(Row.text(strings.verdictLabel() + ": " + report.dispositionLabel()
+                    + "  (" + report.score() + ")", report.dispositionAdvice()));
             // A switch to select this plugin for the uninstall button. Offered for anything the scan
             // flagged at all, since "worth a look" is exactly what a user wants to sweep, and only for
             // installed packages that were hashed: without a hash the key is the same for whatever
@@ -966,6 +967,9 @@ public final class ScanRunner {
             return "[!  ]";
         }
         if (verdict == Verdict.UNREADABLE) {
+            return "[ ? ]";
+        }
+        if (report.coverage() == Coverage.PARTIAL) {
             return "[ ? ]";
         }
         return "[ ok]";

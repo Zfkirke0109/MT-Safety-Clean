@@ -61,6 +61,7 @@ public final class ScannerTest {
         };
         SignatureTest.run(checker, fixtures);
         ActionsTest.run(checker);
+        IncompleteScanCleanRegression.run(checker, fixtures);
 
         System.out.println();
         System.out.println(passed + " checks passed, " + failures.size() + " failed");
