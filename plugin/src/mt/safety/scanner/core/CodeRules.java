@@ -222,11 +222,14 @@ public final class CodeRules {
                 if (ze.isDirectory()) {
                     continue;
                 }
-                int granted = budget.reserve(NESTED_MEMBER_LIMIT);
-                if (granted <= 0) {
+                // One extra byte is reserved for the end-of-member probe so it is charged too.
+                int reserved = budget.reserve(NESTED_MEMBER_LIMIT + 1);
+                if (reserved <= 1) {
+                    // No room for data plus the probe: stop without reading or advancing.
                     budget.markTruncated();
                     break;
                 }
+                int granted = reserved - 1;
                 byte[] child;
                 try {
                     child = Bytes.readAtMost(zin, granted);
@@ -239,7 +242,8 @@ public final class CodeRules {
                     break;
                 }
                 // ZIP streams do not expose a reliable entry size before inflation. Probe at most
-                // one byte when the allowance is exactly filled; an additional byte proves truncation.
+                // the one reserved byte when the allowance is exactly filled; an additional byte
+                // proves truncation.
                 // Importantly, getNextEntry() implicitly inflates the rest of the *current* entry.
                 boolean completeChild = child.length < granted;
                 boolean memberCutShort = false;

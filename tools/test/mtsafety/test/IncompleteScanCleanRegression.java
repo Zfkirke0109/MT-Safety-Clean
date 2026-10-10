@@ -165,6 +165,61 @@ public final class IncompleteScanCleanRegression {
         c.that("unreadable manifest => not COMPLETE", m.coverage() != Coverage.COMPLETE
                 && !ReportFormatter.summaryLine(m).startsWith("Clean"),
                 m.coverage() + " :: " + ReportFormatter.summaryLine(m));
+        String mText = ReportFormatter.plainText(m);
+        c.that("unreadable manifest is a coverage limit, so no threat findings are reported",
+                m.hasRule("MFT012") && mText.contains("No findings in inspected content")
+                        && mText.contains("Coverage warning"), mText);
+        unsupported(c, fixtures);
+        nestedBudget(c, fixtures);
+    }
+
+    private static void unsupported(ActionsTest.Checker c, Fixtures fixtures) {
+        Map<String, byte[]> members = new LinkedHashMap<String, byte[]>();
+        members.put("manifest.json", Fixtures.bytes(Fixtures.manifest("demo.m95", "Method 95", "demo.A")));
+        members.put("src/demo/A.java", Fixtures.bytes(BENIGN));
+        members.put("assets/opaque.bin", Fixtures.bytes("inert, deliberately non-XZ method-95 marker"));
+        File archive = fixtures.unsupportedMethod95Archive("unsupported-coverage.mtp", members,
+                "assets/opaque.bin");
+        ScanReport r = new PluginScanner(IocDatabase.empty()).scan(archive, ScanBudget.unlimited());
+        String text = ReportFormatter.plainText(r);
+        String json = ReportFormatter.json(Arrays.asList(r));
+        c.that("unsupported package has UNSUPPORTED_OR_UNREADABLE coverage and never claims inspection",
+                r.verdict() == Verdict.UNREADABLE && r.coverage() == Coverage.UNSUPPORTED_OR_UNREADABLE
+                        && !text.contains("No findings in inspected content")
+                        && !r.dispositionLabel().equals("Clean")
+                        && json.contains("\"coverage\": \"UNSUPPORTED_OR_UNREADABLE\"")
+                        && json.contains("\"verdict\": \"UNREADABLE\""),
+                r.coverage() + " :: " + text);
+        String overview = ReportFormatter.overview(Arrays.asList(r));
+        c.that("unsupported package is not counted as clean in the overview",
+                !overview.contains("1 clean"), overview);
+    }
+
+    private static void nestedBudget(ActionsTest.Checker c, Fixtures fixtures) {
+        StringBuilder sb = new StringBuilder();
+        while (sb.length() < 600 * 1024) {
+            sb.append("harmless padding line\n");
+        }
+        Map<String, byte[]> inner = new LinkedHashMap<String, byte[]>();
+        inner.put("big.txt", Fixtures.bytes(sb.toString()));
+        inner.put("after-limit.java", Fixtures.bytes("package demo; class After { void f() throws"
+                + " Exception { Runtime.getRuntime().exec(\"ls\"); } }"));
+        Map<String, byte[]> outer = new LinkedHashMap<String, byte[]>();
+        byte[] manifest = Fixtures.bytes(Fixtures.manifest("demo.nb", "Nested Budget", "demo.A"));
+        byte[] source = Fixtures.bytes(BENIGN);
+        byte[] jar = Fixtures.deflatedJar(inner);
+        outer.put("manifest.json", manifest);
+        outer.put("src/demo/A.java", source);
+        outer.put("libs/lib.jar", jar);
+        File archive = fixtures.deflatedArchive("nest-near-exhausted.mtp", outer);
+        long max = manifest.length + source.length + jar.length + 4096L;
+        ScanBudget budget = new ScanBudget(60000L, max);
+        ScanReport r = new PluginScanner(IocDatabase.empty()).scan(archive, budget);
+        c.that("near-exhausted budget: nested member is PARTIAL, charges stay within budget, later member"
+                        + " is never inspected",
+                r.coverage() == Coverage.PARTIAL && r.hasRule("SCN001") && budget.bytesUsed() <= max
+                        && !ReportFormatter.plainText(r).contains("after-limit.java"),
+                r.coverage() + " used=" + budget.bytesUsed() + " max=" + max);
     }
 
     private static byte[] jarOf(String name, byte[] content) {

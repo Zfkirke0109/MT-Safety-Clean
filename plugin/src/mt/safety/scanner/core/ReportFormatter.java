@@ -107,7 +107,8 @@ public final class ReportFormatter {
         List<Signal> signals = report.signalsBySeverity();
         boolean threatFindings = false;
         for (int i = 0; i < signals.size(); i++) {
-            if (!"SCN001".equals(signals.get(i).ruleId)) {
+            String ruleId = signals.get(i).ruleId;
+            if (!"SCN001".equals(ruleId) && !"MFT012".equals(ruleId)) {
                 threatFindings = true;
                 break;
             }
@@ -116,10 +117,16 @@ public final class ReportFormatter {
             sb.append("\nCoverage warning: inspection incomplete (see SCN001 below); this is not a threat"
                     + " finding.\n");
         }
-        if (report.coverage() == Coverage.COMPLETE ? signals.isEmpty() : !threatFindings) {
-            sb.append(report.coverage() == Coverage.COMPLETE
-                    ? "\nNo findings.\n"
-                    : "\nNo findings in inspected content; inspection incomplete.\n");
+        if (report.coverage() == Coverage.COMPLETE) {
+            if (signals.isEmpty()) {
+                sb.append("\nNo findings.\n");
+            }
+        } else if (report.coverage() == Coverage.PARTIAL) {
+            if (!threatFindings) {
+                sb.append("\nNo findings in inspected content; inspection incomplete.\n");
+            }
+        } else if (signals.isEmpty()) {
+            sb.append("\nNothing could be inspected; no verdict on the contents.\n");
         }
         if (!signals.isEmpty()) {
             sb.append("\nFindings (worst first):\n");
