@@ -430,6 +430,11 @@ public abstract class PluginPackage {
                 return;
             }
             for (int i = 0; i < children.length; i++) {
+                if (out.size() >= MAX_FILES) {
+                    listingTruncated = true;
+                    noteAnomaly("directory holds more than " + MAX_FILES + " files; listing truncated");
+                    return;
+                }
                 File child = children[i];
                 String name = prefix + child.getName();
                 if (escapesRoot(child)) {
@@ -541,6 +546,9 @@ public abstract class PluginPackage {
         @Override
         public List<String> structuralAnomalies(ScanBudget budget) throws IOException {
             entries();
+            if (listingTruncated) {
+                budget.markTruncated();
+            }
             return anomalies;
         }
     }
@@ -562,6 +570,9 @@ public abstract class PluginPackage {
         private final File dir;
         private final ArchivePackage delegate;
         private List<Entry> cached;
+        private boolean listingTruncated;
+        private int siblingEntriesVisited;
+        private final List<String> listingProblems = new ArrayList<String>();
 
         InstalledArchivePackage(File dir, ArchivePackage delegate) {
             this.dir = dir;
@@ -606,11 +617,21 @@ public abstract class PluginPackage {
         }
 
         private void collectSiblings(File folder, String prefix, int depth, List<Entry> out, String rootCanonical) {
-            if (depth > MAX_SIBLING_DEPTH || out.size() >= delegate.entriesCountHint() + MAX_SIBLINGS) {
+            if (depth > MAX_SIBLING_DEPTH) {
+                noteListingProblem("installed sibling directory nested beyond " + MAX_SIBLING_DEPTH
+                        + " levels was not inspected: " + prefix);
+                return;
+            }
+            if (siblingEntriesVisited >= MAX_SIBLINGS
+                    || out.size() >= delegate.entriesCountHint() + MAX_SIBLINGS) {
+                noteListingProblem("installed sibling listing exceeded " + MAX_SIBLINGS
+                        + " entries; remaining files were not inspected");
                 return;
             }
             File[] children = folder.listFiles();
             if (children == null) {
+                noteListingProblem("could not list installed sibling directory: "
+                        + (prefix.length() == 0 ? "." : prefix));
                 return;
             }
             for (int i = 0; i < children.length; i++) {
@@ -622,12 +643,26 @@ public abstract class PluginPackage {
                 if (rootCanonical != null && escapes(child, rootCanonical)) {
                     continue;
                 }
+                if (siblingEntriesVisited >= MAX_SIBLINGS
+                        || out.size() >= delegate.entriesCountHint() + MAX_SIBLINGS) {
+                    noteListingProblem("installed sibling listing exceeded " + MAX_SIBLINGS
+                            + " entries; remaining files were not inspected");
+                    return;
+                }
+                siblingEntriesVisited++;
                 if (child.isDirectory()) {
                     collectSiblings(child, name + "/", depth + 1, out, rootCanonical);
                 } else if (child.isFile()) {
                     long size = child.length();
                     out.add(new Entry(BESIDE_PREFIX + name, size, size, false));
                 }
+            }
+        }
+
+        private void noteListingProblem(String problem) {
+            listingTruncated = true;
+            if (listingProblems.size() < 40 && !listingProblems.contains(problem)) {
+                listingProblems.add(problem);
             }
         }
 
@@ -665,7 +700,12 @@ public abstract class PluginPackage {
 
         @Override
         public List<String> structuralAnomalies(ScanBudget budget) throws IOException {
-            return delegate.structuralAnomalies(budget);
+            List<String> problems = new ArrayList<String>(delegate.structuralAnomalies(budget));
+            if (listingTruncated) {
+                budget.markTruncated();
+                problems.addAll(listingProblems);
+            }
+            return problems;
         }
 
         @Override

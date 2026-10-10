@@ -244,6 +244,8 @@ public final class CodeRules {
                 // ZIP streams do not expose a reliable entry size before inflation. Probe at most
                 // the one reserved byte when the allowance is exactly filled; an additional byte
                 // proves truncation.
+                // This accounts for bytes delivered by the nested stream. The inflater may buffer
+                // compressed input internally, and the scan deadline cannot preempt its CPU work.
                 // Importantly, getNextEntry() implicitly inflates the rest of the *current* entry.
                 boolean completeChild = child.length < granted;
                 boolean memberCutShort = false;

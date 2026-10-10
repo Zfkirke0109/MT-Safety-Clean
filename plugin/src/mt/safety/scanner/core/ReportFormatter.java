@@ -20,7 +20,11 @@ public final class ReportFormatter {
         StringBuilder sb = new StringBuilder();
         sb.append(report.dispositionLabel());
         if (report.verdict() == Verdict.CLEAN && report.coverage() == Coverage.PARTIAL) {
-            sb.append(" - No findings in inspected content; inspection incomplete");
+            sb.append(" - ").append(report.hasPackageFindings()
+                    ? "Findings observed in inspected content; inspection incomplete"
+                    : "No findings in inspected content; inspection incomplete");
+        } else if (report.verdict() == Verdict.CLEAN && report.hasPackageFindings()) {
+            sb.append(" - Lower-severity findings listed");
         } else if (report.verdict() != Verdict.CLEAN && report.verdict() != Verdict.TRUSTED) {
             sb.append(" - ").append(report.verdictReason());
         }
@@ -71,7 +75,7 @@ public final class ReportFormatter {
         sb.append(review).append(" worth a look, ");
         sb.append(clean).append(" clean");
         if (incomplete > 0) {
-            sb.append(", ").append(incomplete).append(" incomplete (no findings in inspected content)");
+            sb.append(", ").append(incomplete).append(" incomplete");
         }
         if (unreadable > 0) {
             sb.append(", ").append(unreadable).append(" unreadable");
@@ -105,14 +109,7 @@ public final class ReportFormatter {
         sb.append("Coverage: ").append(report.coverage().label()).append('\n');
 
         List<Signal> signals = report.signalsBySeverity();
-        boolean threatFindings = false;
-        for (int i = 0; i < signals.size(); i++) {
-            String ruleId = signals.get(i).ruleId;
-            if (!"SCN001".equals(ruleId) && !"MFT012".equals(ruleId)) {
-                threatFindings = true;
-                break;
-            }
-        }
+        boolean packageFindings = report.hasPackageFindings();
         if (report.coverage() == Coverage.PARTIAL) {
             sb.append("\nCoverage warning: inspection incomplete (see SCN001 below); this is not a threat"
                     + " finding.\n");
@@ -122,7 +119,7 @@ public final class ReportFormatter {
                 sb.append("\nNo findings.\n");
             }
         } else if (report.coverage() == Coverage.PARTIAL) {
-            if (!threatFindings) {
+            if (!packageFindings) {
                 sb.append("\nNo findings in inspected content; inspection incomplete.\n");
             }
         } else if (signals.isEmpty()) {

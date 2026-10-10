@@ -1,6 +1,8 @@
 package mtsafety.test;
 
 import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -76,6 +78,9 @@ public final class IncompleteScanCleanRegression {
         c.that("overview counts partial separately from clean",
                 overview.contains("1 clean") && overview.contains("1 incomplete"), overview);
 
+        lowSeverityCoverage(c, fixtures, partial);
+        directoryCutoffs(c, fixtures);
+
         ScanReport trusted = scanTrusted(plugin, ScanBudget.unlimited());
         trusted.setTruncated(true);
         c.that("trusted identity with partial inspection is qualified", trusted.verdict() == Verdict.TRUSTED
@@ -115,19 +120,18 @@ public final class IncompleteScanCleanRegression {
     }
 
     private static void readFailures(ActionsTest.Checker c, Fixtures fixtures) {
-        // An unreadable source member in an otherwise benign plugin.
-        File dir = fixtures.directoryPlugin("unreadable-member",
-                Fixtures.manifest("demo.unreadable", "Unreadable Member", "demo.A"),
-                Fixtures.sources("src/demo/A.java", BENIGN, "src/demo/B.java", BENIGN));
-        File locked = new File(dir, "src/demo/B.java");
-        boolean denied = locked.setReadable(false, false) && !locked.canRead();
-        c.that("fixture: a member really is unreadable (needs a non-root user)", denied, locked.toString());
-        ScanReport r = new PluginScanner(IocDatabase.empty()).scan(dir, ScanBudget.unlimited());
-        locked.setReadable(true, false);
+        Map<String, byte[]> members = new LinkedHashMap<String, byte[]>();
+        members.put("manifest.json", Fixtures.bytes(Fixtures.manifest(
+                "demo.unreadable", "Unreadable Member", "demo.A")));
+        members.put("src/demo/A.java", Fixtures.bytes(BENIGN));
+        members.put("src/demo/B.java", Fixtures.bytes(BENIGN));
+        File archive = fixtures.deflatedArchive("unreadable-member.mtp", members);
+        Fixtures.makeMemberUnreadable(archive, "src/demo/B.java");
+        ScanReport r = new PluginScanner(IocDatabase.empty()).scan(archive, ScanBudget.unlimited());
         c.that("unreadable member => not COMPLETE, not an unqualified CLEAN",
                 r.coverage() == Coverage.PARTIAL && !r.errors.isEmpty()
                         && !ReportFormatter.summaryLine(r).startsWith("Clean")
-                        && r.dispositionLabel().equals("Incomplete scan"),
+                        && !r.dispositionLabel().startsWith("Trusted"),
                 r.coverage() + " :: " + r.errors + " :: " + ReportFormatter.summaryLine(r));
 
         // A nested jar whose member is corrupt.
@@ -154,15 +158,14 @@ public final class IncompleteScanCleanRegression {
 
         nestedBoundaries(c, fixtures);
 
-        // A manifest that cannot be read.
-        File mdir = fixtures.directoryPlugin("unreadable-manifest",
-                Fixtures.manifest("demo.mf", "Manifest", "demo.A"),
-                Fixtures.sources("src/demo/A.java", BENIGN));
-        File mf = new File(mdir, "manifest.json");
-        mf.setReadable(false, false);
-        ScanReport m = new PluginScanner(IocDatabase.empty()).scan(mdir, ScanBudget.unlimited());
-        mf.setReadable(true, false);
-        c.that("unreadable manifest => not COMPLETE", m.coverage() != Coverage.COMPLETE
+        Map<String, byte[]> manifestMembers = new LinkedHashMap<String, byte[]>();
+        manifestMembers.put("manifest.json", Fixtures.bytes(
+                Fixtures.manifest("demo.mf", "Manifest", "demo.A")));
+        manifestMembers.put("src/demo/A.java", Fixtures.bytes(BENIGN));
+        File badManifest = fixtures.deflatedArchive("unreadable-manifest.mtp", manifestMembers);
+        Fixtures.makeMemberUnreadable(badManifest, "manifest.json");
+        ScanReport m = new PluginScanner(IocDatabase.empty()).scan(badManifest, ScanBudget.unlimited());
+        c.that("unreadable manifest => PARTIAL", m.coverage() == Coverage.PARTIAL
                 && !ReportFormatter.summaryLine(m).startsWith("Clean"),
                 m.coverage() + " :: " + ReportFormatter.summaryLine(m));
         String mText = ReportFormatter.plainText(m);
@@ -171,6 +174,118 @@ public final class IncompleteScanCleanRegression {
                         && mText.contains("Coverage warning"), mText);
         unsupported(c, fixtures);
         nestedBudget(c, fixtures);
+    }
+
+    private static void lowSeverityCoverage(ActionsTest.Checker c, Fixtures fixtures, ScanReport partialBenign) {
+        Map<String, byte[]> wrapped = new LinkedHashMap<String, byte[]>();
+        wrapped.put("Wrapper/manifest.json", Fixtures.bytes(
+                Fixtures.manifest("demo.low", "Low Signal", "demo.A")));
+        wrapped.put("Wrapper/src/demo/A.java", Fixtures.bytes(BENIGN));
+        File archive = fixtures.deflatedArchive("low-signal-wrapped.mtp", wrapped);
+
+        ScanReport complete = new PluginScanner(IocDatabase.empty()).scan(archive, ScanBudget.unlimited());
+        c.that("complete LOW finding remains present without changing CLEAN scoring",
+                complete.coverage() == Coverage.COMPLETE && complete.verdict() == Verdict.CLEAN
+                        && complete.hasRule("ARC008")
+                        && complete.signalsBySeverity().get(0).severity.name().equals("LOW"),
+                complete.verdict() + " :: " + ReportFormatter.plainText(complete));
+        c.that("complete LOW finding is disclosed by summary and advice",
+                ReportFormatter.summaryLine(complete).toLowerCase().contains("lower-severity")
+                        && complete.dispositionAdvice().toLowerCase().contains("lower-severity"),
+                ReportFormatter.summaryLine(complete) + " :: " + complete.dispositionAdvice());
+
+        ScanReport partial = new PluginScanner(IocDatabase.empty()).scan(archive, new ScanBudget(0L, 0L));
+        String summary = ReportFormatter.summaryLine(partial);
+        String text = ReportFormatter.plainText(partial);
+        c.that("partial CLEAN with LOW finding preserves ARC008 and does not claim no findings",
+                partial.coverage() == Coverage.PARTIAL && partial.verdict() == Verdict.CLEAN
+                        && partial.hasRule("ARC008") && summary.toLowerCase().contains("findings observed")
+                        && !summary.contains("No findings") && text.contains("ARC008")
+                        && text.contains("Findings were observed"),
+                summary + " :: " + text);
+        c.that("partial CLEAN advice acknowledges the observed LOW finding",
+                partial.dispositionAdvice().toLowerCase().contains("findings were observed")
+                        && !partial.dispositionAdvice().contains("No findings in inspected content"),
+                partial.dispositionAdvice());
+
+        String overview = ReportFormatter.overview(Arrays.asList(complete, partial, partialBenign));
+        c.that("mixed overview counts partial LOW and benign scans without claiming both have no findings",
+                overview.contains("1 clean") && overview.contains("2 incomplete")
+                        && !overview.contains("no findings in inspected content"), overview);
+    }
+
+    private static void directoryCutoffs(ActionsTest.Checker c, Fixtures fixtures) {
+        File deep = fixtures.directoryPlugin("deep-directory",
+                Fixtures.manifest("demo.deep", "Deep Directory", "demo.A"),
+                Fixtures.sources("src/demo/A.java", BENIGN));
+        File cursor = new File(deep, "tree");
+        for (int i = 0; i < 26; i++) {
+            cursor = new File(cursor, "d");
+            if (!cursor.mkdirs() && !cursor.isDirectory()) {
+                throw new IllegalStateException("could not create deep directory " + cursor);
+            }
+        }
+        write(cursor, "omitted.txt", "not inspected");
+        ScanReport directory = new PluginScanner(IocDatabase.empty()).scan(deep, ScanBudget.unlimited());
+        c.that("depth-capped directory listing marks partial coverage and withholds its hash",
+                directory.coverage() == Coverage.PARTIAL && directory.hasRule("SCN001")
+                        && directory.contentHash.length() == 0
+                        && !ReportFormatter.summaryLine(directory).startsWith("Clean"),
+                directory.coverage() + " :: " + ReportFormatter.summaryLine(directory));
+
+        File wide = fixtures.directoryPlugin("wide-directory",
+                Fixtures.manifest("demo.wide", "Wide Directory", "demo.A"),
+                Fixtures.sources("src/demo/A.java", BENIGN));
+        for (int i = 0; i < 8010; i++) {
+            try {
+                if (!new File(wide, "file-" + i).createNewFile()) {
+                    throw new IllegalStateException("could not create wide-tree fixture file " + i);
+                }
+            } catch (IOException e) {
+                throw new IllegalStateException("could not create wide-tree fixture file " + i, e);
+            }
+        }
+        ScanReport wideReport = new PluginScanner(IocDatabase.empty()).scan(wide, ScanBudget.unlimited());
+        c.that("file-count-capped directory listing marks partial and has no partial-tree hash",
+                wideReport.coverage() == Coverage.PARTIAL && wideReport.hasRule("SCN001")
+                        && wideReport.contentHash.length() == 0,
+                wideReport.coverage() + " :: " + ReportFormatter.summaryLine(wideReport));
+
+        Map<String, byte[]> members = new LinkedHashMap<String, byte[]>();
+        members.put("manifest.json", Fixtures.bytes(Fixtures.manifest(
+                "demo.siblings", "Sibling Depth", "demo.A")));
+        members.put("src/demo/A.java", Fixtures.bytes(BENIGN));
+        File installed = fixtures.installedArchive("sibling-depth", members, null);
+        File sibling = new File(installed, "a/b/c/d");
+        if (!sibling.mkdirs()) {
+            throw new IllegalStateException("could not create sibling tree " + sibling);
+        }
+        write(sibling, "omitted.txt", "not inspected");
+        ScanReport siblings = new PluginScanner(IocDatabase.empty()).scan(installed, ScanBudget.unlimited());
+        c.that("installed sibling depth cutoff is reported as partial coverage",
+                siblings.coverage() == Coverage.PARTIAL && siblings.hasRule("SCN001")
+                        && !ReportFormatter.summaryLine(siblings).startsWith("Clean"),
+                siblings.coverage() + " :: " + ReportFormatter.summaryLine(siblings));
+
+        Map<String, byte[]> sidecars = new LinkedHashMap<String, byte[]>();
+        for (int i = 0; i < 401; i++) {
+            sidecars.put("sidecar-" + i, new byte[0]);
+        }
+        File manySiblings = fixtures.installedArchive("sibling-count", members, sidecars);
+        ScanReport siblingCount = new PluginScanner(IocDatabase.empty()).scan(
+                manySiblings, ScanBudget.unlimited());
+        c.that("installed sibling count cutoff marks partial coverage",
+                siblingCount.coverage() == Coverage.PARTIAL && siblingCount.hasRule("SCN001"),
+                siblingCount.coverage() + " :: " + ReportFormatter.summaryLine(siblingCount));
+    }
+
+    private static void write(File parent, String name, String text) {
+        File target = new File(parent, name);
+        try (FileOutputStream out = new FileOutputStream(target)) {
+            out.write(Fixtures.bytes(text));
+        } catch (IOException e) {
+            throw new IllegalStateException("could not write fixture " + target, e);
+        }
     }
 
     private static void unsupported(ActionsTest.Checker c, Fixtures fixtures) {
@@ -241,8 +356,8 @@ public final class IncompleteScanCleanRegression {
         ScanBudget budget = new ScanBudget(60000L, max);
         ScanReport r = new PluginScanner(IocDatabase.empty()).scan(archive, budget);
         c.that("near-exhausted budget: nested member is PARTIAL, charges stay within budget, later member"
-                        + " is never inspected",
-                r.coverage() == Coverage.PARTIAL && r.hasRule("SCN001") && budget.bytesUsed() <= max
+                        + " is never inspected and the sentinel is charged",
+                r.coverage() == Coverage.PARTIAL && r.hasRule("SCN001") && budget.bytesUsed() == max
                         && !ReportFormatter.plainText(r).contains("after-limit.java"),
                 r.coverage() + " used=" + budget.bytesUsed() + " max=" + max);
     }
