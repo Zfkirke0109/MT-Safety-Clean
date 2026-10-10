@@ -32,7 +32,7 @@ public final class ManifestRules {
     /** Runs every manifest rule, adding findings to {@code report}. */
     public static void apply(ScanReport report, PluginManifest manifest, PluginPackage pkg,
             List<PluginPackage.Entry> entries, ScanBudget budget) {
-        if (!manifest.present) {
+        if (!manifest.present && !manifest.unreadable) {
             report.add(new Signal("MFT001", Category.MANIFEST, Severity.HIGH,
                     "No manifest.json",
                     "Every MT plugin must contain manifest.json. This package is either not a plugin or has"
@@ -40,8 +40,7 @@ public final class ManifestRules {
             return;
         }
         if (manifest.unreadable) {
-            boolean presenceUnknown = String.valueOf(manifest.parseError)
-                    .startsWith("package listing was incomplete");
+            boolean presenceUnknown = !manifest.present;
             report.add(new Signal("MFT012", Category.MANIFEST, Severity.LOW,
                     presenceUnknown ? "manifest.json could not be confirmed" : "manifest.json was not read",
                     presenceUnknown

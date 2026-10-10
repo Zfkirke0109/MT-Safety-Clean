@@ -147,7 +147,7 @@ public final class PluginScanner {
     }
 
     /**
-     * Reads the manifest, keeping "absent" and "not read" apart.
+     * Reads the manifest, keeping "absent", "not read" and "not observable" apart.
      *
      * <p>An exhausted budget returns no bytes, and reporting that as a missing manifest produced a
      * false high-severity finding about a package whose manifest was present and perfectly readable.
@@ -250,7 +250,8 @@ public final class PluginScanner {
         }
         if (pkg.manifestListingIncomplete()) {
             budget.markTruncated();
-            return PluginManifest.unreadable("package listing was incomplete; manifest presence is unknown");
+            return PluginManifest.presenceUnknown(
+                    "package listing was incomplete; manifest presence is unknown");
         }
         return PluginManifest.missing();
     }

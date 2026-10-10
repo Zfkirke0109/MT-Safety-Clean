@@ -326,6 +326,29 @@ public final class IncompleteScanCleanRegression {
                         && !listingFailure.hasRule("MFT001"),
                 listingFailure.coverage() + " :: " + ReportFormatter.summaryLine(listingFailure));
 
+        File absentManifest = fixtures.directoryPlugin("nested-cutoff-no-manifest",
+                Fixtures.manifest("demo.nomanifest", "Nested Cutoff", "demo.A"),
+                Fixtures.sources("src/demo/A.java", BENIGN));
+        if (!new File(absentManifest, "manifest.json").delete()) {
+            throw new IllegalStateException("could not remove nested-cutoff manifest fixture");
+        }
+        File absentCursor = new File(absentManifest, "tree");
+        for (int i = 0; i < 26; i++) {
+            absentCursor = new File(absentCursor, "d");
+            if (!absentCursor.mkdirs() && !absentCursor.isDirectory()) {
+                throw new IllegalStateException("could not create absent-manifest tree " + absentCursor);
+            }
+        }
+        write(absentCursor, "omitted.txt", "not inspected");
+        ScanReport nestedCutoffMissingManifest = new PluginScanner(IocDatabase.empty()).scan(
+                absentManifest, ScanBudget.unlimited());
+        c.that("nested listing cutoff does not hide a confirmed root manifest absence",
+                nestedCutoffMissingManifest.coverage() == Coverage.PARTIAL
+                        && nestedCutoffMissingManifest.hasRule("MFT001")
+                        && !nestedCutoffMissingManifest.hasRule("MFT012"),
+                nestedCutoffMissingManifest.coverage() + " :: "
+                        + ReportFormatter.summaryLine(nestedCutoffMissingManifest));
+
         File wide = fixtures.directoryPlugin("wide-directory",
                 Fixtures.manifest("demo.wide", "Wide Directory", "demo.A"),
                 Fixtures.sources("src/demo/A.java", BENIGN));

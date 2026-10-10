@@ -366,6 +366,7 @@ public abstract class PluginPackage {
         private final File root;
         private List<Entry> cached;
         private boolean listingTruncated;
+        private boolean rootListingTruncated;
         private final List<String> anomalies = new ArrayList<String>();
 
         /** Enough anomalies to explain what went wrong, not enough for a hostile tree to fill memory. */
@@ -417,26 +418,26 @@ public abstract class PluginPackage {
          */
         private void walk(File dir, String prefix, int depth, List<Entry> out) {
             if (out.size() >= MAX_FILES) {
-                listingTruncated = true;
+                markListingTruncated(prefix);
                 noteAnomaly("directory holds more than " + MAX_FILES + " files; listing truncated");
                 return;
             }
             if (depth > MAX_DEPTH) {
-                listingTruncated = true;
+                markListingTruncated(prefix);
                 noteAnomaly("directory nested more than " + MAX_DEPTH + " levels deep; listing truncated");
                 return;
             }
             // File.listFiles() materializes the full array before MAX_FILES can bound retained entries.
             File[] children = dir.listFiles();
             if (children == null) {
-                listingTruncated = true;
+                markListingTruncated(prefix);
                 noteAnomaly("could not list "
                         + (prefix.length() == 0 ? "the plugin directory itself" : prefix));
                 return;
             }
             for (int i = 0; i < children.length; i++) {
                 if (out.size() >= MAX_FILES) {
-                    listingTruncated = true;
+                    markListingTruncated(prefix);
                     noteAnomaly("directory holds more than " + MAX_FILES + " files; listing truncated");
                     return;
                 }
@@ -453,6 +454,13 @@ public abstract class PluginPackage {
                     long size = child.length();
                     out.add(new Entry(name, size, size, false));
                 }
+            }
+        }
+
+        private void markListingTruncated(String prefix) {
+            listingTruncated = true;
+            if (prefix.length() == 0) {
+                rootListingTruncated = true;
             }
         }
 
@@ -559,7 +567,7 @@ public abstract class PluginPackage {
 
         @Override
         boolean manifestListingIncomplete() {
-            return listingTruncated;
+            return rootListingTruncated;
         }
     }
 

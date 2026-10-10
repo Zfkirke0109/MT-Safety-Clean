@@ -15,8 +15,9 @@ import java.util.Map;
  */
 public final class PluginManifest {
 
+    /** True when the package listing confirmed a manifest entry. */
     public final boolean present;
-    /** True when the manifest exists but could not be read, as opposed to being malformed. */
+    /** True when the manifest could not be read or its presence could not be established. */
     public final boolean unreadable;
     public final String parseError;
     public final int sdkVersion;
@@ -85,7 +86,7 @@ public final class PluginManifest {
         this.minHostVersion = Json.integer(raw, "minHostVersion", -1);
     }
 
-    /** A manifest that could not be found in the package. */
+    /** A manifest confirmed absent from a complete package listing. */
     public static PluginManifest missing() {
         return new PluginManifest(false, null, null);
     }
@@ -105,6 +106,11 @@ public final class PluginManifest {
      */
     public static PluginManifest unreadable(String reason) {
         return new PluginManifest(true, true, reason, null);
+    }
+
+    /** A package listing ended before the scanner could establish whether a manifest exists. */
+    public static PluginManifest presenceUnknown(String reason) {
+        return new PluginManifest(false, true, reason, null);
     }
 
     /**
