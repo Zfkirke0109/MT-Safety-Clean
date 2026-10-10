@@ -192,7 +192,53 @@ public final class Fixtures {
         return rawArchiveInto(file, members, duplicateFirstMember);
     }
 
+    /** A conventional DEFLATE ZIP with fixed timestamps. */
+    public File deflatedArchive(String name, Map<String, byte[]> members) {
+        File file = new File(root, name);
+        file.getParentFile().mkdirs();
+        try (java.util.zip.ZipOutputStream zip =
+                new java.util.zip.ZipOutputStream(new FileOutputStream(file))) {
+            for (Map.Entry<String, byte[]> member : members.entrySet()) {
+                java.util.zip.ZipEntry entry = new java.util.zip.ZipEntry(member.getKey());
+                entry.setTime(0L);
+                zip.putNextEntry(entry);
+                zip.write(member.getValue());
+                zip.closeEntry();
+            }
+        } catch (IOException e) {
+            throw new IllegalStateException("could not build fixture " + file.getName(), e);
+        }
+        return file;
+    }
+
+    /**
+     * A ZIP with method 95 in both headers for one member and opaque, deliberately non-XZ bytes.
+     * This exercises unsupported-method handling; it is not a valid ZIP95/XZ decoding fixture.
+     */
+    public File unsupportedMethod95Archive(String name, Map<String, byte[]> members, String memberName) {
+        File file = new File(root, name);
+        file.getParentFile().mkdirs();
+        return rawArchiveInto(file, members, false, memberName);
+    }
+
+    /** A duplicate of the first member with different, inert contents. */
+    public File conflictingDuplicateArchive(String name, Map<String, byte[]> members, byte[] duplicateContents) {
+        File file = new File(root, name);
+        file.getParentFile().mkdirs();
+        return rawArchiveInto(file, members, true, null, duplicateContents);
+    }
+
     private File rawArchiveInto(File file, Map<String, byte[]> members, boolean duplicateFirstMember) {
+        return rawArchiveInto(file, members, duplicateFirstMember, null);
+    }
+
+    private File rawArchiveInto(File file, Map<String, byte[]> members, boolean duplicateFirstMember,
+            String method95Member) {
+        return rawArchiveInto(file, members, duplicateFirstMember, method95Member, null);
+    }
+
+    private File rawArchiveInto(File file, Map<String, byte[]> members, boolean duplicateFirstMember,
+            String method95Member, byte[] duplicateContents) {
         file.getParentFile().mkdirs();
 
         List<String> names = new ArrayList<String>(members.keySet());
@@ -206,7 +252,8 @@ public final class Fixtures {
         try {
             for (int i = 0; i < names.size(); i++) {
                 String memberName = names.get(i);
-                byte[] data = members.get(memberName);
+                byte[] data = duplicateFirstMember && i == 1 && duplicateContents != null
+                        ? duplicateContents : members.get(memberName);
                 int offset = body.size();
                 CRC32 crc = new CRC32();
                 crc.update(data);
@@ -215,7 +262,8 @@ public final class Fixtures {
                 writeInt(body, 0x04034b50);
                 writeShort(body, 20);
                 writeShort(body, 0);
-                writeShort(body, 0);
+                int method = memberName.equals(method95Member) ? 95 : 0;
+                writeShort(body, method);
                 writeShort(body, 0);
                 writeShort(body, 0);
                 writeInt(body, (int) crc.getValue());
@@ -232,7 +280,7 @@ public final class Fixtures {
                 writeShort(central, 20);
                 writeShort(central, 20);
                 writeShort(central, 0);
-                writeShort(central, 0);
+                writeShort(central, method);
                 writeShort(central, 0);
                 writeShort(central, 0);
                 writeInt(central, (int) crc.getValue());

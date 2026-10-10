@@ -155,6 +155,11 @@ final class SignatureTest {
         check.that("problems are reported with file and line",
                 !db.problems().isEmpty() && db.problems().get(0).startsWith("test.hdb:4"),
                 db.problems().toString());
+        check.that("malformed definitions and unsupported pattern syntax are not loaded",
+                db.hashCount() == 3 && db.patternCount() == 2 && db.unsupportedCount() == 3
+                        && db.problems().toString().contains("test.hdb:4"),
+                "hashes=" + db.hashCount() + ", patterns=" + db.patternCount()
+                        + ", unsupported=" + db.unsupportedCount() + ", problems=" + db.problems());
         check.that("the clean list is kept apart from the detections",
                 db.cleanCount() == 1 && db.wantsMd5() && db.wantsSha256() && !db.wantsSha1(),
                 "clean=" + db.cleanCount());

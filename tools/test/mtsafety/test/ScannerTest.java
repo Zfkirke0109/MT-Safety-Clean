@@ -1,6 +1,7 @@
 package mtsafety.test;
 
 import java.io.File;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -121,6 +122,22 @@ public final class ScannerTest {
         ScanReport archiveReport = scan(archive);
         check("archive and directory agree", archiveReport.verdict() == utilReport.verdict(),
                 archiveReport.verdict() + " vs " + utilReport.verdict());
+
+        ScanReport backupReport = scan(fixtures.directoryPlugin("benign-backup-cooccurrence",
+                Fixtures.manifest("demo.backup", "Local Backup", "demo.BackupReader"),
+                Fixtures.sources(
+                        "src/demo/BackupReader.java",
+                        "package demo;\npublic class BackupReader { public java.io.File[] localBackupFiles() {"
+                                + " return new java.io.File(\"/storage/emulated/0/Documents/\").listFiles();"
+                                + " } }\n",
+                        "src/demo/SyncStatus.java",
+                        "package demo;\npublic class SyncStatus { public void ping() throws Exception {"
+                                + " new java.net.URL(\"https://backup.example.test/status\").openConnection();"
+                                + " } }\n")));
+        check("disconnected backup-file and network APIs are only capability co-occurrence",
+                backupReport.hasRule("SEN006") && backupReport.hasRule("NET001")
+                        && backupReport.hasRule("CMB101"),
+                backupReport.verdict() + " :: " + summarise(backupReport));
 
         // A package wrapped in a folder is still an ordinary plugin, just rezipped.
         Map<String, byte[]> wrapped = new LinkedHashMap<String, byte[]>();
@@ -267,6 +284,17 @@ public final class ScannerTest {
     private static void archiveAttacks(Fixtures fixtures) {
         String benign = "package demo;\npublic class A { public int n() { return 1; } }\n";
 
+        Map<String, byte[]> standardMembers = new LinkedHashMap<String, byte[]>();
+        standardMembers.put("manifest.json",
+                Fixtures.bytes(Fixtures.manifest("x.standard", "Standard", "demo.A")));
+        standardMembers.put("src/demo/A.java", Fixtures.bytes(benign));
+        File standardArchive = fixtures.deflatedArchive("standard-deflate.mtp", standardMembers);
+        ScanReport standardReport = scan(standardArchive);
+        check("a standard DEFLATE ZIP is scanned to completion",
+                "x.standard".equals(standardReport.manifest.pluginId) && !standardReport.truncated()
+                        && !standardReport.hasRule("SCN001") && standardReport.filesScanned() > 0,
+                standardReport.verdict() + " :: " + summarise(standardReport));
+
         // A member that unpacks outside the plugin folder.
         Map<String, byte[]> slip = new LinkedHashMap<String, byte[]>();
         slip.put("manifest.json", Fixtures.bytes(Fixtures.manifest("x.slip", "Slip", "demo.A")));
@@ -281,9 +309,22 @@ public final class ScannerTest {
         Map<String, byte[]> dupe = new LinkedHashMap<String, byte[]>();
         dupe.put("src/demo/A.java", Fixtures.bytes(benign));
         dupe.put("manifest.json", Fixtures.bytes(Fixtures.manifest("x.dupe", "Dupe", "demo.A")));
-        ScanReport dupeReport = scan(fixtures.rawArchive("dupe.mtp", dupe, true));
+        ScanReport dupeReport = scan(fixtures.conflictingDuplicateArchive("dupe.mtp", dupe,
+                Fixtures.bytes("package demo;\npublic class A { public int n() { return 2; } }\n")));
         check("duplicate archive members are caught", dupeReport.hasRule("ARC005"),
                 summarise(dupeReport));
+
+        Map<String, byte[]> method95 = new LinkedHashMap<String, byte[]>();
+        method95.put("manifest.json", Fixtures.bytes(Fixtures.manifest("x.method95", "Method 95", "demo.A")));
+        method95.put("src/demo/A.java", Fixtures.bytes(benign));
+        method95.put("assets/opaque.bin", Fixtures.bytes("inert, deliberately non-XZ method-95 marker"));
+        File method95Archive = fixtures.unsupportedMethod95Archive(
+                "unsupported-method-95.mtp", method95, "assets/opaque.bin");
+        ScanReport method95Report = scan(method95Archive);
+        check("method 95 in both ZIP headers is reported unsupported, not decoded",
+                hasMethod95Headers(method95Archive) && method95Report.verdict() == Verdict.UNREADABLE
+                        && !method95Report.errors.isEmpty(),
+                method95Report.verdict() + " :: " + method95Report.errors);
 
         // A native library, which a Java-only plugin format has no use for.
         Map<String, byte[]> nativeLib = new LinkedHashMap<String, byte[]>();
@@ -1607,6 +1648,34 @@ public final class ScannerTest {
             failures.add(description + "  [" + context + "]");
             System.out.println("  FAIL " + description + "  [" + context + "]");
         }
+    }
+
+    private static boolean hasMethod95Headers(File archive) {
+        try {
+            byte[] bytes = java.nio.file.Files.readAllBytes(archive.toPath());
+            boolean local = false;
+            boolean central = false;
+            for (int i = 0; i + 12 <= bytes.length; i++) {
+                int signature = readLittleEndianInt(bytes, i);
+                if (signature == 0x04034b50 && readLittleEndianShort(bytes, i + 8) == 95) {
+                    local = true;
+                } else if (signature == 0x02014b50 && readLittleEndianShort(bytes, i + 10) == 95) {
+                    central = true;
+                }
+            }
+            return local && central;
+        } catch (IOException e) {
+            return false;
+        }
+    }
+
+    private static int readLittleEndianInt(byte[] bytes, int offset) {
+        return (bytes[offset] & 0xff) | ((bytes[offset + 1] & 0xff) << 8)
+                | ((bytes[offset + 2] & 0xff) << 16) | ((bytes[offset + 3] & 0xff) << 24);
+    }
+
+    private static int readLittleEndianShort(byte[] bytes, int offset) {
+        return (bytes[offset] & 0xff) | ((bytes[offset + 1] & 0xff) << 8);
     }
 
     private ScannerTest() {
