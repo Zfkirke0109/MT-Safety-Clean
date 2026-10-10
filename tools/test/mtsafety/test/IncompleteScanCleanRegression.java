@@ -111,7 +111,7 @@ public final class IncompleteScanCleanRegression {
         c.that("overview counts partial separately from clean",
                 overview.contains("1 clean") && overview.contains("1 incomplete"), overview);
 
-        lowSeverityCoverage(c, fixtures, partial);
+        lowSeverityCoverage(c, fixtures, complete, partial);
         externalCodeCoverage(c, fixtures);
         directoryCutoffs(c, fixtures);
 
@@ -210,7 +210,8 @@ public final class IncompleteScanCleanRegression {
         nestedBudget(c, fixtures);
     }
 
-    private static void lowSeverityCoverage(ActionsTest.Checker c, Fixtures fixtures, ScanReport partialBenign) {
+    private static void lowSeverityCoverage(ActionsTest.Checker c, Fixtures fixtures, ScanReport completeBenign,
+            ScanReport partialBenign) {
         Map<String, byte[]> wrapped = new LinkedHashMap<String, byte[]>();
         wrapped.put("Wrapper/manifest.json", Fixtures.bytes(
                 Fixtures.manifest("demo.low", "Low Signal", "demo.A")));
@@ -234,6 +235,8 @@ public final class IncompleteScanCleanRegression {
         infoMembers.put("README.md", Fixtures.bytes("build metadata"));
         ScanReport info = new PluginScanner(IocDatabase.empty()).scan(
                 fixtures.deflatedArchive("info-signal.mtp", infoMembers), ScanBudget.unlimited());
+        ScanReport completeInfo = new PluginScanner(IocDatabase.empty()).scan(
+                fixtures.deflatedArchive("info-signal-overview.mtp", infoMembers), ScanBudget.unlimited());
         boolean infoSignal = false;
         for (int i = 0; i < info.signals.size(); i++) {
             if ("ARC002".equals(info.signals.get(i).ruleId)
@@ -270,10 +273,29 @@ public final class IncompleteScanCleanRegression {
                         && !partial.dispositionAdvice().contains("No findings in inspected content"),
                 partial.dispositionAdvice());
 
-        String overview = ReportFormatter.overview(Arrays.asList(complete, partial, partialBenign));
-        c.that("mixed overview counts partial LOW and benign scans without claiming both have no findings",
+        String overview = ReportFormatter.overview(
+                Arrays.asList(completeBenign, complete, completeInfo, partial, partialBenign));
+        c.that("mixed overview distinguishes complete clean, complete LOW/INFO, and partial scans",
                 overview.contains("1 clean") && overview.contains("2 incomplete")
+                        && overview.contains("2 with findings below verdict threshold")
                         && !overview.contains("no findings in inspected content"), overview);
+        c.that("overview separates complete finding-free and LOW/INFO scans without double-counting",
+                overview.contains("2 with findings below verdict threshold")
+                        && !overview.contains("2 clean")
+                        && countOccurrences(overview, "with findings below verdict threshold") == 1
+                        && countOccurrences(overview, "1 clean") == 1
+                        && countOccurrences(overview, "2 incomplete") == 1,
+                overview);
+    }
+
+    private static int countOccurrences(String text, String target) {
+        int count = 0;
+        int from = 0;
+        while ((from = text.indexOf(target, from)) >= 0) {
+            count++;
+            from += target.length();
+        }
+        return count;
     }
 
     private static void externalCodeCoverage(ActionsTest.Checker c, Fixtures fixtures) {
@@ -410,7 +432,7 @@ public final class IncompleteScanCleanRegression {
         c.that("null installed-sibling listing is partial without claiming the archive manifest is missing",
                 siblingListingFailure.coverage() == Coverage.PARTIAL && siblingListingFailure.hasRule("SCN001")
                         && !siblingListingFailure.hasRule("MFT001")
-                        && siblingListingFailure.contentHash.length() > 0,
+                        && siblingListingFailure.contentHash.length() == 0,
                 siblingListingFailure.coverage() + " :: "
                         + ReportFormatter.summaryLine(siblingListingFailure));
 
@@ -422,7 +444,8 @@ public final class IncompleteScanCleanRegression {
         ScanReport siblingCount = new PluginScanner(IocDatabase.empty()).scan(
                 manySiblings, ScanBudget.unlimited());
         c.that("installed sibling count cutoff marks partial coverage",
-                siblingCount.coverage() == Coverage.PARTIAL && siblingCount.hasRule("SCN001"),
+                siblingCount.coverage() == Coverage.PARTIAL && siblingCount.hasRule("SCN001")
+                        && siblingCount.contentHash.length() == 0,
                 siblingCount.coverage() + " :: " + ReportFormatter.summaryLine(siblingCount));
     }
 

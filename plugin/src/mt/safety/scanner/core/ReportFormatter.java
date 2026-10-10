@@ -37,6 +37,7 @@ public final class ReportFormatter {
         int suspicious = 0;
         int review = 0;
         int clean = 0;
+        int cleanWithFindings = 0;
         int incomplete = 0;
         int unreadable = 0;
         int partial = 0;
@@ -48,6 +49,11 @@ public final class ReportFormatter {
             if (current.coverage() == Coverage.PARTIAL
                     && (current.verdict() == Verdict.CLEAN || current.verdict() == Verdict.TRUSTED)) {
                 incomplete++;
+                continue;
+            }
+            if (current.coverage() == Coverage.COMPLETE && current.verdict() == Verdict.CLEAN
+                    && current.hasPackageFindings()) {
+                cleanWithFindings++;
                 continue;
             }
             switch (reports.get(i).verdict()) {
@@ -74,6 +80,9 @@ public final class ReportFormatter {
         sb.append(suspicious).append(" suspicious, ");
         sb.append(review).append(" worth a look, ");
         sb.append(clean).append(" clean");
+        if (cleanWithFindings > 0) {
+            sb.append(", ").append(cleanWithFindings).append(" with findings below verdict threshold");
+        }
         if (incomplete > 0) {
             sb.append(", ").append(incomplete).append(" incomplete");
         }

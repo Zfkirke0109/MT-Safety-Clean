@@ -702,6 +702,53 @@ public final class ActionsTest {
                 !new File(installed, "recur").isDirectory() && older.location.isDirectory(),
                 recurRemoval.commandOutcome);
         deleteTree(older.location);
+
+        incompleteSiblingActionEligibility(check);
+    }
+
+    private static void incompleteSiblingActionEligibility(Checker check) throws Exception {
+        File iso = new File(System.getProperty("java.io.tmpdir"),
+                "mtsafety-incomplete-siblings-" + System.currentTimeMillis());
+        File filesDir = new File(iso, "a/b/c/d/files");
+        File installed = new File(iso, "a/plugins");
+        if (!filesDir.mkdirs() || !installed.mkdirs()) {
+            throw new IllegalStateException("could not create " + iso);
+        }
+
+        Map<String, byte[]> archiveMembers = new java.util.LinkedHashMap<String, byte[]>();
+        archiveMembers.put("manifest.json", Fixtures.bytes(
+                Fixtures.manifest("partial.siblings", "Partial Siblings", "x.A")));
+        archiveMembers.put("src/x/A.java", Fixtures.bytes(HOSTILE));
+        Map<String, byte[]> siblings = new java.util.LinkedHashMap<String, byte[]>();
+        for (int i = 0; i < 401; i++) {
+            siblings.put("sidecar-" + i, new byte[0]);
+        }
+        File target = new Fixtures(installed).installedArchive("partial-siblings", archiveMembers, siblings);
+        FakeHost host = new FakeHost(filesDir);
+        Quarantine quarantine = new Quarantine(new File(filesDir, "quarantine"));
+
+        ScanRunner.Result scan = new ScanRunner(host).run();
+        ScanReport report = reportFor(scan, "partial.siblings");
+        check.that("truncated sibling enumeration withholds the archive-only action identity",
+                report != null && report.contentHash.length() == 0 && report.verdict().flagged(),
+                report == null ? "plugin not discovered"
+                        : report.verdict() + " hash=" + report.contentHash);
+
+        host.type("quarantine flagged");
+        ScanRunner.Result quarantinePlan = new ScanRunner(host).run();
+        check.that("truncated sibling identity cannot authorize quarantine",
+                !quarantinePlan.commandOutcome.contains("confirm ") && target.isDirectory()
+                        && quarantine.list().isEmpty(),
+                quarantinePlan.commandOutcome);
+
+        host.type("remove flagged");
+        ScanRunner.Result removalPlan = new ScanRunner(host).run();
+        check.that("truncated sibling identity cannot authorize removal",
+                !removalPlan.commandOutcome.contains("confirm ") && target.isDirectory()
+                        && quarantine.list().isEmpty(),
+                removalPlan.commandOutcome);
+        deleteTree(target);
+        deleteTree(iso);
     }
 
     /** Creates a symlink, returning false when the platform or filesystem will not allow it. */

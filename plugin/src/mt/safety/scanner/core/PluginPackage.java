@@ -600,9 +600,11 @@ public abstract class PluginPackage {
      *
      * <p>Members come from the archive. Regular files found in the folder (up to a small depth and
      * count) are added under {@link #BESIDE_PREFIX} so their contents are searched too: when MT
-     * Manager unpacks a v3 plugin's dex next to the package, that dex is where the code is. The
-     * package's identity stays the archive's hash; MT Manager rewriting its own extracted artefacts
-     * must not read as the plugin having changed.
+     * Manager unpacks a v3 plugin's dex next to the package, that dex is where the code is. The hash
+     * used for action re-verification identifies only {@code plugin.mtp}, not these siblings. A
+     * complete sibling listing therefore does not detect a sibling changed after scanning; sibling
+     * content is examined for findings but is not part of that identity. If sibling enumeration is
+     * incomplete, no identity is returned, so it cannot authorize an action.
      */
     static final class InstalledArchivePackage extends PluginPackage {
         private static final int MAX_SIBLINGS = 400;
@@ -737,6 +739,10 @@ public abstract class PluginPackage {
 
         @Override
         public String contentHash(ScanBudget budget) throws IOException {
+            entries();
+            if (listingTruncated) {
+                return "";
+            }
             return delegate.contentHash(budget);
         }
 

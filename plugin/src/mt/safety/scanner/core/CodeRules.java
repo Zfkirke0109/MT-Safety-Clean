@@ -194,8 +194,13 @@ public final class CodeRules {
     /**
      * Opens an archived member and applies the same rules to what is inside it.
      *
-     * <p>Bounded in every direction: entry count, bytes per entry, nesting depth, and the scan budget,
-     * because the archive being opened is the untrusted thing under examination.
+     * <p>Nested entry count, nesting depth, decompressed output per member, and logical scan-budget
+     * reservations are bounded. The enclosing member is already held in a bounded byte array. A
+     * reservation accounts for bytes returned to this scanner, including the one-byte EOF probe; it
+     * does not meter compressed input that {@link ZipInputStream}'s inflater may buffer internally.
+     * The deadline is checked between operations and cannot preempt inflater CPU work or bound its
+     * per-byte cost. A capped or failed member stops traversal before advancing the stream, which
+     * would otherwise inflate the unread remainder.
      *
      * <p>Evidence keeps the path that leads to it, {@code libs/helper.jar!evil/Evil.class}, so a
      * finding can be traced back to the file it actually came from.
@@ -239,7 +244,8 @@ public final class CodeRules {
                     }
                     continue;
                 }
-                // One extra byte is reserved for the end-of-member probe so it is charged too.
+                // One extra output byte is reserved for the end-of-member probe so it is charged too.
+                // This bounds bytes returned by ZipInputStream, not inflater-internal CPU or input reads.
                 int reserved = budget.reserve(NESTED_MEMBER_LIMIT + 1);
                 if (reserved <= 1) {
                     // No room for data plus the probe: stop without reading or advancing.
