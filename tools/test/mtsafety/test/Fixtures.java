@@ -251,7 +251,7 @@ public final class Fixtures {
             }
             throw new IOException("ZIP member not found: " + memberName);
         } catch (IOException e) {
-            throw new IllegalStateException("could not corrupt fixture " + archive, e);
+            throw new IllegalStateException("could not make fixture member unreadable in " + archive, e);
         }
     }
 

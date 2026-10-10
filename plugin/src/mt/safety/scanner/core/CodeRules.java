@@ -220,6 +220,23 @@ public final class CodeRules {
                     break;
                 }
                 if (ze.isDirectory()) {
+                    if (budget.reserve(1) == 0) {
+                        budget.markTruncated();
+                        break;
+                    }
+                    try {
+                        if (zin.read() >= 0) {
+                            report.addError(parentName + "!" + ze.getName()
+                                    + ": directory entry contains unread data; nested traversal stopped");
+                            budget.markTruncated();
+                            break;
+                        }
+                    } catch (IOException e) {
+                        report.addError(parentName + "!" + ze.getName()
+                                + ": could not verify empty directory entry: " + e.getMessage());
+                        budget.markTruncated();
+                        break;
+                    }
                     continue;
                 }
                 // One extra byte is reserved for the end-of-member probe so it is charged too.

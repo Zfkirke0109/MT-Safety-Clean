@@ -21,7 +21,7 @@ public final class ReportFormatter {
         sb.append(report.dispositionLabel());
         if (report.verdict() == Verdict.CLEAN && report.coverage() == Coverage.PARTIAL) {
             sb.append(" - ").append(report.hasPackageFindings()
-                    ? "Findings observed in inspected content; inspection incomplete"
+                    ? "Package findings observed; inspection incomplete"
                     : "No findings in inspected content; inspection incomplete");
         } else if (report.verdict() == Verdict.CLEAN && report.hasPackageFindings()) {
             sb.append(" - Lower-severity findings listed");
@@ -115,7 +115,7 @@ public final class ReportFormatter {
                     + " finding.\n");
         }
         if (report.coverage() == Coverage.COMPLETE) {
-            if (signals.isEmpty()) {
+            if (!packageFindings) {
                 sb.append("\nNo findings.\n");
             }
         } else if (report.coverage() == Coverage.PARTIAL) {
@@ -125,25 +125,8 @@ public final class ReportFormatter {
         } else if (signals.isEmpty()) {
             sb.append("\nNothing could be inspected; no verdict on the contents.\n");
         }
-        if (!signals.isEmpty()) {
-            sb.append("\nFindings (worst first):\n");
-            for (int i = 0; i < signals.size(); i++) {
-                Signal signal = signals.get(i);
-                sb.append('\n').append(signal.severity.marker()).append(' ')
-                        .append(signal.severity.label().toUpperCase(java.util.Locale.US)).append("  ")
-                        .append(signal.ruleId).append("  ").append(signal.title).append('\n');
-                sb.append("      ").append(signal.category.label()).append('\n');
-                sb.append("      ").append(signal.detail).append('\n');
-                List<Signal.Evidence> evidence = signal.evidence();
-                for (int j = 0; j < evidence.size(); j++) {
-                    sb.append("      - ").append(evidence.get(j).where);
-                    if (evidence.get(j).snippet.length() > 0) {
-                        sb.append("  |  ").append(evidence.get(j).snippet);
-                    }
-                    sb.append('\n');
-                }
-            }
-        }
+        appendSignals(sb, signals, false);
+        appendSignals(sb, signals, true);
 
         if (!report.errors.isEmpty()) {
             sb.append("\nProblems during the scan:\n");
@@ -152,6 +135,33 @@ public final class ReportFormatter {
             }
         }
         return sb.toString();
+    }
+
+    private static void appendSignals(StringBuilder sb, List<Signal> signals, boolean coverageNotices) {
+        boolean heading = false;
+        for (int i = 0; i < signals.size(); i++) {
+            Signal signal = signals.get(i);
+            if (ScanReport.isCoverageNotice(signal) != coverageNotices) {
+                continue;
+            }
+            if (!heading) {
+                sb.append(coverageNotices ? "\nCoverage notices:\n" : "\nFindings (worst first):\n");
+                heading = true;
+            }
+            sb.append('\n').append(signal.severity.marker()).append(' ')
+                    .append(signal.severity.label().toUpperCase(java.util.Locale.US)).append("  ")
+                    .append(signal.ruleId).append("  ").append(signal.title).append('\n');
+            sb.append("      ").append(signal.category.label()).append('\n');
+            sb.append("      ").append(signal.detail).append('\n');
+            List<Signal.Evidence> evidence = signal.evidence();
+            for (int j = 0; j < evidence.size(); j++) {
+                sb.append("      - ").append(evidence.get(j).where);
+                if (evidence.get(j).snippet.length() > 0) {
+                    sb.append("  |  ").append(evidence.get(j).snippet);
+                }
+                sb.append('\n');
+            }
+        }
     }
 
     /** The full set of reports as text, for export or sharing. */

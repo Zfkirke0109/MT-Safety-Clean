@@ -125,11 +125,16 @@ public final class ScanReport {
     /** True when the package produced any signal other than a coverage-only notice. */
     public boolean hasPackageFindings() {
         for (Signal signal : signals) {
-            if (!"SCN001".equals(signal.ruleId) && !"MFT012".equals(signal.ruleId)) {
+            if (!isCoverageNotice(signal)) {
                 return true;
             }
         }
         return false;
+    }
+
+    /** Coverage notices describe scan limits rather than findings against the package. */
+    public static boolean isCoverageNotice(Signal signal) {
+        return signal != null && ("SCN001".equals(signal.ruleId) || "MFT012".equals(signal.ruleId));
     }
 
     public Verdict verdict() {
@@ -170,7 +175,7 @@ public final class ScanReport {
     public String dispositionAdvice() {
         if (verdict == Verdict.CLEAN && hasPackageFindings()) {
             if (coverage() == Coverage.PARTIAL) {
-                return "Findings were observed in inspected content; inspection incomplete. This is not an all-clear.";
+                return "Package findings were observed; inspection incomplete. This is not an all-clear.";
             }
             return "No medium-or-higher risk was detected; review the lower-severity findings below.";
         }

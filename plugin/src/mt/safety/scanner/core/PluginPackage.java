@@ -422,6 +422,7 @@ public abstract class PluginPackage {
                 noteAnomaly("directory nested more than " + MAX_DEPTH + " levels deep; listing truncated");
                 return;
             }
+            // File.listFiles() materializes the full array before MAX_FILES can bound retained entries.
             File[] children = dir.listFiles();
             if (children == null) {
                 listingTruncated = true;
@@ -628,6 +629,7 @@ public abstract class PluginPackage {
                         + " entries; remaining files were not inspected");
                 return;
             }
+            // File.listFiles() materializes the full array before the sibling count cap is applied.
             File[] children = folder.listFiles();
             if (children == null) {
                 noteListingProblem("could not list installed sibling directory: "
