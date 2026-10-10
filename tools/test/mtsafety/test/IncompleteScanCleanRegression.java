@@ -183,16 +183,41 @@ public final class IncompleteScanCleanRegression {
         ScanReport r = new PluginScanner(IocDatabase.empty()).scan(archive, ScanBudget.unlimited());
         String text = ReportFormatter.plainText(r);
         String json = ReportFormatter.json(Arrays.asList(r));
-        c.that("unsupported package has UNSUPPORTED_OR_UNREADABLE coverage and never claims inspection",
+        c.that("unsupported ZIP95 package has truthful coverage and no inspected-content claims",
                 r.verdict() == Verdict.UNREADABLE && r.coverage() == Coverage.UNSUPPORTED_OR_UNREADABLE
+                        && r.dispositionLabel().equals("Could not scan")
+                        && text.contains("Coverage: Unsupported or unreadable")
+                        && text.contains("Nothing could be inspected; no verdict on the contents.")
                         && !text.contains("No findings in inspected content")
-                        && !r.dispositionLabel().equals("Clean")
+                        && !ReportFormatter.summaryLine(r).startsWith("Clean")
                         && json.contains("\"coverage\": \"UNSUPPORTED_OR_UNREADABLE\"")
+                        && json.contains("\"disposition\": \"Could not scan\"")
                         && json.contains("\"verdict\": \"UNREADABLE\""),
                 r.coverage() + " :: " + text);
         String overview = ReportFormatter.overview(Arrays.asList(r));
-        c.that("unsupported package is not counted as clean in the overview",
-                !overview.contains("1 clean"), overview);
+        c.that("unsupported ZIP95 package is counted unreadable, never clean",
+                overview.contains("1 unreadable") && overview.contains("0 clean"), overview);
+
+        // A missing path is entirely inaccessible, unlike a readable plugin with some skipped members.
+        File missing = new File(archive.getParentFile(), "does-not-exist-coverage-test.mtp");
+        c.that("fixture: missing package path does not exist", !missing.exists(), missing.toString());
+        ScanReport absent = new PluginScanner(IocDatabase.empty()).scan(missing, ScanBudget.unlimited());
+        String absentText = ReportFormatter.plainText(absent);
+        String absentJson = ReportFormatter.json(Arrays.asList(absent));
+        String absentOverview = ReportFormatter.overview(Arrays.asList(absent));
+        c.that("inaccessible path has no false inspected-content or clean disposition",
+                absent.verdict() == Verdict.UNREADABLE
+                        && absent.coverage() == Coverage.UNSUPPORTED_OR_UNREADABLE
+                        && absent.dispositionLabel().equals("Could not scan")
+                        && absentText.contains("Nothing could be inspected; no verdict on the contents.")
+                        && !absentText.contains("No findings in inspected content")
+                        && !ReportFormatter.summaryLine(absent).startsWith("Clean")
+                        && absentOverview.contains("1 unreadable") && absentOverview.contains("0 clean")
+                        && absentJson.contains("\"coverage\": \"UNSUPPORTED_OR_UNREADABLE\"")
+                        && absentJson.contains("\"disposition\": \"Could not scan\"")
+                        && absentJson.contains("\"verdict\": \"UNREADABLE\""),
+                absent.coverage() + " :: " + absentText + " :: " + absentOverview);
+
     }
 
     private static void nestedBudget(ActionsTest.Checker c, Fixtures fixtures) {
