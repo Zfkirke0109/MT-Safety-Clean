@@ -367,6 +367,7 @@ public abstract class PluginPackage {
         private List<Entry> cached;
         private boolean listingTruncated;
         private boolean rootListingTruncated;
+        private final Set<String> incompleteWrapperDirectories = new HashSet<String>();
         private final List<String> anomalies = new ArrayList<String>();
 
         /** Enough anomalies to explain what went wrong, not enough for a hostile tree to fill memory. */
@@ -461,6 +462,9 @@ public abstract class PluginPackage {
             listingTruncated = true;
             if (prefix.length() == 0) {
                 rootListingTruncated = true;
+            } else if (prefix.indexOf('/') == prefix.length() - 1
+                    && prefix.lastIndexOf('/') == prefix.length() - 1) {
+                incompleteWrapperDirectories.add(prefix);
             }
         }
 
@@ -567,7 +571,26 @@ public abstract class PluginPackage {
 
         @Override
         boolean manifestListingIncomplete() {
-            return rootListingTruncated;
+            if (rootListingTruncated) {
+                return true;
+            }
+            String observedWrapper = null;
+            for (Entry entry : cached) {
+                if (entry.directory) {
+                    continue;
+                }
+                int slash = entry.name.indexOf('/');
+                if (slash < 0) {
+                    return false;
+                }
+                String wrapper = entry.name.substring(0, slash + 1);
+                if (!incompleteWrapperDirectories.contains(wrapper)
+                        || (observedWrapper != null && !observedWrapper.equals(wrapper))) {
+                    return false;
+                }
+                observedWrapper = wrapper;
+            }
+            return !incompleteWrapperDirectories.isEmpty();
         }
     }
 

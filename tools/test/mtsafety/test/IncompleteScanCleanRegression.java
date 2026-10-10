@@ -349,6 +349,24 @@ public final class IncompleteScanCleanRegression {
                 nestedCutoffMissingManifest.coverage() + " :: "
                         + ReportFormatter.summaryLine(nestedCutoffMissingManifest));
 
+        File wrapped = fixtures.directoryPlugin("wrapped-listing-failure",
+                Fixtures.manifest("demo.wrapped", "Wrapped Listing Failure", "demo.A"),
+                Fixtures.sources("src/demo/A.java", BENIGN));
+        File wrapper = new File(wrapped, "Wrapper");
+        if (!wrapper.mkdirs()
+                || !new File(wrapped, "manifest.json").renameTo(new File(wrapper, "manifest.json"))
+                || !new File(wrapped, "src").renameTo(new File(wrapper, "src"))) {
+            throw new IllegalStateException("could not create wrapped listing-failure fixture");
+        }
+        ScanReport wrappedListingFailure = new PluginScanner(IocDatabase.empty()).scan(
+                new ListingFailureFile(wrapped, wrapper), ScanBudget.unlimited());
+        c.that("incomplete wrapper listing does not report a missing manifest",
+                wrappedListingFailure.coverage() == Coverage.PARTIAL
+                        && wrappedListingFailure.hasRule("MFT012")
+                        && !wrappedListingFailure.hasRule("MFT001"),
+                wrappedListingFailure.coverage() + " :: "
+                        + ReportFormatter.summaryLine(wrappedListingFailure));
+
         File wide = fixtures.directoryPlugin("wide-directory",
                 Fixtures.manifest("demo.wide", "Wide Directory", "demo.A"),
                 Fixtures.sources("src/demo/A.java", BENIGN));
