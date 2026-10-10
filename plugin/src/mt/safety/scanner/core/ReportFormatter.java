@@ -18,8 +18,10 @@ public final class ReportFormatter {
     /** One line per package, for a list view. */
     public static String summaryLine(ScanReport report) {
         StringBuilder sb = new StringBuilder();
-        sb.append(report.verdict().label());
-        if (report.verdict() != Verdict.CLEAN && report.verdict() != Verdict.TRUSTED) {
+        sb.append(report.dispositionLabel());
+        if (report.verdict() == Verdict.CLEAN && report.coverage() == Coverage.PARTIAL) {
+            sb.append(" - No findings in inspected content; inspection incomplete");
+        } else if (report.verdict() != Verdict.CLEAN && report.verdict() != Verdict.TRUSTED) {
             sb.append(" - ").append(report.verdictReason());
         }
         return sb.toString();
@@ -31,8 +33,19 @@ public final class ReportFormatter {
         int suspicious = 0;
         int review = 0;
         int clean = 0;
+        int incomplete = 0;
         int unreadable = 0;
+        int partial = 0;
         for (int i = 0; i < reports.size(); i++) {
+            ScanReport current = reports.get(i);
+            if (current.coverage() == Coverage.PARTIAL) {
+                partial++;
+            }
+            if (current.coverage() == Coverage.PARTIAL
+                    && (current.verdict() == Verdict.CLEAN || current.verdict() == Verdict.TRUSTED)) {
+                incomplete++;
+                continue;
+            }
             switch (reports.get(i).verdict()) {
                 case KNOWN_BAD:
                 case LIKELY_MALICIOUS:
@@ -57,8 +70,14 @@ public final class ReportFormatter {
         sb.append(suspicious).append(" suspicious, ");
         sb.append(review).append(" worth a look, ");
         sb.append(clean).append(" clean");
+        if (incomplete > 0) {
+            sb.append(", ").append(incomplete).append(" incomplete (no findings in inspected content)");
+        }
         if (unreadable > 0) {
             sb.append(", ").append(unreadable).append(" unreadable");
+        }
+        if (partial > 0) {
+            sb.append("; ").append(partial).append(" with incomplete coverage");
         }
         return sb.toString();
     }
@@ -67,9 +86,9 @@ public final class ReportFormatter {
     public static String plainText(ScanReport report) {
         StringBuilder sb = new StringBuilder();
         sb.append("=== ").append(report.manifest.displayName()).append(" ===\n");
-        sb.append("Verdict : ").append(report.verdict().label())
+        sb.append("Verdict : ").append(report.dispositionLabel())
                 .append("  (risk score ").append(report.score()).append(")\n");
-        sb.append("Advice  : ").append(report.verdict().advice()).append('\n');
+        sb.append("Advice  : ").append(report.dispositionAdvice()).append('\n');
         sb.append("Plugin  : ").append(nonEmpty(report.manifest.pluginId, "(no pluginID)"));
         if (report.manifest.versionName.length() > 0) {
             sb.append("  ").append(report.manifest.versionName);
@@ -83,11 +102,33 @@ public final class ReportFormatter {
             sb.append(" (incomplete)");
         }
         sb.append("\n");
+        sb.append("Coverage: ").append(report.coverage().label()).append('\n');
 
         List<Signal> signals = report.signalsBySeverity();
-        if (signals.isEmpty()) {
-            sb.append("\nNo findings.\n");
-        } else {
+        boolean threatFindings = false;
+        for (int i = 0; i < signals.size(); i++) {
+            String ruleId = signals.get(i).ruleId;
+            if (!"SCN001".equals(ruleId) && !"MFT012".equals(ruleId)) {
+                threatFindings = true;
+                break;
+            }
+        }
+        if (report.coverage() == Coverage.PARTIAL) {
+            sb.append("\nCoverage warning: inspection incomplete (see SCN001 below); this is not a threat"
+                    + " finding.\n");
+        }
+        if (report.coverage() == Coverage.COMPLETE) {
+            if (signals.isEmpty()) {
+                sb.append("\nNo findings.\n");
+            }
+        } else if (report.coverage() == Coverage.PARTIAL) {
+            if (!threatFindings) {
+                sb.append("\nNo findings in inspected content; inspection incomplete.\n");
+            }
+        } else if (signals.isEmpty()) {
+            sb.append("\nNothing could be inspected; no verdict on the contents.\n");
+        }
+        if (!signals.isEmpty()) {
             sb.append("\nFindings (worst first):\n");
             for (int i = 0; i < signals.size(); i++) {
                 Signal signal = signals.get(i);
@@ -176,6 +217,8 @@ public final class ReportFormatter {
         sb.append("      \"sha256\": ").append(Json.quote(report.contentHash)).append(",\n");
         sb.append("      \"verdict\": ").append(Json.quote(report.verdict().name())).append(",\n");
         sb.append("      \"score\": ").append(report.score()).append(",\n");
+        sb.append("      \"coverage\": ").append(Json.quote(report.coverage().name())).append(",\n");
+        sb.append("      \"disposition\": ").append(Json.quote(report.dispositionLabel())).append(",\n");
         sb.append("      \"reason\": ").append(Json.quote(report.verdictReason())).append(",\n");
         sb.append("      \"truncated\": ").append(report.truncated()).append(",\n");
         sb.append("      \"filesScanned\": ").append(report.filesScanned()).append(",\n");

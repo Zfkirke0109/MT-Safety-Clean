@@ -131,6 +131,46 @@ public final class ScanReport {
         this.verdictReason = reason == null ? "" : reason;
     }
 
+    /** What was inspected. The legacy {@link #verdict()} says nothing about this. */
+    public Coverage coverage() {
+        if (verdict == Verdict.UNREADABLE) {
+            return Coverage.UNSUPPORTED_OR_UNREADABLE;
+        }
+        return truncated ? Coverage.PARTIAL : Coverage.COMPLETE;
+    }
+
+    /**
+     * The verdict as it should be shown to a person. Identical to the legacy label when the scan was
+     * complete; otherwise it never reads as an unqualified Clean or Trusted.
+     */
+    public String dispositionLabel() {
+        if (coverage() != Coverage.PARTIAL) {
+            return verdict.label();
+        }
+        if (verdict == Verdict.CLEAN) {
+            return "Incomplete scan";
+        }
+        if (verdict == Verdict.TRUSTED) {
+            return "Trusted identity (inspection incomplete)";
+        }
+        return verdict.label() + " (inspection incomplete)";
+    }
+
+    /** Advice matching {@link #dispositionLabel()}. */
+    public String dispositionAdvice() {
+        if (coverage() != Coverage.PARTIAL) {
+            return verdict.advice();
+        }
+        if (verdict == Verdict.CLEAN) {
+            return "No findings in inspected content; inspection incomplete. This is not an all-clear.";
+        }
+        if (verdict == Verdict.TRUSTED) {
+            return "You marked this exact version as trusted, but the scan did not read all of it."
+                    + " Inspection incomplete.";
+        }
+        return verdict.advice() + " The scan was incomplete, so there may be more.";
+    }
+
     public String verdictReason() {
         return verdictReason;
     }
@@ -169,6 +209,6 @@ public final class ScanReport {
 
     /** Short one-line summary used in list views. */
     public String headline() {
-        return verdict.label() + " (" + score + ") - " + manifest.displayName();
+        return dispositionLabel() + " (" + score + ") - " + manifest.displayName();
     }
 }
