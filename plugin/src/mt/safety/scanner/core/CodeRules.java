@@ -203,6 +203,10 @@ public final class CodeRules {
     private static void scanNestedArchive(ScanReport report, Map<String, Signal> byRule, String parentName,
             byte[] data, ScanBudget budget, IocDatabase database, SignatureDatabase signatures, int depth) {
         if (depth > MAX_NESTED_DEPTH) {
+            // The depth cap is a safety bound, not a verdict: what sits below it was never inspected.
+            report.addError(parentName + ": nested archive deeper than " + MAX_NESTED_DEPTH
+                    + " levels was not inspected");
+            budget.markTruncated();
             return;
         }
         Signal executableInside = null;
@@ -231,6 +235,17 @@ public final class CodeRules {
                             + e.getMessage());
                     budget.markTruncated();
                     continue;
+                }
+                if (child.length >= granted) {
+                    // The allowance was filled. One more byte, if there is one, proves the member was
+                    // cut short; this never inflates more than a single extra byte.
+                    try {
+                        if (zin.read() >= 0) {
+                            budget.markTruncated();
+                        }
+                    } catch (IOException e) {
+                        budget.markTruncated();
+                    }
                 }
                 if (child.length == 0) {
                     continue;

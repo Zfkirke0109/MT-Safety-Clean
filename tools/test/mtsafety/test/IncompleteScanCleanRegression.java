@@ -152,6 +152,8 @@ public final class IncompleteScanCleanRegression {
                         && !ReportFormatter.summaryLine(nested).startsWith("Clean"),
                 nested.coverage() + " :: " + nested.errors);
 
+        nestedBoundaries(c, fixtures);
+
         // A manifest that cannot be read.
         File mdir = fixtures.directoryPlugin("unreadable-manifest",
                 Fixtures.manifest("demo.mf", "Manifest", "demo.A"),
@@ -163,6 +165,47 @@ public final class IncompleteScanCleanRegression {
         c.that("unreadable manifest => not COMPLETE", m.coverage() != Coverage.COMPLETE
                 && !ReportFormatter.summaryLine(m).startsWith("Clean"),
                 m.coverage() + " :: " + ReportFormatter.summaryLine(m));
+    }
+
+    private static byte[] jarOf(String name, byte[] content) {
+        Map<String, byte[]> m = new LinkedHashMap<String, byte[]>();
+        m.put(name, content);
+        return Fixtures.deflatedJar(m);
+    }
+
+    private static ScanReport scanWithJar(Fixtures fixtures, String file, byte[] jar) {
+        Map<String, byte[]> outer = new LinkedHashMap<String, byte[]>();
+        outer.put("manifest.json", Fixtures.bytes(Fixtures.manifest("demo.nest", "Nest", "demo.A")));
+        outer.put("src/demo/A.java", Fixtures.bytes(BENIGN));
+        outer.put("libs/lib.jar", jar);
+        return new PluginScanner(IocDatabase.empty()).scan(fixtures.deflatedArchive(file, outer),
+                ScanBudget.unlimited());
+    }
+
+    private static void nestedBoundaries(ActionsTest.Checker c, Fixtures fixtures) {
+        byte[] text = Fixtures.bytes("harmless nested text\n");
+        byte[] two = jarOf("b.jar", jarOf("note.txt", text));
+        ScanReport shallow = scanWithJar(fixtures, "nest-shallow.mtp", two);
+        c.that("shallow nested archives stay COMPLETE and CLEAN",
+                shallow.coverage() == Coverage.COMPLETE && shallow.verdict() == Verdict.CLEAN
+                        && shallow.errors.isEmpty(), shallow.coverage() + " :: " + shallow.errors);
+
+        byte[] three = jarOf("b.jar", jarOf("c.jar", jarOf("note.txt", text)));
+        ScanReport deep = scanWithJar(fixtures, "nest-deep.mtp", three);
+        c.that("archive nested past the depth cap is PARTIAL with a recorded reason",
+                deep.coverage() == Coverage.PARTIAL && deep.hasRule("SCN001") && !deep.errors.isEmpty()
+                        && !ReportFormatter.summaryLine(deep).startsWith("Clean"),
+                deep.coverage() + " :: " + deep.errors);
+
+        StringBuilder sb = new StringBuilder();
+        while (sb.length() < 600 * 1024) {
+            sb.append("harmless padding line\n");
+        }
+        ScanReport big = scanWithJar(fixtures, "nest-big.mtp", jarOf("big.txt", Fixtures.bytes(sb.toString())));
+        c.that("oversized nested member is PARTIAL, not COMPLETE",
+                big.coverage() == Coverage.PARTIAL && big.hasRule("SCN001")
+                        && !ReportFormatter.summaryLine(big).startsWith("Clean"),
+                big.coverage() + " :: " + ReportFormatter.summaryLine(big));
     }
 
     private static void riskyPartial(ActionsTest.Checker c, Fixtures fixtures) {
