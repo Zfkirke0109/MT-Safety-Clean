@@ -194,8 +194,10 @@ public final class CodeRules {
     /**
      * Opens an archived member and applies the same rules to what is inside it.
      *
-     * <p>Bounded in every direction: entry count, bytes per entry, nesting depth, and the scan budget,
-     * because the archive being opened is the untrusted thing under examination.
+     * <p>Entry count, decompressed bytes per member, nesting depth, and the shared scan budget are
+     * bounded. The JDK inflater may consume buffered compressed input internally, and its CPU work is
+     * not measured or preempted here. The input is an already bounded in-memory byte array, so this path
+     * does not perform unbounded external I/O; the cost per compressed input byte is not instrumented.
      *
      * <p>Evidence keeps the path that leads to it, {@code libs/helper.jar!evil/Evil.class}, so a
      * finding can be traced back to the file it actually came from.
@@ -222,7 +224,8 @@ public final class CodeRules {
                 if (ze.isDirectory()) {
                     continue;
                 }
-                // One extra byte is reserved for the end-of-member probe so it is charged too.
+                // One extra output byte is reserved for the end-of-member probe so it is charged too.
+                // This bounds bytes returned by ZipInputStream, not inflater-internal CPU or input reads.
                 int reserved = budget.reserve(NESTED_MEMBER_LIMIT + 1);
                 if (reserved <= 1) {
                     // No room for data plus the probe: stop without reading or advancing.

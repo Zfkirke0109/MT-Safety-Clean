@@ -2,6 +2,7 @@ package mtsafety.test;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
@@ -208,6 +209,48 @@ public final class Fixtures {
         } catch (IOException e) {
             throw new IllegalStateException("could not build fixture " + file.getName(), e);
         }
+        return file;
+    }
+
+    /** A ZIP with one member whose raw DEFLATE stream is malformed. */
+    public File deflatedArchiveWithUnreadableMember(String name, Map<String, byte[]> members,
+            String unreadableMember) {
+        File file = deflatedArchive(name, members);
+        byte[] archive = readBytes(file);
+        for (int offset = 0; offset + 46 <= archive.length; offset++) {
+            if (littleEndianInt(archive, offset) != 0x02014b50) {
+                continue;
+            }
+            int nameLength = littleEndianShort(archive, offset + 28);
+            int extraLength = littleEndianShort(archive, offset + 30);
+            int commentLength = littleEndianShort(archive, offset + 32);
+            int localOffset = littleEndianInt(archive, offset + 42);
+            if (offset + 46 + nameLength + extraLength + commentLength > archive.length
+                    || localOffset < 0 || localOffset + 30 > archive.length) {
+                break;
+            }
+            String nameInArchive = new String(archive, offset + 46, nameLength,
+                    java.nio.charset.StandardCharsets.UTF_8);
+            if (unreadableMember.equals(nameInArchive)) {
+                int localNameLength = littleEndianShort(archive, localOffset + 26);
+                int localExtraLength = littleEndianShort(archive, localOffset + 28);
+                int dataOffset = localOffset + 30 + localNameLength + localExtraLength;
+                if (dataOffset >= archive.length) {
+                    break;
+                }
+                archive[dataOffset] = 0x07;
+                writeBytes(file, archive);
+                return file;
+            }
+            offset += 45 + nameLength + extraLength + commentLength;
+        }
+        throw new IllegalArgumentException("no such member in fixture: " + unreadableMember);
+    }
+
+    /** A package path containing bytes that cannot be opened as a ZIP archive. */
+    public File unreadableArchive(String name) {
+        File file = new File(root, name);
+        writeBytes(file, bytes("not a ZIP archive"));
         return file;
     }
 
@@ -561,6 +604,33 @@ public final class Fixtures {
         } catch (IOException e) {
             throw new IllegalStateException("could not write " + file, e);
         }
+    }
+
+    private static byte[] readBytes(File file) {
+        try {
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            java.io.InputStream in = new FileInputStream(file);
+            try {
+                byte[] buffer = new byte[4096];
+                int count;
+                while ((count = in.read(buffer)) >= 0) {
+                    out.write(buffer, 0, count);
+                }
+            } finally {
+                in.close();
+            }
+            return out.toByteArray();
+        } catch (IOException e) {
+            throw new IllegalStateException("could not read " + file, e);
+        }
+    }
+
+    private static int littleEndianShort(byte[] bytes, int offset) {
+        return (bytes[offset] & 0xff) | ((bytes[offset + 1] & 0xff) << 8);
+    }
+
+    private static int littleEndianInt(byte[] bytes, int offset) {
+        return littleEndianShort(bytes, offset) | (littleEndianShort(bytes, offset + 2) << 16);
     }
 
     private static void writeShort(ByteArrayOutputStream out, int value) {

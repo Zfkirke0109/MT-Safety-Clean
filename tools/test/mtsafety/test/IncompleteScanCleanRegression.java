@@ -76,6 +76,8 @@ public final class IncompleteScanCleanRegression {
         c.that("overview counts partial separately from clean",
                 overview.contains("1 clean") && overview.contains("1 incomplete"), overview);
 
+        lowFindingSurfaces(c, fixtures, complete, partial);
+
         ScanReport trusted = scanTrusted(plugin, ScanBudget.unlimited());
         trusted.setTruncated(true);
         c.that("trusted identity with partial inspection is qualified", trusted.verdict() == Verdict.TRUSTED
@@ -89,8 +91,50 @@ public final class IncompleteScanCleanRegression {
                 ReportFormatter.summaryLine(trustedFull));
 
         readFailures(c, fixtures);
+        directoryListingCutoffs(c, fixtures);
         riskyPartial(c, fixtures);
         qualifiedSurfaces(c, partial);
+    }
+
+    private static void lowFindingSurfaces(ActionsTest.Checker c, Fixtures fixtures, ScanReport completeBenign,
+            ScanReport partialBenign) {
+        Map<String, byte[]> wrapped = new LinkedHashMap<String, byte[]>();
+        wrapped.put("wrapper/manifest.json",
+                Fixtures.bytes(Fixtures.manifest("demo.wrapped", "Wrapped", "demo.A")));
+        wrapped.put("wrapper/src/demo/A.java", Fixtures.bytes(BENIGN));
+        File archive = fixtures.deflatedArchive("low-finding-wrapped.mtp", wrapped);
+        PluginScanner scanner = new PluginScanner(IocDatabase.empty());
+        ScanReport completeLow = scanner.scan(archive, ScanBudget.unlimited());
+        ScanReport partialLow = scanner.scan(archive, new ScanBudget(0L, 0L));
+        String completeText = ReportFormatter.plainText(completeLow);
+        String partialText = ReportFormatter.plainText(partialLow);
+        c.that("complete LOW finding remains visible without a Clean/no-findings claim",
+                completeLow.verdict() == Verdict.CLEAN && completeLow.hasRule("ARC008")
+                        && completeLow.coverage() == Coverage.COMPLETE
+                        && !ReportFormatter.summaryLine(completeLow).startsWith("Clean")
+                        && ReportFormatter.summaryLine(completeLow).contains("finding")
+                        && completeLow.dispositionAdvice().contains("Findings were recorded")
+                        && !completeText.contains("No findings.")
+                        && completeText.contains("ARC008"),
+                ReportFormatter.summaryLine(completeLow) + " :: " + completeLow.dispositionAdvice()
+                        + " :: " + completeText);
+        c.that("partial LOW finding stays distinct from SCN001 and MFT012 coverage notices",
+                partialLow.verdict() == Verdict.CLEAN && partialLow.coverage() == Coverage.PARTIAL
+                        && partialLow.hasRule("ARC008") && partialLow.hasRule("SCN001")
+                        && partialLow.hasRule("MFT012")
+                        && ReportFormatter.summaryLine(partialLow).contains("finding")
+                        && partialLow.dispositionAdvice().contains("Findings were recorded")
+                        && !partialText.contains("No findings in inspected content")
+                        && partialText.contains("ARC008") && partialText.contains("Coverage warning"),
+                ReportFormatter.summaryLine(partialLow) + " :: " + partialLow.dispositionAdvice()
+                        + " :: " + partialText);
+        String mixedOverview = ReportFormatter.overview(Arrays.asList(
+                completeBenign, completeLow, partialBenign, partialLow));
+        c.that("mixed overview separates findings from complete and partial no-finding scans",
+                mixedOverview.contains("1 clean") &&                 mixedOverview.contains("1 with findings")
+                        && mixedOverview.contains("1 incomplete (no findings")
+                        && mixedOverview.contains("1 incomplete with findings"),
+                mixedOverview);
     }
 
     private static void qualifiedSurfaces(ActionsTest.Checker c, ScanReport partial) {
@@ -115,19 +159,18 @@ public final class IncompleteScanCleanRegression {
     }
 
     private static void readFailures(ActionsTest.Checker c, Fixtures fixtures) {
-        // An unreadable source member in an otherwise benign plugin.
-        File dir = fixtures.directoryPlugin("unreadable-member",
-                Fixtures.manifest("demo.unreadable", "Unreadable Member", "demo.A"),
-                Fixtures.sources("src/demo/A.java", BENIGN, "src/demo/B.java", BENIGN));
-        File locked = new File(dir, "src/demo/B.java");
-        boolean denied = locked.setReadable(false, false) && !locked.canRead();
-        c.that("fixture: a member really is unreadable (needs a non-root user)", denied, locked.toString());
-        ScanReport r = new PluginScanner(IocDatabase.empty()).scan(dir, ScanBudget.unlimited());
-        locked.setReadable(true, false);
+        Map<String, byte[]> members = new LinkedHashMap<String, byte[]>();
+        members.put("manifest.json", Fixtures.bytes(Fixtures.manifest("demo.unreadable",
+                "Unreadable Member", "demo.A")));
+        members.put("src/demo/A.java", Fixtures.bytes(BENIGN));
+        members.put("src/demo/B.java", Fixtures.bytes(BENIGN));
+        File archive = fixtures.deflatedArchiveWithUnreadableMember("unreadable-member.mtp", members,
+                "src/demo/B.java");
+        ScanReport r = new PluginScanner(IocDatabase.empty()).scan(archive, ScanBudget.unlimited());
         c.that("unreadable member => not COMPLETE, not an unqualified CLEAN",
                 r.coverage() == Coverage.PARTIAL && !r.errors.isEmpty()
                         && !ReportFormatter.summaryLine(r).startsWith("Clean")
-                        && r.dispositionLabel().equals("Incomplete scan"),
+                        && !r.dispositionLabel().equals("Clean"),
                 r.coverage() + " :: " + r.errors + " :: " + ReportFormatter.summaryLine(r));
 
         // A nested jar whose member is corrupt.
@@ -154,23 +197,92 @@ public final class IncompleteScanCleanRegression {
 
         nestedBoundaries(c, fixtures);
 
-        // A manifest that cannot be read.
-        File mdir = fixtures.directoryPlugin("unreadable-manifest",
-                Fixtures.manifest("demo.mf", "Manifest", "demo.A"),
-                Fixtures.sources("src/demo/A.java", BENIGN));
-        File mf = new File(mdir, "manifest.json");
-        mf.setReadable(false, false);
-        ScanReport m = new PluginScanner(IocDatabase.empty()).scan(mdir, ScanBudget.unlimited());
-        mf.setReadable(true, false);
-        c.that("unreadable manifest => not COMPLETE", m.coverage() != Coverage.COMPLETE
+        Map<String, byte[]> manifestMembers = new LinkedHashMap<String, byte[]>();
+        manifestMembers.put("manifest.json",
+                Fixtures.bytes(Fixtures.manifest("demo.mf", "Manifest", "demo.A")));
+        manifestMembers.put("src/demo/A.java", Fixtures.bytes(BENIGN));
+        File unreadableManifest = fixtures.deflatedArchiveWithUnreadableMember(
+                "unreadable-manifest.mtp", manifestMembers, "manifest.json");
+        ScanReport m = new PluginScanner(IocDatabase.empty()).scan(unreadableManifest, ScanBudget.unlimited());
+        c.that("unreadable manifest => PARTIAL", m.coverage() == Coverage.PARTIAL
                 && !ReportFormatter.summaryLine(m).startsWith("Clean"),
                 m.coverage() + " :: " + ReportFormatter.summaryLine(m));
         String mText = ReportFormatter.plainText(m);
-        c.that("unreadable manifest is a coverage limit, so no threat findings are reported",
-                m.hasRule("MFT012") && mText.contains("No findings in inspected content")
-                        && mText.contains("Coverage warning"), mText);
+        c.that("unreadable manifest is partial and retains its coverage notice",
+                m.coverage() == Coverage.PARTIAL && m.hasRule("MFT012")
+                        && mText.contains("Coverage warning") && mText.contains("MFT012"), mText);
         unsupported(c, fixtures);
         nestedBudget(c, fixtures);
+    }
+
+    private static void directoryListingCutoffs(ActionsTest.Checker c, Fixtures fixtures) {
+        StringBuilder deepPath = new StringBuilder();
+        for (int i = 0; i < 25; i++) {
+            deepPath.append("d/");
+        }
+        deepPath.append("omitted.txt");
+        File deep = fixtures.directoryPlugin("deep-directory-listing",
+                Fixtures.manifest("demo.deep", "Deep Directory", "demo.A"),
+                Fixtures.sources("src/demo/A.java", BENIGN, deepPath.toString(), "not inspected"));
+        ScanReport depthLimited = new PluginScanner(IocDatabase.empty()).scan(deep, ScanBudget.unlimited());
+        c.that("directory depth cutoff is PARTIAL and keeps SCN001 without a bare all-clear",
+                depthLimited.coverage() == Coverage.PARTIAL && depthLimited.hasRule("SCN001")
+                        && !ReportFormatter.summaryLine(depthLimited).equals("Clean")
+                        && !ReportFormatter.summaryLine(depthLimited).equals("Trusted")
+                        && depthLimited.contentHash.length() == 0,
+                depthLimited.coverage() + " :: " + ReportFormatter.summaryLine(depthLimited));
+
+        File countLimited = fixtures.directoryPlugin("count-limited-directory",
+                Fixtures.manifest("demo.count", "Count Limited", "demo.A"),
+                Fixtures.sources("src/demo/A.java", BENIGN));
+        try {
+            for (int i = 0; i < 8001; i++) {
+                if (!new File(countLimited, String.format("f%05d.dat", i)).createNewFile()) {
+                    throw new IllegalStateException("could not create count-cap fixture member " + i);
+                }
+            }
+        } catch (java.io.IOException e) {
+            throw new IllegalStateException("could not create count-cap fixture", e);
+        }
+        ScanReport countLimitedReport = new PluginScanner(IocDatabase.empty()).scan(countLimited,
+                ScanBudget.unlimited());
+        c.that("directory file-count cutoff is PARTIAL with no partial package identity",
+                countLimitedReport.coverage() == Coverage.PARTIAL && countLimitedReport.hasRule("SCN001")
+                        && countLimitedReport.contentHash.length() == 0
+                        && !ReportFormatter.summaryLine(countLimitedReport).equals("Clean")
+                        && !ReportFormatter.summaryLine(countLimitedReport).equals("Trusted"),
+                countLimitedReport.coverage() + " :: " + countLimitedReport.filesScanned());
+
+        Map<String, byte[]> members = new LinkedHashMap<String, byte[]>();
+        members.put("manifest.json", Fixtures.bytes(Fixtures.manifest("demo.sibling", "Sibling", "demo.A")));
+        members.put("src/demo/A.java", Fixtures.bytes(BENIGN));
+        File installed = fixtures.installedArchive("deep-sidecar-listing", members, null);
+        Fixtures.writeBytes(new File(installed, "a/b/c/d/omitted.txt"), Fixtures.bytes("not inspected"));
+        ScanReport siblingsLimited = new PluginScanner(IocDatabase.empty()).scan(installed,
+                ScanBudget.unlimited());
+        c.that("installed sidecar depth cutoff is PARTIAL and reports SCN001",
+                siblingsLimited.coverage() == Coverage.PARTIAL && siblingsLimited.hasRule("SCN001")
+                        && siblingsLimited.contentHash.length() == 0
+                        && !ReportFormatter.summaryLine(siblingsLimited).equals("Clean")
+                        && !ReportFormatter.summaryLine(siblingsLimited).equals("Trusted"),
+                siblingsLimited.coverage() + " :: " + ReportFormatter.summaryLine(siblingsLimited));
+
+        File countLimitedSiblings = fixtures.installedArchive("count-limited-sidecars", members, null);
+        try {
+            for (int i = 0; i < 401; i++) {
+                if (!new File(countLimitedSiblings, String.format("s%03d.dat", i)).createNewFile()) {
+                    throw new IllegalStateException("could not create sidecar count fixture " + i);
+                }
+            }
+        } catch (java.io.IOException e) {
+            throw new IllegalStateException("could not create sidecar count fixture", e);
+        }
+        ScanReport sidecarCountLimited = new PluginScanner(IocDatabase.empty()).scan(countLimitedSiblings,
+                ScanBudget.unlimited());
+        c.that("installed sidecar count cutoff is PARTIAL with SCN001",
+                sidecarCountLimited.coverage() == Coverage.PARTIAL && sidecarCountLimited.hasRule("SCN001")
+                        && sidecarCountLimited.contentHash.length() == 0,
+                sidecarCountLimited.coverage() + " :: " + sidecarCountLimited.filesScanned());
     }
 
     private static void unsupported(ActionsTest.Checker c, Fixtures fixtures) {
@@ -217,6 +329,16 @@ public final class IncompleteScanCleanRegression {
                         && absentJson.contains("\"disposition\": \"Could not scan\"")
                         && absentJson.contains("\"verdict\": \"UNREADABLE\""),
                 absent.coverage() + " :: " + absentText + " :: " + absentOverview);
+
+        File invalidArchive = fixtures.unreadableArchive("unreadable-root.mtp");
+        ScanReport unreadableRoot = new PluginScanner(IocDatabase.empty()).scan(invalidArchive,
+                ScanBudget.unlimited());
+        c.that("fully unreadable root package remains unsupported/unreadable",
+                unreadableRoot.verdict() == Verdict.UNREADABLE
+                        && unreadableRoot.coverage() == Coverage.UNSUPPORTED_OR_UNREADABLE
+                        && ReportFormatter.overview(Arrays.asList(unreadableRoot)).contains("1 unreadable")
+                        && !ReportFormatter.summaryLine(unreadableRoot).startsWith("Clean"),
+                unreadableRoot.coverage() + " :: " + ReportFormatter.summaryLine(unreadableRoot));
 
     }
 

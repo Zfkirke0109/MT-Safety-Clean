@@ -122,6 +122,21 @@ public final class ScanReport {
         return false;
     }
 
+    /** Findings of any severity, excluding notices that only describe scan coverage. */
+    public int findingCount() {
+        int count = 0;
+        for (Signal signal : signals) {
+            if (!"SCN001".equals(signal.ruleId) && !"MFT012".equals(signal.ruleId)) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    public boolean hasFindings() {
+        return findingCount() > 0;
+    }
+
     public Verdict verdict() {
         return verdict;
     }
@@ -145,19 +160,40 @@ public final class ScanReport {
      */
     public String dispositionLabel() {
         if (coverage() != Coverage.PARTIAL) {
+            if (verdict == Verdict.CLEAN && hasFindings()) {
+                return "Findings below verdict threshold";
+            }
+            if (verdict == Verdict.TRUSTED && hasFindings()) {
+                return "Trusted identity (findings recorded)";
+            }
             return verdict.label();
         }
         if (verdict == Verdict.CLEAN) {
-            return "Incomplete scan";
+            return hasFindings() ? "Incomplete scan (findings below verdict threshold)" : "Incomplete scan";
         }
         if (verdict == Verdict.TRUSTED) {
-            return "Trusted identity (inspection incomplete)";
+            return hasFindings() ? "Trusted identity (findings recorded; inspection incomplete)"
+                    : "Trusted identity (inspection incomplete)";
         }
         return verdict.label() + " (inspection incomplete)";
     }
 
     /** Advice matching {@link #dispositionLabel()}. */
     public String dispositionAdvice() {
+        if (verdict == Verdict.TRUSTED && hasFindings()) {
+            String advice = "You marked this exact version as trusted, but findings were recorded. Review them.";
+            if (coverage() == Coverage.PARTIAL) {
+                return advice + " Inspection is incomplete.";
+            }
+            return advice;
+        }
+        if (verdict == Verdict.CLEAN && hasFindings()) {
+            String advice = "Findings were recorded, but the scan did not reach a higher-risk verdict. Review them.";
+            if (coverage() == Coverage.PARTIAL) {
+                return advice + " Inspection is incomplete; this is not an all-clear.";
+            }
+            return advice;
+        }
         if (coverage() != Coverage.PARTIAL) {
             return verdict.advice();
         }

@@ -430,6 +430,11 @@ public abstract class PluginPackage {
                 return;
             }
             for (int i = 0; i < children.length; i++) {
+                if (out.size() >= MAX_FILES) {
+                    listingTruncated = true;
+                    noteAnomaly("directory holds more than " + MAX_FILES + " files; listing truncated");
+                    break;
+                }
                 File child = children[i];
                 String name = prefix + child.getName();
                 if (escapesRoot(child)) {
@@ -541,6 +546,9 @@ public abstract class PluginPackage {
         @Override
         public List<String> structuralAnomalies(ScanBudget budget) throws IOException {
             entries();
+            if (listingTruncated) {
+                budget.markTruncated();
+            }
             return anomalies;
         }
     }
@@ -562,6 +570,7 @@ public abstract class PluginPackage {
         private final File dir;
         private final ArchivePackage delegate;
         private List<Entry> cached;
+        private boolean listingTruncated;
 
         InstalledArchivePackage(File dir, ArchivePackage delegate) {
             this.dir = dir;
@@ -606,14 +615,21 @@ public abstract class PluginPackage {
         }
 
         private void collectSiblings(File folder, String prefix, int depth, List<Entry> out, String rootCanonical) {
-            if (depth > MAX_SIBLING_DEPTH || out.size() >= delegate.entriesCountHint() + MAX_SIBLINGS) {
+            int maxEntries = delegate.entriesCountHint() + MAX_SIBLINGS;
+            if (depth > MAX_SIBLING_DEPTH || out.size() >= maxEntries) {
+                listingTruncated = true;
                 return;
             }
             File[] children = folder.listFiles();
             if (children == null) {
+                listingTruncated = true;
                 return;
             }
             for (int i = 0; i < children.length; i++) {
+                if (out.size() >= maxEntries) {
+                    listingTruncated = true;
+                    return;
+                }
                 File child = children[i];
                 String name = prefix + child.getName();
                 if (depth == 0 && child.getName().equals(INSTALLED_ARCHIVE)) {
@@ -660,12 +676,20 @@ public abstract class PluginPackage {
 
         @Override
         public String contentHash(ScanBudget budget) throws IOException {
+            entries();
+            if (listingTruncated) {
+                return "";
+            }
             return delegate.contentHash(budget);
         }
 
         @Override
         public List<String> structuralAnomalies(ScanBudget budget) throws IOException {
-            return delegate.structuralAnomalies(budget);
+            List<String> problems = new ArrayList<String>(delegate.structuralAnomalies(budget));
+            if (listingTruncated) {
+                budget.markTruncated();
+            }
+            return problems;
         }
 
         @Override
