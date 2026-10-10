@@ -37,7 +37,7 @@ the same 278 checks. This is the unchanged existing suite, not PR0 test coverage
 After the test-only additions, `bash tools/build.sh test` passed **282 checks, 0 failed**, exit status
 **0**. The tests include a fixed-timestamp JDK DEFLATE ZIP, a duplicate-name ZIP with conflicting benign contents,
 an inert method-95 header marker, malformed/unsupported signature definition checks, and disconnected
-private-data/network API co-occurrence. The generated archives are small: the DEFLATE fixture was 453
+sensitive-data/network API co-occurrence. The generated archives are small: the DEFLATE fixture was 489
 bytes, the duplicate fixture 653 bytes, and the method-95 marker fixture 647 bytes.
 Hashes from this local run were respectively `2f7268125798d5e1500c8bacf99711cc8357d0343a4a711205b02136321381ac`,
 `bbab7e70192eea29e75d76489e56e9f40bcbbef711cb92d0d8ae1ef6457d3788`, and
