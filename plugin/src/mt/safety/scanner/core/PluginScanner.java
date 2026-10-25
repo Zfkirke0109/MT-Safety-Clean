@@ -15,6 +15,7 @@ public final class PluginScanner {
 
     private final IocDatabase database;
     private final SignatureDatabase signatures;
+    private final DirectoryListing.Opener listing;
 
     public PluginScanner(IocDatabase database) {
         this(database, null);
@@ -26,8 +27,13 @@ public final class PluginScanner {
      * @param signatures a database in ClamAV's text formats, or null for none
      */
     public PluginScanner(IocDatabase database, SignatureDatabase signatures) {
+        this(database, signatures, DirectoryListing.defaultOpener());
+    }
+
+    PluginScanner(IocDatabase database, SignatureDatabase signatures, DirectoryListing.Opener listing) {
         this.database = database == null ? IocDatabase.empty() : database;
         this.signatures = signatures == null ? SignatureDatabase.empty() : signatures;
+        this.listing = listing;
     }
 
     /** The signature database this scanner matches against; empty when none was loaded. */
@@ -40,7 +46,7 @@ public final class PluginScanner {
         long started = System.currentTimeMillis();
         PluginPackage pkg = null;
         try {
-            pkg = PluginPackage.open(path);
+            pkg = PluginPackage.open(path, listing);
             List<PluginPackage.Entry> entries = pkg.entries();
 
             // A package zipped with a wrapping folder is still a plugin; normalise before judging.

@@ -14,6 +14,7 @@ import mt.safety.scanner.core.DirectoryListing;
 import mt.safety.scanner.core.Json;
 import mt.safety.scanner.core.PluginManifest;
 import mt.safety.scanner.core.PluginPackage;
+import mt.safety.scanner.core.ScanBudget;
 
 /**
  * Moves a plugin out of the way without destroying it.
@@ -33,14 +34,16 @@ public final class Quarantine {
     public interface MoveGuard {
         boolean allow(File pluginDir);
 
+        /** An existing source approval never implies approval of different copied bytes. */
         default boolean allowCopyTarget(File sourceDir, File copiedTarget) {
-            return true;
+            return false;
         }
     }
 
     private static final String INFO_FILE = "quarantine-info.json";
     private static final int MAX_DEPTH = 24;
-    /** Test seam for deterministic copy-fallback coverage. */
+    private static final int MAX_ACTION_ENTRIES = 8000;
+    /** Test seam for deterministic failed-rename coverage. */
     private static final String FORCE_COPY_FALLBACK_PROPERTY = "mtsafety.forceCopyFallback";
 
     /** What happened, in a sentence fit to show the user. */
@@ -77,6 +80,7 @@ public final class Quarantine {
     }
 
     private final File store;
+    private String listingProblem;
 
     /**
      * @param store a directory this plugin owns, normally a subdirectory of
@@ -88,6 +92,11 @@ public final class Quarantine {
 
     public File store() {
         return store;
+    }
+
+    /** Why the last quarantine listing was unavailable; null for a complete listing. */
+    public String listingProblem() {
+        return listingProblem;
     }
 
     /**
@@ -139,26 +148,27 @@ public final class Quarantine {
     }
 
     /**
-     * Moves {@code pluginDir} into the quarantine store.
-     *
-     * <p>Refuses anything that is not recognisably an installed plugin, and refuses to act on itself,
-     * so a mistyped command cannot take out the scanner or an unrelated folder.
+     * Retained for source compatibility. A caller must supply the scan-bound guard overload.
      */
     public Result quarantine(File pluginDir, String ownPluginId) {
-        if (requiresGuardedArchiveMove(pluginDir)) {
-            return new Result(false, "Installed archive directories must be quarantined from a scan-"
-                    + "verified action; nothing was moved.");
-        }
         return quarantine(pluginDir, ownPluginId, null);
     }
 
     /**
      * Moves {@code pluginDir} only if {@code guard} still approves it immediately before filesystem
-     * mutation. The guard is checked again around the copy fallback, which is not atomic.
+     * mutation. If rename fails, the source is retained; copy-and-delete is not atomic enough to
+     * preserve the authorized snapshot safely.
      */
     public Result quarantine(File pluginDir, String ownPluginId, MoveGuard guard) {
+        if (guard == null) {
+            return new Result(false, "Installed plugins must be quarantined from a scan-verified action;"
+                    + " nothing was moved.");
+        }
         if (pluginDir == null || !pluginDir.isDirectory()) {
             return new Result(false, "Not a directory: " + pluginDir);
+        }
+        if (ownPluginId == null || ownPluginId.length() == 0) {
+            return new Result(false, "The scanner's identity is unavailable; nothing was moved.");
         }
         if (!DirectoryListing.supportedFor(pluginDir)) {
             return new Result(false, "This runtime cannot safely enumerate every file in "
@@ -170,9 +180,11 @@ public final class Quarantine {
             return new Result(false, "No manifest.json or plugin.mtp here, so this is not an installed"
                     + " plugin: " + pluginDir.getName());
         }
-        // A cross-volume move falls back to copy-then-delete, and a directory link inside the plugin
-        // would take that delete outside the plugin entirely. This is a tool for removing hostile
-        // plugins, so a hostile plugin planting such a link is the expected case, not a freak one.
+        String metadataProblem = reservedMetadataProblem(pluginDir);
+        if (metadataProblem != null) {
+            return new Result(false, metadataProblem);
+        }
+        // Refuse links even for rename: the source identity must describe this directory's contents.
         String escaping = findEscapingLink(pluginDir);
         if (escaping != null) {
             return new Result(false, "This plugin contains a link pointing outside its own folder ("
@@ -180,7 +192,7 @@ public final class Quarantine {
                     + " Inspect it by hand.");
         }
         String pluginId = readPluginId(pluginDir);
-        if (ownPluginId != null && ownPluginId.equals(pluginId)) {
+        if (ownPluginId.equals(pluginId) || "mt.safety.scanner".equals(pluginId)) {
             return new Result(false, "That is this scanner. Uninstall it from MT Manager's plugin list"
                     + " if you want it gone.");
         }
@@ -189,9 +201,7 @@ public final class Quarantine {
             return new Result(false, storeProblem);
         }
 
-        // A bulk action moves several plugins in a tight loop, so the timestamp alone is not unique:
-        // two plugins with the same directory name can land in the same millisecond, and the copy
-        // fallback would then write into an existing quarantine directory and merge the two.
+        // A bulk action can encounter two plugins with the same directory name in one millisecond.
         File target = freeDestination(pluginDir.getName());
         if (target == null) {
             return new Result(false, "Could not find a free name in the quarantine folder for "
@@ -205,31 +215,12 @@ public final class Quarantine {
         }
         boolean moved = !Boolean.getBoolean(FORCE_COPY_FALLBACK_PROPERTY) && pluginDir.renameTo(target);
         if (!moved) {
-            rejected = checkMoveGuard(pluginDir, guard);
-            if (rejected != null) {
-                return rejected;
-            }
-            // A rename across storage volumes fails, so fall back to copying and then removing.
-            try {
-                copyTree(pluginDir, target, 0);
-            } catch (IOException e) {
-                deleteTree(target, 0);
-                return new Result(false, "Could not move the plugin: " + e.getMessage());
-            }
-            rejected = checkMoveGuard(pluginDir, guard);
-            if (rejected != null) {
-                deleteTree(target, 0);
-                return new Result(false, rejected.message + " The source was left in place.");
-            }
-            rejected = checkCopyTargetGuard(pluginDir, target, guard);
-            if (rejected != null) {
-                deleteTree(target, 0);
-                return new Result(false, rejected.message + " The source was left in place.");
-            }
-            if (!deleteTree(pluginDir, 0)) {
-                return new Result(false, "Copied the plugin to quarantine but could not remove the original"
-                        + " at " + originalPath + ". Remove it from MT Manager's plugin list instead.");
-            }
+            // A copy followed by recursive deletion cannot bind each deleted file to the authorized
+            // snapshot atomically. Refusing also avoids cleaning up a destination another process
+            // could have replaced. Cross-volume moves must be handled manually in MT Manager.
+            return new Result(false, "Could not rename the plugin into quarantine. Copy-and-delete moves"
+                    + " are not supported safely; the source was left in place. Use MT Manager's plugin"
+                    + " management screen.");
         }
 
         if (!writeInfo(target, pluginId, originalPath)) {
@@ -259,25 +250,39 @@ public final class Quarantine {
         return null;
     }
 
-    private Result checkCopyTargetGuard(File sourceDir, File copiedTarget, MoveGuard guard) {
-        if (guard == null) {
-            return null;
+    /** A directory entry check also observes dangling links, for which File.exists() is false. */
+    private static String reservedMetadataProblem(File directory) {
+        final boolean[] reserved = {false};
+        final ActionTraversal traversal = new ActionTraversal();
+        try {
+            DirectoryListing.forEachChild(directory, new DirectoryListing.Visitor() {
+                @Override
+                public void visit(File child) throws IOException {
+                    traversal.visit();
+                    if (INFO_FILE.equals(child.getName())) {
+                        reserved[0] = true;
+                        throw new IOException("reserved metadata entry");
+                    }
+                }
+            });
+        } catch (IOException e) {
+            if (!reserved[0]) {
+                return "The plugin's directory could not be checked safely; nothing was moved.";
+            }
         }
-        String escaping = findEscapingLink(copiedTarget);
-        if (escaping != null) {
-            return new Result(false, "The copied plugin contains a link escaping its own folder ("
-                    + escaping + "); nothing was moved.");
-        }
-        if (!guard.allowCopyTarget(sourceDir, copiedTarget)) {
-            return new Result(false, "The copied plugin could not be reverified; nothing was moved.");
-        }
-        return null;
+        return reserved[0] ? "The plugin already contains " + INFO_FILE
+                + "; quarantine would overwrite its contents, so nothing was moved." : null;
     }
 
-    private static boolean requiresGuardedArchiveMove(File pluginDir) {
-        return pluginDir != null && pluginDir.isDirectory()
-                && !new File(pluginDir, "manifest.json").isFile()
-                && new File(pluginDir, PluginPackage.INSTALLED_ARCHIVE).isFile();
+    private static final class ActionTraversal {
+        private final ScanBudget budget = ScanBudget.interactive();
+        private int entries;
+
+        void visit() throws IOException {
+            if (++entries > MAX_ACTION_ENTRIES || budget.exhausted()) {
+                throw new IOException("directory safety check exceeded its entry or time limit");
+            }
+        }
     }
 
     /** Puts a quarantined plugin back where it came from. */
@@ -287,10 +292,18 @@ public final class Quarantine {
             return new Result(false, storeProblem);
         }
         List<Item> items = list();
+        if (listingProblem != null) {
+            return new Result(false, listingProblem);
+        }
         for (int i = 0; i < items.size(); i++) {
             Item item = items.get(i);
             if (!matches(item, identifier)) {
                 continue;
+            }
+            String escaping = findEscapingLink(item.directory);
+            if (escaping != null) {
+                return new Result(false, "The quarantined plugin cannot be safely resolved (" + escaping
+                        + "); nothing was restored.");
             }
             File destination = new File(item.originalPath);
             if (destination.exists()) {
@@ -301,28 +314,13 @@ public final class Quarantine {
             if (parent != null && !parent.isDirectory() && !parent.mkdirs()) {
                 return new Result(false, "Could not recreate " + parent.getAbsolutePath());
             }
-            new File(item.directory, INFO_FILE).delete();
-            if (item.directory.renameTo(destination)) {
+            if (!Boolean.getBoolean(FORCE_COPY_FALLBACK_PROPERTY) && item.directory.renameTo(destination)) {
+                new File(destination, INFO_FILE).delete();
                 return new Result(true, "Restored to " + item.originalPath + ". Restart MT Manager.");
             }
-            try {
-                copyTree(item.directory, destination, 0);
-                // The plugin is back either way, but a copy left behind is worth saying out loud:
-                // silence here would leave the user with a duplicate they never hear about.
-                if (!deleteTree(item.directory, 0)) {
-                    return new Result(true, "Restored to " + item.originalPath
-                            + ", but the quarantined copy could not be removed. Delete it with"
-                            + " \"purge " + item.directory.getName() + "\". Restart MT Manager.");
-                }
-                return new Result(true, "Restored to " + item.originalPath + ". Restart MT Manager.");
-            } catch (IOException e) {
-                // Leave nothing half-written at the destination: MT Manager would try to load it, and
-                // the next restore attempt would refuse because something already exists there.
-                deleteTree(destination, 0);
-                writeInfo(item.directory, item.pluginId, item.originalPath);
-                return new Result(false, "Could not restore: " + e.getMessage()
-                        + ". The plugin is still in quarantine and nothing was left behind.");
-            }
+            return new Result(false, "Could not rename the quarantined plugin back to " + item.originalPath
+                    + ". Copy-and-delete restores are not supported safely. The plugin and its restore"
+                    + " note remain in quarantine; inspect it by hand.");
         }
         return new Result(false, "Nothing in quarantine matches \"" + identifier + "\".");
     }
@@ -334,6 +332,9 @@ public final class Quarantine {
             return new Result(false, storeProblem);
         }
         List<Item> items = list();
+        if (listingProblem != null) {
+            return new Result(false, listingProblem);
+        }
         for (int i = 0; i < items.size(); i++) {
             Item item = items.get(i);
             if (!matches(item, identifier)) {
@@ -350,17 +351,25 @@ public final class Quarantine {
     /** Everything currently held in quarantine. */
     public List<Item> list() {
         final List<Item> out = new ArrayList<Item>();
-        if (storeProblem() != null) {
+        final ActionTraversal traversal = new ActionTraversal();
+        listingProblem = storeProblem();
+        if (listingProblem != null) {
             // Whatever is behind a linked store is not this plugin's to report as quarantined.
             return out;
         }
+        if (!store.exists()) {
+            return out;
+        }
         if (!DirectoryListing.supportedFor(store)) {
+            listingProblem = "The quarantine listing is unavailable (" + DirectoryListing.unsupportedReason()
+                    + "); no restore or purge was authorized.";
             return out;
         }
         try {
             DirectoryListing.forEachChild(store, new DirectoryListing.Visitor() {
                 @Override
-                public void visit(File child) {
+                public void visit(File child) throws IOException {
+                    traversal.visit();
                     if (!child.isDirectory()) {
                         return;
                     }
@@ -389,8 +398,10 @@ public final class Quarantine {
                     out.add(new Item(child, pluginId, originalPath, stamp));
                 }
             });
-        } catch (IOException ignored) {
+        } catch (IOException failure) {
             // A listing failure means "do not trust this as a quarantine list".
+            listingProblem = "The quarantine listing was incomplete (" + failure.getMessage()
+                    + "); no restore or purge was authorized.";
             return new ArrayList<Item>();
         }
         return out;
@@ -472,7 +483,7 @@ public final class Quarantine {
             if (isLink(root)) {
                 return root.getName();
             }
-            return walkForEscape(root, root.getCanonicalPath(), 0);
+            return walkForEscape(root, root.getCanonicalPath(), 0, new ActionTraversal());
         } catch (IOException e) {
             // If the tree cannot even be resolved, treat it as unsafe to move.
             return root.getName();
@@ -497,7 +508,8 @@ public final class Quarantine {
         return !expected.equals(file.getCanonicalPath());
     }
 
-    private static String walkForEscape(File dir, String rootCanonical, int depth) throws IOException {
+    private static String walkForEscape(File dir, String rootCanonical, int depth,
+            ActionTraversal traversal) throws IOException {
         if (depth > MAX_DEPTH) {
             return dir.getName();
         }
@@ -509,17 +521,21 @@ public final class Quarantine {
             DirectoryListing.forEachChild(dir, new DirectoryListing.Visitor() {
                 @Override
                 public void visit(File child) throws IOException {
+                    traversal.visit();
                     if (found[0] != null) {
-                        return;
+                        throw new IOException("unsafe directory entry: " + found[0]);
                     }
                     String canonical = child.getCanonicalPath();
                     if (!canonical.equals(rootCanonical)
                             && !canonical.startsWith(rootCanonical + File.separator)) {
                         found[0] = child.getName();
-                        return;
+                        throw new IOException("escaping directory entry: " + found[0]);
                     }
                     if (child.isDirectory()) {
-                        found[0] = walkForEscape(child, rootCanonical, depth + 1);
+                        found[0] = walkForEscape(child, rootCanonical, depth + 1, traversal);
+                        if (found[0] != null) {
+                            throw new IOException("unsafe directory entry: " + found[0]);
+                        }
                     }
                 }
             });
@@ -527,43 +543,6 @@ public final class Quarantine {
             return dir.getName();
         }
         return found[0];
-    }
-
-    private static void copyTree(File from, File to, int depth) throws IOException {
-        if (depth > MAX_DEPTH) {
-            throw new IOException("directory nested too deeply: " + from.getName());
-        }
-        if (from.isDirectory()) {
-            if (!to.isDirectory() && !to.mkdirs()) {
-                throw new IOException("could not create " + to.getAbsolutePath());
-            }
-            if (!DirectoryListing.supportedFor(from)) {
-                throw new IOException("could not list " + from.getAbsolutePath() + ": "
-                        + DirectoryListing.unsupportedReason());
-            }
-            DirectoryListing.forEachChild(from, new DirectoryListing.Visitor() {
-                @Override
-                public void visit(File child) throws IOException {
-                    copyTree(child, new File(to, child.getName()), depth + 1);
-                }
-            });
-            return;
-        }
-        InputStream in = new FileInputStream(from);
-        try {
-            OutputStream out = new FileOutputStream(to);
-            try {
-                byte[] buffer = new byte[1 << 16];
-                int read;
-                while ((read = in.read(buffer)) > 0) {
-                    out.write(buffer, 0, read);
-                }
-            } finally {
-                out.close();
-            }
-        } finally {
-            in.close();
-        }
     }
 
     /**
@@ -587,7 +566,10 @@ public final class Quarantine {
             // Unresolvable means unverifiable. Deleting the name alone is the only safe move left.
             return file.delete();
         }
-        return deleteTree(file, canonicalOrNull(file), depth);
+        if (findEscapingLink(file) != null) {
+            return false;
+        }
+        return deleteTree(file, canonicalOrNull(file), depth, new ActionTraversal());
     }
 
     /**
@@ -596,7 +578,8 @@ public final class Quarantine {
      * <p>A child resolving outside the root is deleted as the link it is, never descended into:
      * deleting through a link would take files with it that were never part of what was removed.
      */
-    private static boolean deleteTree(File file, String rootCanonical, int depth) {
+    private static boolean deleteTree(File file, String rootCanonical, int depth,
+            ActionTraversal traversal) {
         if (file == null || !file.exists() || depth > MAX_DEPTH) {
             return false;
         }
@@ -607,8 +590,11 @@ public final class Quarantine {
             try {
                 DirectoryListing.forEachChild(file, new DirectoryListing.Visitor() {
                     @Override
-                    public void visit(File child) {
-                        deleteTree(child, rootCanonical, depth + 1);
+                    public void visit(File child) throws IOException {
+                        traversal.visit();
+                        if (!deleteTree(child, rootCanonical, depth + 1, traversal)) {
+                            throw new IOException("could not delete " + child.getName());
+                        }
                     }
                 });
             } catch (IOException e) {

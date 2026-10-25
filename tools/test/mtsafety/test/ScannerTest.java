@@ -30,6 +30,7 @@ import mt.safety.scanner.core.Verdict;
 public final class ScannerTest {
 
     private static int passed;
+    private static int skipped;
     private static final List<String> failures = new ArrayList<String>();
 
     public static void main(String[] args) throws Exception {
@@ -62,9 +63,10 @@ public final class ScannerTest {
         SignatureTest.run(checker, fixtures);
         ActionsTest.run(checker);
         IncompleteScanCleanRegression.run(checker, fixtures);
+        TraversalRegression.run(checker);
 
         System.out.println();
-        System.out.println(passed + " checks passed, " + failures.size() + " failed");
+        System.out.println(passed + " checks passed, " + failures.size() + " failed, " + skipped + " skipped");
         if (!failures.isEmpty()) {
             for (int i = 0; i < failures.size(); i++) {
                 System.out.println("  FAILED: " + failures.get(i));
@@ -1319,7 +1321,8 @@ public final class ScannerTest {
         File victim = fixtures.directoryPlugin("to-quarantine",
                 Fixtures.manifest("demo.victim", "Victim", "demo.A"),
                 Fixtures.sources("src/demo/A.java", benign));
-        mt.safety.scanner.Quarantine.Result moved = quarantine.quarantine(victim, "mt.safety.scanner");
+        mt.safety.scanner.Quarantine.Result moved =
+                ActionsTest.guardedQuarantine(quarantine, victim, "mt.safety.scanner");
         check("quarantine moves the plugin out of its folder",
                 moved.ok && !victim.exists() && quarantine.list().size() == 1,
                 moved.message);
@@ -1328,8 +1331,8 @@ public final class ScannerTest {
                 back.ok && victim.isDirectory() && new File(victim, "manifest.json").isFile()
                         && quarantine.list().isEmpty(),
                 back.message);
-        check("restore refuses to move this scanner itself",
-                !quarantine.quarantine(victim, "demo.victim").ok,
+        check("quarantine refuses to move this scanner itself",
+                !ActionsTest.guardedQuarantine(quarantine, victim, "demo.victim").ok,
                 "quarantining the scanner's own id must be refused");
 
         // Destructive commands have to be discoverable in both languages, not only English. MT
@@ -1642,6 +1645,13 @@ public final class ScannerTest {
     }
 
     private static void check(String description, boolean condition, String context) {
+        // Optional platform fixtures explicitly report their unavailable capability in context.
+        // Keep that missing evidence out of the passing-security-check count.
+        if (condition && context != null && context.startsWith("skipped")) {
+            skipped++;
+            System.out.println("  SKIP " + description + "  [" + context + "]");
+            return;
+        }
         if (condition) {
             passed++;
             System.out.println("  ok   " + description);

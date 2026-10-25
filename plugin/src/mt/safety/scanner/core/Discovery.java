@@ -1,6 +1,7 @@
 package mt.safety.scanner.core;
 
 import java.io.File;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -24,6 +25,8 @@ public final class Discovery {
     private static final int MAX_DEPTH = 5;
     private static final int MAX_RESULTS = 200;
     private static final int MAX_VISITS = 6000;
+    private static final long MAX_SEARCH_NANOS = 4000000000L;
+    private static final int MAX_PROBLEMS = 20;
 
     /** A discovered candidate. */
     public static final class Candidate {
@@ -36,7 +39,41 @@ public final class Discovery {
         }
     }
 
+    private static final class StopWalk extends IOException {
+        private static final long serialVersionUID = 1L;
+    }
+
     private int visits;
+    private long startedNanos;
+    private boolean incomplete;
+    private final List<String> problems = new ArrayList<String>();
+    private final Set<String> searchedDirectories = new HashSet<String>();
+
+    /** True when a limit or inaccessible directory prevented a complete search. */
+    public boolean incomplete() {
+        return incomplete;
+    }
+
+    public List<String> problems() {
+        return Collections.unmodifiableList(problems);
+    }
+
+    private void problem(String message) {
+        incomplete = true;
+        if (problems.size() < MAX_PROBLEMS && !problems.contains(message)) {
+            problems.add(message);
+        }
+    }
+
+    private boolean searchLimit(List<Candidate> found) {
+        if (visits >= MAX_VISITS || found.size() >= MAX_RESULTS
+                || System.nanoTime() - startedNanos >= MAX_SEARCH_NANOS) {
+            problem("Plugin discovery reached its entry, result or time limit; search incomplete.");
+            return true;
+        }
+        return false;
+    }
+
     private String excluded = "";
 
     /** Searches every readable root and returns the plugin packages found, de-duplicated. */
@@ -60,12 +97,22 @@ public final class Discovery {
         List<Candidate> found = new ArrayList<Candidate>();
         Set<String> seen = new HashSet<String>();
         visits = 0;
+        startedNanos = System.nanoTime();
+        incomplete = false;
+        problems.clear();
+        searchedDirectories.clear();
         for (int i = 0; i < roots.size(); i++) {
             File root = roots.get(i);
             if (root == null || !root.exists() || !root.canRead()) {
                 continue;
             }
-            walk(root, 0, found, seen);
+            if (searchLimit(found)) {
+                break;
+            }
+            // A narrower explicit root has its own depth origin. A directory seen under an earlier
+            // broad root may still need a deeper search here; keep only the work caps global.
+            searchedDirectories.clear();
+            walk(root, 0, found, seen, canonical(root));
         }
         Collections.sort(found, new Comparator<Candidate>() {
             @Override
@@ -79,29 +126,53 @@ public final class Discovery {
         return found;
     }
 
-    private void walk(File dir, int depth, List<Candidate> found, Set<String> seen) {
-        if (depth > MAX_DEPTH || found.size() >= MAX_RESULTS || ++visits > MAX_VISITS) {
+    private void walk(File dir, int depth, List<Candidate> found, Set<String> seen,
+            String rootCanonical) {
+        if (searchLimit(found)) {
             return;
         }
+        if (depth > MAX_DEPTH) {
+            problem("Plugin discovery reached its directory depth limit; search incomplete.");
+            return;
+        }
+        visits++;
         if (isExcluded(dir)) {
+            return;
+        }
+        if (!searchedDirectories.add(canonical(dir))) {
             return;
         }
         if (isInstalledPlugin(dir)) {
             record(dir, true, found, seen);
-            // An installed plugin's own subdirectories are part of it, not further plugins.
             return;
         }
-        File[] children = dir.listFiles();
-        if (children == null) {
-            return;
-        }
-        for (int i = 0; i < children.length; i++) {
-            File child = children[i];
-            if (child.isDirectory()) {
-                walk(child, depth + 1, found, seen);
-            } else if (isPackageFile(child)) {
-                record(child, false, found, seen);
-            }
+        try {
+            DirectoryListing.forEachChild(dir, new DirectoryListing.Visitor() {
+                @Override
+                public void visit(File child) throws IOException {
+                    if (searchLimit(found)) {
+                        throw new StopWalk();
+                    }
+                    visits++;
+                    String childCanonical = child.getCanonicalPath();
+                    if (!childCanonical.equals(rootCanonical)
+                            && !childCanonical.startsWith(rootCanonical + File.separator)) {
+                        problem("A plugin search entry resolves outside its search root; search incomplete.");
+                        return;
+                    }
+                    if (child.isDirectory()) {
+                        walk(child, depth + 1, found, seen, rootCanonical);
+                    } else if (isPackageFile(child)) {
+                        record(child, false, found, seen);
+                    }
+                }
+            });
+        } catch (StopWalk stopped) {
+            // The limit was recorded before stopping the stream.
+        } catch (IOException e) {
+            problem("Could not enumerate a plugin search directory: " + e.getMessage());
+        } catch (RuntimeException e) {
+            problem("Could not safely enumerate a plugin search directory: " + e.getClass().getSimpleName());
         }
     }
 

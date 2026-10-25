@@ -9,6 +9,7 @@ import java.util.Map;
 
 import mt.safety.scanner.core.Category;
 import mt.safety.scanner.core.Coverage;
+import mt.safety.scanner.core.DirectoryListingRegression;
 import mt.safety.scanner.core.IocDatabase;
 import mt.safety.scanner.core.PluginScanner;
 import mt.safety.scanner.core.ReportFormatter;
@@ -45,59 +46,6 @@ public final class IncompleteScanCleanRegression {
         }, new Fixtures(root));
         if (failed[0] > 0) {
             throw new AssertionError(failed[0] + " incomplete-scan checks failed");
-        }
-    }
-
-    private static final class ListingFailureFile extends File {
-        private static final long serialVersionUID = 1L;
-        private final String failurePath;
-
-        ListingFailureFile(File file) {
-            this(file, file);
-        }
-
-        ListingFailureFile(File file, File failure) {
-            super(file.getPath());
-            failurePath = failure.getPath();
-        }
-
-        @Override
-        public File[] listFiles() {
-            if (getPath().equals(failurePath)) {
-                return null;
-            }
-            File[] children = super.listFiles();
-            if (children != null) {
-                for (int i = 0; i < children.length; i++) {
-                    if (children[i].getPath().equals(failurePath)) {
-                        children[i] = new ListingFailureFile(children[i], new File(failurePath));
-                    }
-                }
-            }
-            return children;
-        }
-    }
-
-    private static final class InjectedRootListingFile extends File {
-        private static final long serialVersionUID = 1L;
-        private final String rootPath;
-        private final File injected;
-
-        InjectedRootListingFile(File root, File injected) {
-            super(root.getPath());
-            this.rootPath = root.getPath();
-            this.injected = injected;
-        }
-
-        @Override
-        public File[] listFiles() {
-            File[] children = super.listFiles();
-            if (children == null || !getPath().equals(rootPath)) {
-                return children;
-            }
-            File[] withInjected = Arrays.copyOf(children, children.length + 1);
-            withInjected[children.length] = injected;
-            return withInjected;
         }
     }
 
@@ -163,6 +111,12 @@ public final class IncompleteScanCleanRegression {
         lowSeverityCoverage(c, fixtures, complete, partial);
         externalCodeCoverage(c, fixtures);
         directoryCutoffs(c, fixtures);
+        DirectoryListingRegression.run(new DirectoryListingRegression.Checks() {
+            @Override
+            public void that(String description, boolean condition, String context) {
+                c.that(description, condition, context);
+            }
+        }, fixtures.root());
 
         ScanReport trusted = scanTrusted(plugin, ScanBudget.unlimited());
         trusted.setTruncated(true);
@@ -389,9 +343,9 @@ public final class IncompleteScanCleanRegression {
         File listed = fixtures.directoryPlugin("listing-failure",
                 Fixtures.manifest("demo.listing", "Listing Failure", "demo.A"),
                 Fixtures.sources("src/demo/A.java", BENIGN));
-        ScanReport listingFailure = new PluginScanner(IocDatabase.empty()).scan(
-                new ListingFailureFile(listed), ScanBudget.unlimited());
-        c.that("null directory listing is partial, records SCN001, and yields no hash",
+        ScanReport listingFailure = DirectoryListingRegression.scanWithListingFailure(
+                listed, listed, ScanBudget.unlimited());
+        c.that("failed streaming directory listing is partial, records SCN001, and yields no hash",
                 listingFailure.coverage() == Coverage.PARTIAL && listingFailure.hasRule("SCN001")
                         && listingFailure.contentHash.length() == 0 && listingFailure.hasRule("MFT012")
                         && !listingFailure.hasRule("MFT001"),
@@ -429,8 +383,8 @@ public final class IncompleteScanCleanRegression {
                 || !new File(wrapped, "src").renameTo(new File(wrapper, "src"))) {
             throw new IllegalStateException("could not create wrapped listing-failure fixture");
         }
-        ScanReport wrappedListingFailure = new PluginScanner(IocDatabase.empty()).scan(
-                new ListingFailureFile(wrapped, wrapper), ScanBudget.unlimited());
+        ScanReport wrappedListingFailure = DirectoryListingRegression.scanWithListingFailure(
+                wrapped, wrapper, ScanBudget.unlimited());
         c.that("incomplete wrapper listing does not report a missing manifest",
                 wrappedListingFailure.coverage() == Coverage.PARTIAL
                         && wrappedListingFailure.hasRule("MFT012")
@@ -509,10 +463,9 @@ public final class IncompleteScanCleanRegression {
         Map<String, byte[]> blockedSidecar = new LinkedHashMap<String, byte[]>();
         blockedSidecar.put("blocked/payload.txt", Fixtures.bytes("not listed"));
         File siblingListing = fixtures.installedArchive("sibling-listing-failure", members, blockedSidecar);
-        ScanReport siblingListingFailure = new PluginScanner(IocDatabase.empty()).scan(
-                new ListingFailureFile(siblingListing, new File(siblingListing, "blocked")),
-                ScanBudget.unlimited());
-        c.that("null installed-sibling listing is partial without claiming the archive manifest is missing",
+        ScanReport siblingListingFailure = DirectoryListingRegression.scanWithListingFailure(
+                siblingListing, new File(siblingListing, "blocked"), ScanBudget.unlimited());
+        c.that("failed installed-sibling stream is partial without claiming the archive manifest is missing",
                 siblingListingFailure.coverage() == Coverage.PARTIAL && siblingListingFailure.hasRule("SCN001")
                         && !siblingListingFailure.hasRule("MFT001")
                         && siblingListingFailure.contentHash.length() == 0,
@@ -521,10 +474,8 @@ public final class IncompleteScanCleanRegression {
 
         File siblingEscape = fixtures.installedArchive("sibling-escape", members, null);
         File outsideSiblingPath = new File(fixtures.root(), "outside-sibling-target");
-        ScanReport siblingEscapeReport = new PluginScanner(IocDatabase.empty()).scan(
-                new InjectedRootListingFile(siblingEscape,
-                        new CanonicalOverrideFile(siblingEscape, "escape-link",
-                                outsideSiblingPath.getAbsolutePath())),
+        ScanReport siblingEscapeReport = DirectoryListingRegression.scanWithExtraChild(siblingEscape,
+                new CanonicalOverrideFile(siblingEscape, "escape-link", outsideSiblingPath.getAbsolutePath()),
                 ScanBudget.unlimited());
         c.that("escaping installed sibling path is reported as incomplete coverage",
                 siblingEscapeReport.coverage() == Coverage.PARTIAL
@@ -535,11 +486,9 @@ public final class IncompleteScanCleanRegression {
                         + ReportFormatter.summaryLine(siblingEscapeReport));
 
         File siblingCanonicalFailure = fixtures.installedArchive("sibling-canonical-failure", members, null);
-        ScanReport siblingCanonicalFailureReport = new PluginScanner(IocDatabase.empty()).scan(
-                new InjectedRootListingFile(siblingCanonicalFailure,
-                        new CanonicalOverrideFile(siblingCanonicalFailure, "broken-link",
-                                "simulated canonical failure", true)),
-                ScanBudget.unlimited());
+        ScanReport siblingCanonicalFailureReport = DirectoryListingRegression.scanWithExtraChild(
+                siblingCanonicalFailure, new CanonicalOverrideFile(siblingCanonicalFailure, "broken-link",
+                        "simulated canonical failure", true), ScanBudget.unlimited());
         c.that("failed canonicalization of an installed sibling is reported as incomplete coverage",
                 siblingCanonicalFailureReport.coverage() == Coverage.PARTIAL
                         && siblingCanonicalFailureReport.hasRule("SCN001")

@@ -422,7 +422,7 @@ public final class ActionsTest {
         Fixtures.write(keepMe, "must survive");
         boolean linkMade = makeSymlink(new File(linked, "escape"), outside);
         if (linkMade) {
-            Quarantine.Result refused = quarantine.quarantine(linked, host.pluginId());
+            Quarantine.Result refused = guardedQuarantine(quarantine, linked, host.pluginId());
             check.that("a plugin containing a link out of its folder is not moved",
                     !refused.ok && linked.isDirectory(), refused.message);
             check.that("nothing outside the plugin was touched",
@@ -444,7 +444,7 @@ public final class ActionsTest {
         File linkedStorePlugin = new File(installed, "storelink");
         writePlugin(linkedStorePlugin, "store.link", "Store Link", HOSTILE);
         if (makeSymlink(linkedStorePath, linkedStoreTarget)) {
-            Quarantine.Result refusedStore = linkedStore.quarantine(linkedStorePlugin, host.pluginId());
+            Quarantine.Result refusedStore = guardedQuarantine(linkedStore, linkedStorePlugin, host.pluginId());
             check.that("a linked quarantine store root is refused",
                     !refusedStore.ok && linkedStorePlugin.isDirectory(), refusedStore.message);
             check.that("a linked quarantine store root is not listed or used",
@@ -482,7 +482,7 @@ public final class ActionsTest {
         Fixtures.write(sentinel, "must survive");
         File linkRoot = new File(installed, "linkroot");
         if (makeSymlink(linkRoot, realHome)) {
-            Quarantine.Result refusedRoot = quarantine.quarantine(linkRoot, host.pluginId());
+            Quarantine.Result refusedRoot = guardedQuarantine(quarantine, linkRoot, host.pluginId());
             check.that("a plugin directory that is itself a link is not moved",
                     !refusedRoot.ok && sentinel.isFile(), refusedRoot.message);
             linkRoot.delete();
@@ -499,7 +499,7 @@ public final class ActionsTest {
         File realChild = new File(linkedParent, "child");
         writePlugin(realChild, "under.link", "Under Link", HOSTILE);
         if (makeSymlink(viaLink, linkedParent)) {
-            Quarantine.Result underLink = quarantine.quarantine(new File(viaLink, "child"),
+            Quarantine.Result underLink = guardedQuarantine(quarantine, new File(viaLink, "child"),
                     host.pluginId());
             check.that("a plugin reached through a linked ancestor is still movable",
                     underLink.ok, underLink.message);
@@ -531,7 +531,7 @@ public final class ActionsTest {
                             return false;
                         }
                     });
-            check.that("copy fallback keeps the source when the copied target cannot be reverified",
+            check.that("failed quarantine rename refuses non-atomic copy-delete and keeps the source",
                     !refusedCopyTarget.ok && new File(installed, "copy-guard").isDirectory()
                             && quarantine.list().size() == quarantinedBeforeCopyGuard,
                     refusedCopyTarget.message);
@@ -557,7 +557,7 @@ public final class ActionsTest {
         writePlugin(new File(installed, "victim"), "victim.one", "Victim", HOSTILE);
         if (makeSymlink(storePath, elsewhere)) {
             Quarantine.Result refusedStore =
-                    quarantine.quarantine(new File(installed, "victim"), host.pluginId());
+                    guardedQuarantine(quarantine, new File(installed, "victim"), host.pluginId());
             check.that("a linked quarantine store is refused rather than moved into",
                     !refusedStore.ok && new File(installed, "victim").isDirectory(),
                     refusedStore.message);
@@ -581,11 +581,15 @@ public final class ActionsTest {
         File survivor = new File(offLimits, "keep.txt");
         Fixtures.write(survivor, "must survive a purge");
         File storeDir = quarantine.store();
+        if (!storeDir.isDirectory() && !storeDir.mkdirs()) {
+            throw new IllegalStateException("could not prepare quarantine store for symlink fixture");
+        }
         File linkedEntry = new File(storeDir, "linked-entry");
         if (makeSymlink(linkedEntry, offLimits)) {
-            quarantine.purge("linked-entry");
+            Quarantine.Result purgedLink = quarantine.purge("linked-entry");
             check.that("purging a linked quarantine entry removes the link, not its target",
-                    survivor.isFile() && offLimits.isDirectory(), "the link's target was deleted");
+                    purgedLink.ok && !linkedEntry.exists() && survivor.isFile() && offLimits.isDirectory(),
+                    purgedLink.message);
             linkedEntry.delete();
         } else {
             check.that("purging a linked quarantine entry removes the link, not its target", true,
@@ -649,7 +653,7 @@ public final class ActionsTest {
         writePlugin(new File(installed, "held"), "held.one", "Held", RISKY);
         ScanRunner holder = new ScanRunner(host);
         ScanRunner.Result heldResult = holder.run();
-        Quarantine.Result parked = quarantine.quarantine(new File(installed, "held"), host.pluginId());
+        Quarantine.Result parked = guardedQuarantine(quarantine, new File(installed, "held"), host.pluginId());
         check.that("a plugin can be parked in quarantine first", parked.ok, parked.message);
         ScanRunner sweeper = new ScanRunner(host);
         ScanRunner.Result sweepResult = sweeper.run();
@@ -725,7 +729,7 @@ public final class ActionsTest {
         // delete the copy just made, not the older one.
         writePlugin(new File(installed, "recur"), "recur.one", "Recur", HOSTILE);
         new ScanRunner(host).run();
-        Quarantine.Result older = quarantine.quarantine(new File(installed, "recur"), host.pluginId());
+        Quarantine.Result older = guardedQuarantine(quarantine, new File(installed, "recur"), host.pluginId());
         check.that("the first copy is quarantined", older.ok && older.location != null, older.message);
         writePlugin(new File(installed, "recur"), "recur.one", "Recur", HOSTILE);
         host.type("remove malicious");
@@ -739,6 +743,24 @@ public final class ActionsTest {
 
         incompleteSiblingActionEligibility(check);
         completeSiblingActionEligibility(check);
+        QuarantineGuardRegression.run(check);
+    }
+
+    /** Captures and rechecks the real package identity for tests that exercise a successful move. */
+    static Quarantine.Result guardedQuarantine(Quarantine quarantine, final File directory,
+            String ownPluginId) {
+        final mt.safety.scanner.core.PluginScanner scanner = new mt.safety.scanner.core.PluginScanner(
+                mt.safety.scanner.core.IocDatabase.empty());
+        final ScanReport approved = scanner.scan(directory, mt.safety.scanner.core.ScanBudget.interactive());
+        return quarantine.quarantine(directory, ownPluginId, new Quarantine.MoveGuard() {
+            @Override
+            public boolean allow(File current) {
+                ScanReport observed = scanner.scan(current, mt.safety.scanner.core.ScanBudget.interactive());
+                return approved.destructiveActionIdentityComplete() && observed.destructiveActionIdentityComplete()
+                        && approved.contentHash.length() > 0 && approved.contentHash.equals(observed.contentHash)
+                        && approved.actionIdentityPath().equals(observed.actionIdentityPath());
+            }
+        });
     }
 
     private static void completeSiblingActionEligibility(Checker check) throws Exception {

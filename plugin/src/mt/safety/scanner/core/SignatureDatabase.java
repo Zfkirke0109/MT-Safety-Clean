@@ -52,6 +52,10 @@ public final class SignatureDatabase {
     /** Longest usable line. Some published patterns run to thousands of characters. */
     private static final int MAX_LINE_CHARS = 64 * 1024;
     private static final int MAX_PROBLEMS = 20;
+    /** Includes non-signature entries, so ignored names cannot bypass the enumeration bound. */
+    public static final int MAX_DIRECTORY_ENTRIES = 4096;
+    private static final long DIRECTORY_LIST_NANOS = 4000000000L;
+    private static long incompleteStampSequence;
 
     /** ClamAV target types this scanner can recognise a file as. */
     public static final int TARGET_PE = 1;
@@ -248,16 +252,15 @@ public final class SignatureDatabase {
                 continue;
             }
             if (path.isDirectory()) {
-                File[] children = path.listFiles();
-                if (children == null) {
-                    db.problem("could not list " + path.getName());
-                    continue;
-                }
-                Arrays.sort(children);
-                for (int c = 0; c < children.length; c++) {
-                    if (children[c].isFile() && isSignatureFile(children[c].getName())) {
-                        db.readFile(children[c]);
+                try {
+                    for (File child : signatureFiles(path)) {
+                        db.readFile(child);
                     }
+                } catch (IOException e) {
+                    db.problem("could not completely list " + path.getName() + ": " + e.getMessage());
+                } catch (RuntimeException e) {
+                    db.problem("could not safely list " + path.getName() + ": "
+                            + e.getClass().getSimpleName());
                 }
             } else if (path.isFile()) {
                 db.readFile(path);
@@ -289,23 +292,48 @@ public final class SignatureDatabase {
      * while the folder is unchanged, without ever serving a stale one after an import.
      */
     public static String stamp(File directory) {
-        StringBuilder sb = new StringBuilder();
-        File[] children = directory == null ? null : directory.listFiles();
-        if (children == null) {
+        if (directory == null || !directory.exists()) {
             return "";
         }
-        // The folder's own location is part of the stamp: two folders holding files of the same
-        // names, sizes and times are still two folders.
-        sb.append(directory.getAbsolutePath()).append('\n');
-        Arrays.sort(children);
-        for (int i = 0; i < children.length; i++) {
-            File child = children[i];
-            if (child.isFile() && isSignatureFile(child.getName())) {
+        try {
+            StringBuilder sb = new StringBuilder();
+            sb.append(directory.getAbsolutePath()).append('\n');
+            for (File child : signatureFiles(directory)) {
                 sb.append(child.getName()).append(':').append(child.length()).append(':')
                         .append(child.lastModified()).append('\n');
             }
+            return sb.toString();
+        } catch (IOException e) {
+            return incompleteStamp();
+        } catch (RuntimeException e) {
+            return incompleteStamp();
         }
-        return sb.toString();
+    }
+
+    /** An incomplete listing must never compare equal to a cached complete (or incomplete) stamp. */
+    private static synchronized String incompleteStamp() {
+        return "!incomplete-signature-listing:" + ++incompleteStampSequence;
+    }
+
+    /** Collects only a bounded directory, then preserves the existing sorted load/stamp order. */
+    private static List<File> signatureFiles(File directory) throws IOException {
+        final List<File> files = new ArrayList<File>();
+        final int[] visited = {0};
+        final long started = System.nanoTime();
+        DirectoryListing.forEachChild(directory, new DirectoryListing.Visitor() {
+            @Override
+            public void visit(File child) throws IOException {
+                if (++visited[0] > MAX_DIRECTORY_ENTRIES
+                        || System.nanoTime() - started >= DIRECTORY_LIST_NANOS) {
+                    throw new IOException("signature directory entry or time limit reached");
+                }
+                if (child.isFile() && isSignatureFile(child.getName())) {
+                    files.add(child);
+                }
+            }
+        });
+        Collections.sort(files);
+        return files;
     }
 
     private void readFile(File file) {

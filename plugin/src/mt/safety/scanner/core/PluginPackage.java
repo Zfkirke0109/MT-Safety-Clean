@@ -193,6 +193,10 @@ public abstract class PluginPackage {
 
     /** Opens a path as a package, choosing the archive or directory reader. */
     public static PluginPackage open(File file) throws IOException {
+        return open(file, DirectoryListing.defaultOpener());
+    }
+
+    static PluginPackage open(File file, DirectoryListing.Opener listing) throws IOException {
         if (file == null || !file.exists()) {
             throw new IOException("no such path: " + (file == null ? "null" : file.getName()));
         }
@@ -202,9 +206,9 @@ public abstract class PluginPackage {
                 // MT Manager's own layout for an installed plugin: a folder named after the plugin
                 // id holding the archive it was installed from, with whatever MT Manager extracted
                 // beside it. The folder is the install unit; the archive is the package.
-                return new InstalledArchivePackage(file, new ArchivePackage(inner));
+                return new InstalledArchivePackage(file, new ArchivePackage(inner), listing);
             }
-            return new DirectoryPackage(file);
+            return new DirectoryPackage(file, listing);
         }
         return new ArchivePackage(file);
     }
@@ -397,6 +401,8 @@ public abstract class PluginPackage {
         private static final int MAX_DEPTH = 24;
 
         private final File root;
+        private final DirectoryListing.Opener listing;
+        private int entriesVisited;
         private List<Entry> cached;
         private boolean listingTruncated;
         private boolean rootListingTruncated;
@@ -406,8 +412,9 @@ public abstract class PluginPackage {
         /** Enough anomalies to explain what went wrong, not enough for a hostile tree to fill memory. */
         private static final int MAX_ANOMALIES = 40;
 
-        DirectoryPackage(File root) {
+        DirectoryPackage(File root, DirectoryListing.Opener listing) {
             this.root = root;
+            this.listing = listing;
         }
 
         @Override
@@ -451,7 +458,7 @@ public abstract class PluginPackage {
          * package that was actually examined.
          */
         private void walk(File dir, String prefix, int depth, List<Entry> out) {
-            if (out.size() >= MAX_FILES) {
+            if (entriesVisited >= MAX_FILES) {
                 markListingTruncated(prefix);
                 noteAnomaly("directory holds more than " + MAX_FILES + " files; listing truncated");
                 return;
@@ -461,7 +468,7 @@ public abstract class PluginPackage {
                 noteAnomaly("directory nested more than " + MAX_DEPTH + " levels deep; listing truncated");
                 return;
             }
-            if (!DirectoryListing.supportedFor(dir)) {
+            if (!DirectoryListing.supportedFor(dir, listing)) {
                 markListingTruncated(prefix);
                 noteAnomaly((prefix.length() == 0 ? "the plugin directory itself" : prefix)
                         + " was not inspected: " + DirectoryListing.unsupportedReason());
@@ -471,11 +478,12 @@ public abstract class PluginPackage {
                 DirectoryListing.forEachChild(dir, new DirectoryListing.Visitor() {
                     @Override
                     public void visit(File child) {
-                        if (out.size() >= MAX_FILES) {
+                        if (entriesVisited >= MAX_FILES) {
                             markListingTruncated(prefix);
                             noteAnomaly("directory holds more than " + MAX_FILES + " files; listing truncated");
                             throw STOP_LISTING;
                         }
+                        entriesVisited++;
                         String name = prefix + child.getName();
                         String listingProblem = outsideRootProblem(child, name);
                         if (listingProblem != null) {
@@ -494,7 +502,7 @@ public abstract class PluginPackage {
                             noteAnomaly("entry could not be inspected and was omitted: " + name);
                         }
                     }
-                });
+                }, listing);
             } catch (StopListing ignored) {
                 return;
             } catch (IOException e) {
@@ -502,6 +510,11 @@ public abstract class PluginPackage {
                 noteAnomaly("could not list "
                         + (prefix.length() == 0 ? "the plugin directory itself" : prefix)
                         + ": " + e.getMessage());
+            } catch (RuntimeException e) {
+                markListingTruncated(prefix);
+                noteAnomaly("could not inspect an entry in "
+                        + (prefix.length() == 0 ? "the plugin directory itself" : prefix)
+                        + ": " + e.getClass().getSimpleName());
             }
         }
 
@@ -663,14 +676,16 @@ public abstract class PluginPackage {
 
         private final File dir;
         private final ArchivePackage delegate;
+        private final DirectoryListing.Opener listing;
         private List<Entry> cached;
         private boolean listingTruncated;
         private int siblingEntriesVisited;
         private final List<String> listingProblems = new ArrayList<String>();
 
-        InstalledArchivePackage(File dir, ArchivePackage delegate) {
+        InstalledArchivePackage(File dir, ArchivePackage delegate, DirectoryListing.Opener listing) {
             this.dir = dir;
             this.delegate = delegate;
+            this.listing = listing;
         }
 
         @Override
@@ -725,7 +740,7 @@ public abstract class PluginPackage {
                         + " entries; remaining files were not inspected");
                 return;
             }
-            if (!DirectoryListing.supportedFor(folder)) {
+            if (!DirectoryListing.supportedFor(folder, listing)) {
                 noteListingProblem("installed sibling directory " + (prefix.length() == 0 ? "." : prefix)
                         + " was not inspected: " + DirectoryListing.unsupportedReason());
                 return;
@@ -744,12 +759,12 @@ public abstract class PluginPackage {
                                     + " entries; remaining files were not inspected");
                             throw STOP_LISTING;
                         }
+                        siblingEntriesVisited++;
                         String pathProblem = siblingPathProblem(child, rootCanonical, name);
                         if (pathProblem != null) {
                             noteListingProblem(pathProblem);
                             return;
                         }
-                        siblingEntriesVisited++;
                         if (child.isDirectory()) {
                             collectSiblings(child, name + "/", depth + 1, out, rootCanonical);
                         } else if (child.isFile()) {
@@ -759,12 +774,16 @@ public abstract class PluginPackage {
                             noteListingProblem("installed sibling was not inspected: " + name);
                         }
                     }
-                });
+                }, listing);
             } catch (StopListing ignored) {
                 return;
             } catch (IOException e) {
                 noteListingProblem("could not list installed sibling directory: "
                         + (prefix.length() == 0 ? "." : prefix) + " (" + e.getMessage() + ")");
+            } catch (RuntimeException e) {
+                noteListingProblem("could not inspect an installed sibling in: "
+                        + (prefix.length() == 0 ? "." : prefix) + " ("
+                        + e.getClass().getSimpleName() + ")");
             }
         }
 

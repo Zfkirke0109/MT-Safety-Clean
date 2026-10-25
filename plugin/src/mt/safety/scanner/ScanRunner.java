@@ -156,6 +156,8 @@ public final class ScanRunner {
          */
         public final java.util.Map<String, String> actioned = new java.util.HashMap<String, String>();
         public String commandOutcome = "";
+        /** A bounded diagnostic when package discovery could not inspect every search directory. */
+        public String discoveryProblem = "";
         /** Files a {@code files} command in this build found matching a signature, one line each. */
         public final List<String> fileHitLines = new ArrayList<String>();
     }
@@ -237,7 +239,14 @@ public final class ScanRunner {
     private void scanInto(Result result, IocDatabase database, SignatureDatabase signatures) {
         boolean deep = host.configFlag(KEY_DEEP, false);
         List<File> roots = MtEnvironment.candidateRoots(host.filesDir(), host.hostPackage(), host.config(KEY_EXTRA_ROOT, ""));
-        List<Discovery.Candidate> candidates = MtEnvironment.findPlugins(roots, host.pluginId(), host.filesDir());
+        Discovery discovery = new Discovery();
+        List<Discovery.Candidate> candidates = MtEnvironment.findPlugins(roots, host.pluginId(), host.filesDir(),
+                discovery);
+        if (discovery.incomplete()) {
+            result.discoveryProblem = discovery.problems().isEmpty()
+                    ? "Plugin discovery did not inspect every search directory."
+                    : discovery.problems().get(0);
+        }
 
         PluginScanner scanner = new PluginScanner(database, signatures);
         long totalMs = deep ? DEEP_TOTAL_MS : INTERACTIVE_TOTAL_MS;
@@ -828,7 +837,11 @@ public final class ScanRunner {
             if (nowPath.length() == 0 || !nowPath.equals(report.actionIdentityPath())) {
                 return ActionCheck.IDENTITY_UNAVAILABLE;
             }
-            String now = pkg.contentHash(ScanBudget.unlimited());
+            ScanBudget identityBudget = actionIdentityBudget();
+            String now = pkg.contentHash(identityBudget);
+            if (identityBudget.wasTruncated()) {
+                return ActionCheck.IDENTITY_UNAVAILABLE;
+            }
             return now.length() > 0 && now.equals(report.contentHash)
                     ? ActionCheck.MATCHES : ActionCheck.CONTENT_CHANGED;
         } catch (java.io.IOException e) {
@@ -847,6 +860,15 @@ public final class ScanRunner {
                 && report.contentHash != null && report.contentHash.length() > 0;
     }
 
+    /**
+     * Action revalidation has a finite deadline and hash allowance. Hashing charges declared length
+     * at 1/64 in PluginPackage; 256 KiB of charge allows roughly 16 MiB of file data, with per-file
+     * rounding. This is not preemptive I/O or CPU cancellation.
+     */
+    private static ScanBudget actionIdentityBudget() {
+        return new ScanBudget(4000L, 256L * 1024);
+    }
+
     private Quarantine.Result quarantineVerified(Quarantine quarantine, final ScanReport report) {
         return quarantine.quarantine(new File(report.path), host.pluginId(), new Quarantine.MoveGuard() {
             @Override
@@ -854,36 +876,7 @@ public final class ScanRunner {
                 return directory.getAbsolutePath().equals(report.path)
                         && verifyActionIdentity(report) == ActionCheck.MATCHES;
             }
-
-            @Override
-            public boolean allowCopyTarget(File sourceDir, File copiedTarget) {
-                return sourceDir.getAbsolutePath().equals(report.path)
-                        && copiedTargetMatches(report, copiedTarget);
-            }
         });
-    }
-
-    private static boolean copiedTargetMatches(ScanReport report, File copiedTarget) {
-        PluginPackage pkg = null;
-        try {
-            pkg = PluginPackage.open(copiedTarget);
-            if (!pkg.destructiveActionIdentityComplete()) {
-                return false;
-            }
-            if (pkg.actionIdentityPath().length() == 0) {
-                return false;
-            }
-            String copiedHash = pkg.contentHash(ScanBudget.unlimited());
-            return copiedHash.length() > 0 && copiedHash.equals(report.contentHash);
-        } catch (java.io.IOException e) {
-            return false;
-        } catch (RuntimeException e) {
-            return false;
-        } finally {
-            if (pkg != null) {
-                pkg.close();
-            }
-        }
     }
 
     private static void append(StringBuilder sb, String message) {
@@ -914,6 +907,10 @@ public final class ScanRunner {
         }
 
         rows.add(Row.header(strings.summaryHeader()));
+        if (result.discoveryProblem.length() > 0) {
+            rows.add(Row.text("Plugin discovery was incomplete",
+                    "Absence of reported packages is not an all-clear. " + result.discoveryProblem));
+        }
         if (candidateCount == 0) {
             rows.add(Row.text(strings.nothingFound(), strings.nothingFoundHelp()));
         } else {
@@ -1457,6 +1454,9 @@ public final class ScanRunner {
 
     private String describeQuarantine(Quarantine quarantine) {
         List<Quarantine.Item> items = quarantine.list();
+        if (quarantine.listingProblem() != null) {
+            return quarantine.listingProblem();
+        }
         if (items.isEmpty()) {
             return strings.quarantineEmpty();
         }
