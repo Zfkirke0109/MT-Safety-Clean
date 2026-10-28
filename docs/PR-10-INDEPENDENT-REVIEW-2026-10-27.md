@@ -23,6 +23,13 @@ installation, destructive device action, ZIP95 decoder or risk-weight/CMB101 cha
 | MEDIUM | File/member prefix and archive-member count cutoffs are absent from file-scan coverage. | Record bounded incomplete-coverage diagnostics while retaining hits and continuing eligible work. Existing file-count/match assertions remain; the former false “not truncated” assertion is split into traversal counts and explicit prefix limitation checks. |
 | HIGH impact, existing acceptance gap | Evidence and exported errors can contain recognized credentials. | Redact recognizable bot URLs, bearer/basic values, common assignments and selected key/token formats before display/export. Keep original detection/action data. Bound evidence locations/snippets and error text; no universal secret-recognition claim. |
 
+Corrective source locations: `plugin/src/mt/safety/scanner/core/ArchiveIndex.java:55,91`
+and `PluginPackage.java:230` (admission); `CodeRules.java:225` (nested verification);
+`PluginScanner.java:89` (definition coverage); `Discovery.java:158` / `FileScanner.java:427`
+(root boundaries); `FileScanner.java:273,376` (prefix/count diagnostics);
+`ReportText.java:38` / `Signal.java:19` / `ReportFormatter.java:244` (display/export sanitization);
+`tools/src/mtsafety/cli/MtSafetyCli.java:103,131` (outcome and discovery scope).
+
 Independent follow-up review caught five parser/redaction weaknesses before publication: encrypted
 CEN flags, lossy UTF-8 replacement, quadratic whitespace/JWT matching, and quoted-password suffix leakage.
 All received regression tests and corrections. Credential assignment detection now uses possessive,
@@ -75,14 +82,46 @@ repository build-script change was needed for local tests.
 | --- | --- |
 | Unchanged `6b6ea2f`: `bash tools/build.sh test` | PASS: 390 passed, 0 failed, 0 skipped. |
 | New tests against original implementation | 396 passed, 14 failed, 0 skipped; original failures independently reproduced. |
-| Subsequent adversarial red/green rounds | Two fenced local/index failures; one method disagreement; seven encoding/encryption/file-cap/explicit-root failures; three credential leakage failures; two sanitizer edge failures. Each was observed before its correction. The old large-file assertion also exposed a prior false completeness expectation and was strengthened as described above. |
+| Subsequent adversarial red/green rounds | Two fenced local/index failures; one method disagreement; seven encoding/encryption/file-cap/explicit-root failures; three credential leakage failures; two sanitizer edge failures and a further repeated-JWT-prefix timeout. Each was observed before its correction. The old large-file assertion also exposed a prior false completeness expectation and was strengthened as described above. |
 | Corrective `bash tools/build.sh test` | PASS: 428 passed, 0 failed, 0 skipped. Java8 release compilation, warnings as errors. |
 | Missing-`ln` portability | PASS: 417 passed, 0 failed, 9 explicitly SKIPPED. These unavailable symlink assertions are not counted PASS. |
 | `bash tools/build.sh docs`, `git diff --check` | PASS locally; rule-reference change is SCN001 definition/content coverage wording. |
 | Independent review | Actual separate standards/spec reviewer sessions, same configured model; not formal GitHub Copilot approval and no distinct-provider claim. |
-| SDK3/D8 package and final-head Actions | Pending at source-commit preparation; exact results/artifact hashes are appended after the existing CI workflow completes. |
+| SDK3/D8 package / source-head Actions | PASS on source commit `0017cfdd5cdbbb5b4d05ad48c21e834f289487c4`; push and PR builds described below. Artifact/evidence synchronization introduces no production-source changes; its exact-head results are recorded in the current PR description. |
 | CodeQL / dedicated security or secret scanner | NOT_RUN; no claim of exhaustive static-analysis or secret coverage. |
 | ART/MT Manager runtime, lifecycle, device performance | NOT_RUN. DroidBridge read-only identity/logcat/screen checks succeeded on S26 Ultra / Android17 API37; no scanner install, launch or device mutation. |
+
+### Exact source-commit CI and artifact receipts
+
+- Remote source commit: `0017cfdd5cdbbb5b4d05ad48c21e834f289487c4`, tree
+  `b0363646755ba7377d1f6d7fcc630a8a0e9efd97`. This tree equals the locally verified tree exactly.
+- [Push build 40610311901](https://github.com/Zfkirke0109/MT-Safety-Clean/actions/runs/40610311901):
+  actual checkout `0017cfd`, 428/0/0, SDK3 Java8 UI compilation, D8 `--min-api 24`, package,
+  CONTENTS/doc checks and artifact upload all PASS.
+- [PR build 40610319348](https://github.com/Zfkirke0109/MT-Safety-Clean/actions/runs/40610319348):
+  actual synthetic merge `0f69e69f97165873f3e6c80b043a8de607f322cf` into main `0d7ec2b`,
+  428/0/0 and the same packaging/check gates PASS. This is not the exact branch checkout.
+- [Source-head pre-commit](https://results.pre-commit.ci/run/github/1377293244/1793148063.AMungirjSPmrz41_G-qaYw): PASS.
+- CI used the existing cached toolchain and unchanged workflow. No local toolchain download or new
+  runtime dependency was introduced. Local `package` was NOT_RUN; actual packaging evidence is CI.
+- Downloaded push artifact [12782701206](https://github.com/Zfkirke0109/MT-Safety-Clean/actions/runs/40610311901/artifacts/12782701206)
+  through the GitHub integration. Checked its independent SHA, exact inner member list, and
+  byte equality of packaged manifest, indicator assets and icon against source. Copied that actual
+  CI-generated `.mtp` into tracked `dist/`, rather than leaving the old package beside corrected code.
+
+| Downloaded / tracked object | Bytes | SHA-256 |
+| --- | ---: | --- |
+| Push artifact ZIP | 121534 | `ba3a69b6ace5a5bc92b5b8ebc2119f1d662093ea93adf2af41c0b2362a09ff0a` |
+| CI/tracked `.mtp` | 121676 | `6b02c1454b11f38f1afc5166c2d1b8afad7dfe638541a286db2a683d78e484e0` |
+| Actual packaged DEX | 253812 | `80a36eac459e586255577afdcad1d132b5b7e7aba6cd5bb6057af99a048d797b` |
+
+DEX inspection found **106 scanner class definitions**, zero foreign/host/test class definitions,
+and zero direct `java.nio.file` type descriptors. The manifest retains plugin ID `mt.safety.scanner`,
+SDK3, `dexMode=true`, minAndroidVersion24 and the original entry point. This static inspection is not
+an ART execution test. CI's CONTENTS gate still omits the DEX digest; this receipt supplements that
+limited gate and does not claim general bit-for-bit reproducibility. PR CI's package has a different
+ZIP hash (`48af702c582c7a9601bbe4b343c85a80744974f1e2d86f290dbca10045c01373`), as timestamps vary;
+only the push artifact was downloaded and independently inspected in this session.
 
 ## Compatibility, remaining risks and readiness
 
