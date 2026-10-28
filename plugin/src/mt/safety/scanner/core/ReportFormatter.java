@@ -28,7 +28,7 @@ public final class ReportFormatter {
         } else if (report.verdict() != Verdict.CLEAN && report.verdict() != Verdict.TRUSTED) {
             sb.append(" - ").append(report.verdictReason());
         }
-        return sb.toString();
+        return ReportText.redact(sb.toString());
     }
 
     /** Counts by verdict, for the heading of a whole-device scan. */
@@ -92,7 +92,7 @@ public final class ReportFormatter {
         if (partial > 0) {
             sb.append("; ").append(partial).append(" with incomplete coverage");
         }
-        return sb.toString();
+        return ReportText.redact(sb.toString());
     }
 
     /** The full report for one package. */
@@ -143,7 +143,7 @@ public final class ReportFormatter {
                 sb.append("  - ").append(report.errors.get(i)).append('\n');
             }
         }
-        return sb.toString();
+        return ReportText.redact(sb.toString());
     }
 
     private static void appendSignals(StringBuilder sb, List<Signal> signals, boolean coverageNotices) {
@@ -194,7 +194,7 @@ public final class ReportFormatter {
         }
         sb.append("A finding is a capability, not proof of intent. Read the evidence before deleting"
                 + " anything, and keep the report if you plan to report the plugin.\n");
-        return sb.toString();
+        return ReportText.redact(sb.toString());
     }
 
     /** Machine-readable form, for keeping a record or diffing across scans. */
@@ -204,52 +204,81 @@ public final class ReportFormatter {
 
     /** As {@link #json(List)}, also recording the signature database the scan ran with. */
     public static String json(List<ScanReport> reports, SignatureDatabase signatures) {
+        return json(reports, signatures, null);
+    }
+
+    /** Adds discovery scope without changing each package's independent inspection coverage. */
+    public static String json(List<ScanReport> reports, SignatureDatabase signatures,
+            List<String> discoveryProblems) {
         StringBuilder sb = new StringBuilder();
         sb.append("{\n  \"catalogue\": {\"version\": ")
                 .append(CodePatterns.CATALOGUE_VERSION)
-                .append(", \"date\": ").append(Json.quote(CodePatterns.CATALOGUE_DATE))
+                .append(", \"date\": ").append(quoted(CodePatterns.CATALOGUE_DATE))
                 .append(", \"rules\": ").append(CodePatterns.ruleCount()).append("},\n");
         SignatureDatabase db = signatures == null ? SignatureDatabase.empty() : signatures;
         sb.append("  \"signatures\": {\"files\": ").append(db.fileCount())
                 .append(", \"hashes\": ").append(db.hashCount())
                 .append(", \"patterns\": ").append(db.patternCount())
-                .append(", \"newest\": ").append(Json.quote(db.fileCount() == 0 ? "" : Dates.isoDate(db.newestMillis())))
+                .append(", \"newest\": ").append(quoted(db.fileCount() == 0 ? "" : Dates.isoDate(db.newestMillis())))
                 .append("},\n");
+        if (discoveryProblems != null) {
+            sb.append("  \"discoveryComplete\": ").append(discoveryProblems.isEmpty()).append(",\n");
+            sb.append("  \"discoveryProblems\": [");
+            for (int i = 0; i < discoveryProblems.size(); i++) {
+                if (i > 0) {
+                    sb.append(", ");
+                }
+                sb.append(quoted(discoveryProblems.get(i)));
+            }
+            sb.append("],\n");
+        }
         sb.append("  \"reports\": [\n");
         for (int i = 0; i < reports.size(); i++) {
             appendReport(sb, reports.get(i));
             sb.append(i + 1 < reports.size() ? ",\n" : "\n");
         }
         sb.append("  ]\n}\n");
-        return sb.toString();
+        return ReportText.redact(sb.toString());
+    }
+
+    private static String quoted(String value) {
+        return Json.quote(ReportText.redact(value));
     }
 
     private static void appendReport(StringBuilder sb, ScanReport report) {
         sb.append("    {\n");
-        sb.append("      \"name\": ").append(Json.quote(report.manifest.displayName())).append(",\n");
-        sb.append("      \"pluginId\": ").append(Json.quote(report.manifest.pluginId)).append(",\n");
-        sb.append("      \"versionName\": ").append(Json.quote(report.manifest.versionName)).append(",\n");
-        sb.append("      \"path\": ").append(Json.quote(report.path)).append(",\n");
-        sb.append("      \"sha256\": ").append(Json.quote(report.contentHash)).append(",\n");
-        sb.append("      \"verdict\": ").append(Json.quote(report.verdict().name())).append(",\n");
+        sb.append("      \"name\": ").append(quoted(report.manifest.displayName())).append(",\n");
+        sb.append("      \"pluginId\": ").append(quoted(report.manifest.pluginId)).append(",\n");
+        sb.append("      \"versionName\": ").append(quoted(report.manifest.versionName)).append(",\n");
+        sb.append("      \"path\": ").append(quoted(report.path)).append(",\n");
+        sb.append("      \"sha256\": ").append(quoted(report.contentHash)).append(",\n");
+        sb.append("      \"verdict\": ").append(quoted(report.verdict().name())).append(",\n");
         sb.append("      \"score\": ").append(report.score()).append(",\n");
-        sb.append("      \"coverage\": ").append(Json.quote(report.coverage().name())).append(",\n");
-        sb.append("      \"disposition\": ").append(Json.quote(report.dispositionLabel())).append(",\n");
-        sb.append("      \"reason\": ").append(Json.quote(report.verdictReason())).append(",\n");
+        sb.append("      \"coverage\": ").append(quoted(report.coverage().name())).append(",\n");
+        sb.append("      \"disposition\": ").append(quoted(report.dispositionLabel())).append(",\n");
+        sb.append("      \"reason\": ").append(quoted(report.verdictReason())).append(",\n");
         sb.append("      \"truncated\": ").append(report.truncated()).append(",\n");
         sb.append("      \"filesScanned\": ").append(report.filesScanned()).append(",\n");
+        sb.append("      \"errors\": [");
+        for (int i = 0; i < report.errors.size(); i++) {
+            if (i > 0) {
+                sb.append(", ");
+            }
+            sb.append(quoted(report.errors.get(i)));
+        }
+        sb.append("],\n");
         sb.append("      \"findings\": [\n");
         List<Signal> signals = report.signalsBySeverity();
         for (int i = 0; i < signals.size(); i++) {
             Signal signal = signals.get(i);
-            sb.append("        {\"rule\": ").append(Json.quote(signal.ruleId));
-            sb.append(", \"severity\": ").append(Json.quote(signal.severity.name()));
-            sb.append(", \"category\": ").append(Json.quote(signal.category.name()));
-            sb.append(", \"title\": ").append(Json.quote(signal.title));
+            sb.append("        {\"rule\": ").append(quoted(signal.ruleId));
+            sb.append(", \"severity\": ").append(quoted(signal.severity.name()));
+            sb.append(", \"category\": ").append(quoted(signal.category.name()));
+            sb.append(", \"title\": ").append(quoted(signal.title));
             sb.append(", \"evidence\": [");
             List<Signal.Evidence> evidence = signal.evidence();
             for (int j = 0; j < evidence.size(); j++) {
-                sb.append(Json.quote(evidence.get(j).where + (evidence.get(j).snippet.length() > 0
+                sb.append(quoted(evidence.get(j).where + (evidence.get(j).snippet.length() > 0
                         ? " | " + evidence.get(j).snippet : "")));
                 if (j + 1 < evidence.size()) {
                     sb.append(", ");
@@ -277,7 +306,7 @@ public final class ReportFormatter {
         if (signatures.cappedCount() > 0) {
             sb.append(", ").append(signatures.cappedCount()).append(" entries over the cap");
         }
-        return sb.toString();
+        return ReportText.redact(sb.toString());
     }
 
     /** The full text of a file scan: what was walked, how far it got, and every hit. */
@@ -327,7 +356,7 @@ public final class ReportFormatter {
         }
         sb.append("\nA signature match names a file that a database you loaded classifies as malicious"
                 + " or unwanted. Nothing has been deleted; the path above is where to look.\n");
-        return sb.toString();
+        return ReportText.redact(sb.toString());
     }
 
     private static String nonEmpty(String value, String fallback) {

@@ -120,7 +120,7 @@ known-good names. A built-in list would go stale, and a wrong entry would be wor
 | `PRV001` | Critical | Matches an entry in your denylist. |
 | `USR001` | High | Matches a regular expression from your own indicator file. |
 | `CTX001` | Info | A capability was excused because the plugin's declared purpose requires it. |
-| `SCN001` | Info | The scan did not read the whole package, so absence of findings proves less than usual. |
+| `SCN001` | Info | Some package content or selected definitions could not be fully inspected; absence of findings proves less than usual. |
 
 No hashes ship with this tool. A list of allegedly malicious plugin hashes invented by its author would
 be worthless, and one fetched from a server would put a network dependency in the middle of a security

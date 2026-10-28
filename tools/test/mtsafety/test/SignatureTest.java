@@ -360,8 +360,11 @@ final class SignatureTest {
         roots.add(tree);
         FileScanner.Result result = new FileScanner(db).scan(roots, excluded, ScanBudget.unlimited());
         check.that("the walk reaches every readable file outside the excluded area",
-                result.filesSeen == 6 && result.filesScanned == 5 && !result.truncated(),
+                result.filesSeen == 6 && result.filesScanned == 5 && result.stoppedBecause == FileScanner.Stop.NONE,
                 "seen=" + result.filesSeen + " scanned=" + result.filesScanned + " stop=" + result.stoppedBecause);
+        check.that("the reached large file still has explicitly incomplete pattern coverage",
+                result.truncated() && result.problems.toString().contains("only a prefix"),
+                result.problems.toString());
         check.that("a hashed file, a deep pattern and a dex inside an apk are all found",
                 hit(result, "evil.bin", "Test.Trojan.ByMd5") && hit(result, "marker.dat", "Test.Pattern.Anywhere")
                         && hit(result, "app.apk!classes.dex", "Test.Pattern.Anywhere"),

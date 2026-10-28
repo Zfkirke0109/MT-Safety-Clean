@@ -64,6 +64,8 @@ public final class ScannerTest {
         ActionsTest.run(checker);
         IncompleteScanCleanRegression.run(checker, fixtures);
         TraversalRegression.run(checker);
+        ReviewRegression.run(checker, fixtures);
+        CliRegression.run(checker, fixtures);
 
         System.out.println();
         System.out.println(passed + " checks passed, " + failures.size() + " failed, " + skipped + " skipped");

@@ -86,20 +86,29 @@ public final class PluginScanner {
             ArchiveRules.apply(report, pkg, entries, budget);
             int scanned = CodeRules.apply(report, pkg, entries, budget, database, signatures);
 
+            for (String problem : database.loadErrors()) {
+                report.addError(problem);
+                budget.markTruncated();
+            }
+            for (String problem : signatures.problems()) {
+                report.addError("signature definitions: " + problem);
+                budget.markTruncated();
+            }
+            if (signatures.unsupportedCount() > 0 || signatures.cappedCount() > 0) {
+                report.addError("Some selected signature definitions were unsupported or exceeded load limits.");
+                budget.markTruncated();
+            }
             report.setFilesScanned(scanned);
             report.setTruncated(budget.wasTruncated());
             if (report.truncated()) {
                 report.add(new Signal("SCN001", Category.PROVENANCE, Severity.INFO,
-                        "The scan did not read the whole package",
-                        "Part of the package was not inspected: it was too large or too slow to read, or a"
-                                + " member could not be read. Findings below are real, but absence of"
+                        "The scan did not complete every check",
+                        "Part of the package or selected definitions could not be fully inspected: the"
+                                + " package was too large or too slow, a member could not be read, or"
+                                + " selected definitions could not all be applied. Findings below are real, but absence of"
                                 + " findings proves less than usual. This is a coverage warning, not"
                                 + " evidence of malware."));
             }
-            for (int i = 0; i < database.loadErrors().size(); i++) {
-                report.addError(database.loadErrors().get(i));
-            }
-
             RiskScorer.score(report, database);
             report.setElapsedMs(System.currentTimeMillis() - started);
             return report;

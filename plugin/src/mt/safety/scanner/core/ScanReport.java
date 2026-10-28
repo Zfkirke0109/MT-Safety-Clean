@@ -63,7 +63,7 @@ public final class ScanReport {
 
     public void addError(String message) {
         if (message != null) {
-            errors.add(message);
+            errors.add(ReportText.bounded(message, 512));
         }
     }
 

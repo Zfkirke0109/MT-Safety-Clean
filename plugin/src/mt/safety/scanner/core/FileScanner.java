@@ -269,6 +269,9 @@ public final class FileScanner {
         if (check(path, "", data, digests, size, extensionOf(file.getName()), result)) {
             return;
         }
+        if (data.length < size) {
+            result.problem("only a prefix was checked for patterns: " + file.getAbsolutePath());
+        }
         if (Bytes.looksLikeZip(data)) {
             scanArchive(file, result, budget);
         }
@@ -369,7 +372,12 @@ public final class FileScanner {
                 if (entry.directory || entry.size <= 0) {
                     continue;
                 }
-                if (++count > MAX_ARCHIVE_MEMBERS || result.hits.size() >= MAX_HITS) {
+                if (++count > MAX_ARCHIVE_MEMBERS) {
+                    result.problem("archive member count limit reached: " + file.getAbsolutePath());
+                    break;
+                }
+                if (result.hits.size() >= MAX_HITS) {
+                    result.stoppedBecause = Stop.HITS;
                     break;
                 }
                 if (budget.exhausted()) {
@@ -377,6 +385,10 @@ public final class FileScanner {
                     break;
                 }
                 byte[] member = pkg.read(entry, ARCHIVE_MEMBER_BYTES, budget);
+                if (member.length < entry.size) {
+                    result.problem("only a member prefix was checked: " + file.getAbsolutePath()
+                            + "!" + entry.name);
+                }
                 if (member.length == 0) {
                     continue;
                 }
@@ -412,7 +424,9 @@ public final class FileScanner {
             return false;
         }
         String path = canonical(child);
-        return !path.equals(rootCanonical) && !path.startsWith(rootCanonical + File.separator);
+        String boundary = rootCanonical.endsWith(File.separator)
+                ? rootCanonical : rootCanonical + File.separator;
+        return !path.equals(rootCanonical) && !path.startsWith(boundary);
     }
 
     private static String canonical(File file) {

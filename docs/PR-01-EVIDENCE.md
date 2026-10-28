@@ -1,5 +1,11 @@
 # PR #10 recovery and security handoff — 2026-10-24
 
+> Historical evidence for `6b6ea2f`. The independent 2026-10-27 review and its archive admission,
+> coverage, CLI and redaction corrections are recorded in
+> [PR-10-INDEPENDENT-REVIEW-2026-10-27.md](PR-10-INDEPENDENT-REVIEW-2026-10-27.md).
+> Read that document and current PR checks for the latest disposition; the findings below describe
+> the earlier recovery snapshot and have not been rewritten as new-head evidence.
+
 **Decision: NOT_READY.** The scoped corrections pass local validation. An unbounded archive-metadata
 allocation path remains open, Android runtime validation has not been performed, and final-commit CI
 and formal Copilot review must be checked in the PR conversation. This document records the source

@@ -165,6 +165,12 @@ Exit status is `0` when nothing needs action, `2` when something does, `1` on a 
 it drops into a script. It needs only a JDK (9 or newer) — no Android SDK, no device — and runs under
 Termux on the phone itself.
 
+Incomplete package, file, definition or explicitly requested discovery coverage also exits `1`.
+A signature hit or actionable package keeps exit `2` when file and package scans are combined.
+CLI JSON adds `discoveryComplete` and `discoveryProblems`; each package retains its independent
+`coverage`, legacy `verdict`, effective `disposition`, and an additive `errors` list. A clean package
+found during an incomplete search does not imply that the rest of the search root was inspected.
+
 ## Where the detection comes from
 
 There is no threat-intelligence feed behind this, and no vendor database. Detection is three things,
@@ -324,6 +330,23 @@ phone and under test on a desktop JVM, and it is why the tests can be this thoro
 
 ## Honest limits
 
+- **Archive indexes have admission limits.** Before opening `ZipFile`, the scanner checks at most
+  8,000 central-directory entries and 2 MiB of index metadata with bounded scratch space. Ordinary
+  single-disk ZIP/ZIP64 records are supported; split archives, encrypted indexes, unsupported record
+  layouts, ambiguous end records and out-of-range metadata refuse with an unreadable result. Nested
+  archives also bind local offsets, names, methods, CRCs and sizes to the index; disagreement makes
+  coverage partial while preserving available findings. This does not make concurrent file mutation
+  atomic or preempt inflater CPU work.
+- **Partial checks remain partial.** Failed/unsupported selected definitions and file/member prefix
+  or count limits are reported. An aggregate coverage state and bounded diagnostics are available;
+  a complete success/failure ledger for every member and analyzer is not implemented.
+- **Recognizable credentials are redacted from evidence and reports.** This includes bot-token URLs,
+  bearer/basic values, common credential assignments and selected key/token formats. This is a
+  display/export safeguard, not a guarantee of recognizing every arbitrary secret. Detection and
+  action identity still use the original data.
+- **Directory streaming needs Android API26+.** On API24–25, directory discovery, directory/file
+  enumeration and quarantine-related listing fail closed with diagnostics. The SDK3/API24 package
+  contract is retained; actual ART/MT host compatibility still needs device validation.
 - **Findings are capabilities, not intent.** A flagged plugin can be perfectly honest, and code hidden
   carefully enough can stay quiet. Read the evidence before deleting anything.
 - **This ships as plugin SDK v3** (`pluginSdkVersion: 3`, `dexMode: true`), whose package carries a

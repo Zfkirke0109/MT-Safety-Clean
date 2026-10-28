@@ -155,8 +155,10 @@ public final class Discovery {
                     }
                     visits++;
                     String childCanonical = child.getCanonicalPath();
+                    String boundary = rootCanonical.endsWith(File.separator)
+                            ? rootCanonical : rootCanonical + File.separator;
                     if (!childCanonical.equals(rootCanonical)
-                            && !childCanonical.startsWith(rootCanonical + File.separator)) {
+                            && !childCanonical.startsWith(boundary)) {
                         problem("A plugin search entry resolves outside its search root; search incomplete.");
                         return;
                     }

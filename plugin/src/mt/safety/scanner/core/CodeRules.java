@@ -45,6 +45,23 @@ public final class CodeRules {
     private static final int MAX_NESTED_ENTRIES = 400;
     private static final int MAX_NESTED_DEPTH = 2;
 
+    /** Logical offsets in this fixed memory stream include inflater pushback after member EOF. */
+    private static final class NestedZipStream extends ZipInputStream {
+        private final int length;
+
+        NestedZipStream(byte[] data) {
+            super(new ByteArrayInputStream(data));
+            length = data.length;
+        }
+
+        long nextHeaderOffset() throws IOException {
+            // ZipInputStream.available() is only 0/1. Its inherited input is instead a
+            // PushbackInputStream over our ByteArrayInputStream; both report exact remaining bytes.
+            // Call only initially or after the preceding member has reached EOF/readEnd().
+            return length - in.available();
+        }
+    }
+
     private static final Set<String> SOURCE_EXTENSIONS = new HashSet<String>();
     private static final Set<String> TEXT_EXTENSIONS = new HashSet<String>();
 
@@ -215,14 +232,39 @@ public final class CodeRules {
             return;
         }
         Signal executableInside = null;
-        ZipInputStream zin = new ZipInputStream(new ByteArrayInputStream(data));
+        Map<Long, ArchiveIndex.Member> indexedEntries = null;
+        try {
+            indexedEntries = ArchiveIndex.nestedEntries(data);
+        } catch (IOException e) {
+            // ZipInputStream treats some truncated local headers as ordinary EOF. Missing/invalid
+            // index metadata must revoke completeness even when that stream never throws. Still
+            // inspect its bounded readable prefix so prior malicious evidence is not discarded.
+            report.addError(parentName + ": " + e.getMessage());
+            budget.markTruncated();
+        }
+        NestedZipStream zin = new NestedZipStream(data);
         try {
             ZipEntry ze;
             int count = 0;
-            while ((ze = zin.getNextEntry()) != null) {
+            while (true) {
+                long localOffset = zin.nextHeaderOffset();
+                ze = zin.getNextEntry();
+                if (ze == null) {
+                    if (indexedEntries != null && count != indexedEntries.size()) {
+                        report.addError(parentName + ": nested local and indexed member counts disagree");
+                        budget.markTruncated();
+                    }
+                    break;
+                }
                 if (count++ >= MAX_NESTED_ENTRIES || budget.exhausted()) {
                     budget.markTruncated();
                     break;
+                }
+                ArchiveIndex.Member indexed = indexedEntries == null ? null : indexedEntries.get(localOffset);
+                if (indexedEntries != null && (indexed == null || !ze.getName().equals(indexed.name))) {
+                    report.addError(parentName + ": nested local member is not bound to its index: "
+                            + ze.getName());
+                    budget.markTruncated();
                 }
                 if (ze.isDirectory()) {
                     if (budget.reserve(1) == 0) {
@@ -236,6 +278,7 @@ public final class CodeRules {
                             budget.markTruncated();
                             break;
                         }
+                        verifyNestedMetadata(report, budget, parentName, indexed, ze);
                     } catch (IOException e) {
                         report.addError(parentName + "!" + ze.getName()
                                 + ": could not verify empty directory entry: " + e.getMessage());
@@ -288,7 +331,12 @@ public final class CodeRules {
                     }
                 }
                 if (child.length == 0) {
+                    verifyNestedMetadata(report, budget, parentName, indexed, ze);
                     continue;
+                }
+
+                if (completeChild && !verifyNestedMetadata(report, budget, parentName, indexed, ze)) {
+                    completeChild = false;
                 }
 
                 String childName = parentName + "!" + ze.getName();
@@ -339,6 +387,17 @@ public final class CodeRules {
         } finally {
             PluginPackage.closeQuietly(zin);
         }
+    }
+
+    private static boolean verifyNestedMetadata(ScanReport report, ScanBudget budget, String parentName,
+            ArchiveIndex.Member indexed, ZipEntry local) {
+        if (indexed != null && indexed.matches(local)) {
+            return true;
+        }
+        report.addError(parentName + "!" + local.getName()
+                + ": nested local and indexed metadata could not be verified");
+        budget.markTruncated();
+        return false;
     }
 
     /** True when the manifest names this source file as an interface or the settings screen. */

@@ -227,7 +227,13 @@ public abstract class PluginPackage {
 
         private ZipFile zip() throws IOException {
             if (zip == null) {
+                ArchiveIndex.inspect(file);
                 zip = new ZipFile(file);
+                if (zip.size() > ArchiveIndex.MAX_ENTRIES) {
+                    zip.close();
+                    zip = null;
+                    throw new IOException("archive index changed beyond its admitted entry limit");
+                }
             }
             return zip;
         }
@@ -264,6 +270,9 @@ public abstract class PluginPackage {
             List<Entry> out = new ArrayList<Entry>();
             Enumeration<? extends ZipEntry> en = zip().entries();
             while (en.hasMoreElements()) {
+                if (out.size() >= ArchiveIndex.MAX_ENTRIES) {
+                    throw new IOException("archive index exceeded its admitted entry limit");
+                }
                 ZipEntry ze = en.nextElement();
                 out.add(new Entry(ze.getName(), Math.max(ze.getSize(), 0L),
                         Math.max(ze.getCompressedSize(), 0L), ze.isDirectory()));
