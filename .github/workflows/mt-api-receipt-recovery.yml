@@ -1,0 +1,66 @@
+# Temporary recovery branch only. No checkout, source build, upstream download or deployment.
+# Push this file as .github/workflows/mt-api-receipt-recovery.yml on a branch based on default HEAD.
+name: recover-locked-mt-api-receipt
+on:
+  push:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Restore existing original-path toolchain cache
+        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3, original official repo
+        with:
+          path: /tmp/mt-safety-build/toolchain
+          key: mt-toolchain-r8-8.9.35-platform30
+          fail-on-cache-miss: true
+
+      - name: Verify exact locked API bytes before staging receipts
+        id: verified
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          from pathlib import Path
+          import shutil
+          source = Path('/tmp/mt-safety-build/toolchain')
+          output = Path('/tmp/mt-api-verified-receipt')
+          expected = {
+              'mt-api.aar': 'a51c800eb904e41834ded615376e8c60a33788b073bbb967777ac61d6c88f82d',
+              'mt-plugin-api.jar': '6e90db4fd75342d717c22469a3a2407bbcce0b43f7790f99088983c42115b84a',
+          }
+          verified = []
+          for name, digest in expected.items():
+              path = source / name
+              if not path.is_file():
+                  print('Unavailable in historical cache: ' + name)
+                  continue
+              with path.open('rb') as stream:
+                  actual = hashlib.file_digest(stream, 'sha256').hexdigest()
+              if actual != digest:
+                  raise SystemExit('SHA256 mismatch for cached ' + name)
+              verified.append((name, path))
+          if not verified:
+              raise SystemExit('Historical cache has no locked MT API input bytes')
+          output.mkdir(parents=True)
+          for name, path in verified:
+              shutil.copyfile(path, output / name)
+              with (output / name).open('rb') as stream:
+                  actual = hashlib.file_digest(stream, 'sha256').hexdigest()
+              if actual != expected[name]:
+                  raise SystemExit('SHA256 mismatch after staging ' + name)
+              print('Verified ' + name + ' SHA256 ' + actual)
+          PY
+
+      - name: Upload only verified available API receipts
+        if: always() && steps.verified.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2, original official repo
+        with:
+          name: build-input-receipt
+          path: |
+            /tmp/mt-api-verified-receipt/mt-api.aar
+            /tmp/mt-api-verified-receipt/mt-plugin-api.jar
+          if-no-files-found: error
+          retention-days: 1
