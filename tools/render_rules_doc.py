@@ -55,19 +55,22 @@ Verdicts follow from the total, with any Critical finding forcing the worst outc
 
 ## Combinations
 
-Single indicators are weak; combinations are strong. Network access is ordinary, reading another app's
-private data is odd, and doing both is exfiltration. These fire across the whole package, because
-collection and upload are usually in different files.
+These rules report capabilities found across the whole package. Independent sensitive-data, capture,
+code-loading or command-execution indicators alongside network access do not establish data flow,
+exfiltration, surveillance or remote control. Review their source and calling paths. CMB101/102/103/105
+are Medium review cues; strong direct findings retain their severity and contribute separately.
+The same limitation applies to same-file API pairs CMB002/003: proximity does not prove a connection.
+Their Medium findings replace, rather than duplicate, CMB102/103 when present.
 
 | Rule | Severity | What it means |
 | --- | --- | --- |
-| `CMB101` | Critical | Reads private data **and** has a way to send it out. |
-| `CMB102` | Critical | Network access **and** a class loader: it can run code chosen after you installed it. |
-| `CMB103` | Critical | Process execution **and** network access: remote control. |
-| `CMB104` | High | Destructive behaviour that has been deliberately hidden. |
-| `CMB105` | Critical | Clipboard, screen, camera or location capture **and** network access: surveillance. |
-| `CMB106` | High | Reaches into MT Manager's own files **and** can reach the network. |
-| `CMB107` | High | Capabilities across four or more unrelated areas. |
+| `CMB101` | Medium | Sensitive-data and network capabilities coexist; transfer is not established. |
+| `CMB102` | Medium | Code-loading and network capabilities coexist; loading downloaded code is not established. |
+| `CMB103` | Medium | Command-execution and network capabilities coexist; network control is not established. |
+| `CMB104` | High | Destructive and obfuscation indicators coexist; deliberate concealment is not established. |
+| `CMB105` | Medium | Capture and network capabilities coexist; transmission of captured content is not established. |
+| `CMB106` | High | MT Manager data-access and network indicators coexist; transfer is not established. |
+| `CMB107` | High | Indicators span four or more risk categories; review whether they fit the plugin's purpose. |
 
 ## When a capability is excused
 
@@ -78,7 +81,7 @@ context (`CTX001`) instead of counted.
 
 The excuse is withdrawn the moment the package does something the trait cannot explain: if it also
 reads private data, runs commands or loads code, its network use counts in full. The worked example in
-the README is exactly this case.
+the README retains strong direct findings; the capability combination alone is not a conviction.
 
 ## Package structure
 

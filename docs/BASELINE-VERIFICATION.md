@@ -103,3 +103,16 @@ pre-existing onboarding commits unless that is separately intended.
 **Reviewer decisions requested:** approve the authoritative handoff staging and PR0 evidence; decide
 whether to prioritize the incomplete-scan verdict fix and benign co-occurrence calibration in PR1. No
 PR1+ work should begin before explicit approval.
+
+
+## Current capability calibration (2026-10-28)
+
+The preceding PR0 observations remain historical baseline evidence. Current behavior changes
+CMB101/102/103/105 and same-file CMB002/003 to Medium capability findings and explicitly states that
+API co-occurrence does not establish a source-to-sink connection. The unchanged disconnected-backup
+fixture retains SEN006, NET001 and CMB101, and now returns REVIEW (score 16). Separate private-data,
+loader and shell controls return SUSPICIOUS (38); a location/status control returns REVIEW (23).
+Strong signature, denylist and direct destructive controls retain their high-risk verdicts.
+CMB104/106/107 retain High severity with wording that asks for review rather than claiming deliberate
+concealment, observed transfer or malicious intent. These are static heuristic findings, not runtime
+observations or a general source-to-sink analysis.

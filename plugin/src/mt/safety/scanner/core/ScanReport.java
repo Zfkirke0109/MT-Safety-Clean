@@ -28,6 +28,7 @@ public final class ScanReport {
     public final String contentHash;
     public final List<Signal> signals = new ArrayList<Signal>();
     public final List<String> errors = new ArrayList<String>();
+    public final CoverageLedger ledger = new CoverageLedger();
     /**
      * What the package appears to be, e.g. {@code translation-engine}.
      *
@@ -44,6 +45,7 @@ public final class ScanReport {
     private String verdictReason = "";
     private boolean destructiveActionIdentityComplete;
     private String actionIdentityPath = "";
+    private long errorEvents;
 
     public ScanReport(String label, String path, boolean archive, boolean installed, PluginManifest manifest,
             String contentHash) {
@@ -62,10 +64,16 @@ public final class ScanReport {
     }
 
     public void addError(String message) {
-        if (message != null) {
+        if (message != null && errorEvents < Long.MAX_VALUE) errorEvents++;
+        if (message != null && errors.size() < 128) {
             errors.add(ReportText.bounded(message, 512));
+        } else if (message != null && errors.size() == 128) {
+            errors.add("Further scan errors omitted; see coverage ledger reason codes.");
         }
     }
+
+    /** Internal completion checks must not depend on the capped diagnostic display list. */
+    long errorEvents() { return errorEvents; }
 
     /** Findings ordered worst first, which is the only order a phone screen should show them in. */
     public List<Signal> signalsBySeverity() {
@@ -154,7 +162,7 @@ public final class ScanReport {
         if (verdict == Verdict.UNREADABLE) {
             return Coverage.UNSUPPORTED_OR_UNREADABLE;
         }
-        if (truncated) {
+        if (truncated || ledger.incomplete()) {
             return Coverage.PARTIAL;
         }
         for (Signal signal : signals) {

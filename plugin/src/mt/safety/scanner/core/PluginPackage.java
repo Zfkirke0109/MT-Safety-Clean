@@ -7,12 +7,10 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.Enumeration;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.zip.ZipEntry;
-import java.util.zip.ZipFile;
 import java.util.zip.ZipInputStream;
 
 /**
@@ -218,24 +216,18 @@ public abstract class PluginPackage {
     /** A {@code .mtp} (or {@code .zip}) file. */
     static final class ArchivePackage extends PluginPackage {
         private final File file;
-        private ZipFile zip;
+        private ArchiveIndex.View index;
         private List<Entry> cached;
+        private final java.util.IdentityHashMap<Entry, ArchiveIndex.Member> identities =
+                new java.util.IdentityHashMap<Entry, ArchiveIndex.Member>();
 
         ArchivePackage(File file) {
             this.file = file;
         }
 
-        private ZipFile zip() throws IOException {
-            if (zip == null) {
-                ArchiveIndex.inspect(file);
-                zip = new ZipFile(file);
-                if (zip.size() > ArchiveIndex.MAX_ENTRIES) {
-                    zip.close();
-                    zip = null;
-                    throw new IOException("archive index changed beyond its admitted entry limit");
-                }
-            }
-            return zip;
+        private ArchiveIndex.View index() throws IOException {
+            if (index == null) { index = ArchiveIndex.open(file); }
+            return index;
         }
 
         @Override
@@ -268,14 +260,11 @@ public abstract class PluginPackage {
                 return cached;
             }
             List<Entry> out = new ArrayList<Entry>();
-            Enumeration<? extends ZipEntry> en = zip().entries();
-            while (en.hasMoreElements()) {
-                if (out.size() >= ArchiveIndex.MAX_ENTRIES) {
-                    throw new IOException("archive index exceeded its admitted entry limit");
-                }
-                ZipEntry ze = en.nextElement();
-                out.add(new Entry(ze.getName(), Math.max(ze.getSize(), 0L),
-                        Math.max(ze.getCompressedSize(), 0L), ze.isDirectory()));
+            for (ArchiveIndex.Member member : index().members) {
+                Entry entry = new Entry(member.name, member.size, member.compressedSize,
+                        member.name.endsWith("/"));
+                out.add(entry);
+                identities.put(entry, member);
             }
             cached = out;
             return out;
@@ -283,28 +272,30 @@ public abstract class PluginPackage {
 
         @Override
         public byte[] read(Entry entry, int limit, ScanBudget budget) throws IOException {
-            int granted = budget.reserve(wanted(entry, limit));
-            if (granted <= 0) {
-                return new byte[0];
+            entries();
+            ArchiveIndex.Member member = identities.get(entry);
+            if (member == null) {
+                // RootedPackage recreates entries. Resolve only an unambiguous identity; duplicates
+                // must never silently select the last matching name as ZipFile.getEntry did.
+                for (ArchiveIndex.Member candidate : index().members) {
+                    if (candidate.name.equals(entry.name) && candidate.size == entry.size
+                            && candidate.compressedSize == entry.compressedSize) {
+                        if (member != null) { throw new IOException("ambiguous duplicate archive identity"); }
+                        member = candidate;
+                    }
+                }
             }
-            ZipEntry ze = zip().getEntry(entry.name);
-            if (ze == null) {
-                return new byte[0];
-            }
-            InputStream in = zip().getInputStream(ze);
-            try {
-                return Bytes.readAtMost(in, granted);
-            } finally {
-                closeQuietly(in);
-            }
+            if (member == null) { throw new IOException("archive member identity was not admitted"); }
+            return BoundedZipDecoder.read(index().stream(member), member.method, member.flags,
+                    member.compressedSize, member.size, member.crc, limit, budget, false);
         }
 
         @Override
         public String contentHash(ScanBudget budget) throws IOException {
-            if (!affordableToHash(file.length(), budget)) {
+            if (!affordableToHash(index().length(), budget)) {
                 return "";
             }
-            InputStream in = new BufferedInputStream(new FileInputStream(file));
+            InputStream in = new BufferedInputStream(index().wholeStream());
             try {
                 return Bytes.sha256(in, budget);
             } finally {
@@ -318,10 +309,47 @@ public abstract class PluginPackage {
                 return Collections.emptyList();
             }
             List<String> problems = new ArrayList<String>();
+            ArchiveIndex.View admitted = index();
+            if (!admitted.problems.isEmpty()) {
+                budget.markTruncated();
+                for (String problem : admitted.problems) {
+                    if (!problem.startsWith("duplicate archive member:")) {
+                        throw new IOException(problem);
+                    }
+                    problems.add(problem);
+                }
+            }
+            for (ArchiveIndex.Member member : admitted.members) {
+                if (member.name.endsWith("/") && member.size != 0) {
+                    budget.markTruncated();
+                    throw new IOException("directory entry contains unread data: " + member.name);
+                }
+            }
+            if (!admitted.legacyMethodsOnly()) {
+                // Raw slices permit supported peers to be inspected even when another member uses
+                // unsupported compression/encryption. Per-entry content passes retain the errors.
+                IOException failure = null;
+                for (ArchiveIndex.Member member : admitted.localOrder) {
+                    if (budget.exhausted()) { budget.markTruncated(); break; }
+                    try {
+                        BoundedZipDecoder.read(admitted.stream(member), member.method, member.flags,
+                                member.compressedSize, member.size, member.crc,
+                                MAX_MEMBER_BYTES, budget);
+                    } catch (IOException e) {
+                        budget.markTruncated();
+                        if (failure == null) {
+                            failure = new IOException("archive member could not be verified: "
+                                    + member.name + ": " + e.getMessage(), e);
+                        }
+                    }
+                }
+                if (failure != null) { throw failure; }
+                return problems;
+            }
             Set<String> seen = new HashSet<String>();
             Set<String> streamed = new HashSet<String>();
             boolean readWholeArchive = true;
-            ZipInputStream zin = new ZipInputStream(new BufferedInputStream(new FileInputStream(file)));
+            ZipInputStream zin = new ZipInputStream(new BufferedInputStream(index().wholeStream()));
             try {
                 ZipEntry ze;
                 int guard = 0;
@@ -391,14 +419,8 @@ public abstract class PluginPackage {
 
         @Override
         public void close() {
-            if (zip != null) {
-                try {
-                    zip.close();
-                } catch (IOException ignored) {
-                    // nothing useful to do while closing
-                }
-                zip = null;
-            }
+            closeQuietly(index);
+            index = null;
         }
     }
 

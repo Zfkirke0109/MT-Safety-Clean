@@ -1,0 +1,28 @@
+name: dedicated-security-checks
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  static-and-secret:
+    runs-on: ubuntu-latest
+    env:
+      TMPDIR: /tmp/mt-ci-security
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Run reviewed pinned Gitleaks and Semgrep engines
+        run: python3 tools/security_checks.py --output /tmp/mt-security-report
+      - name: Upload content-free static and redacted secret reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dedicated-security-reports
+          path: /tmp/mt-security-report/*
+          if-no-files-found: error

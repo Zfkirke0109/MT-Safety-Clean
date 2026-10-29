@@ -9,9 +9,9 @@ import java.util.Set;
  * <p>Three ideas do the work here.
  *
  * <ol>
- *   <li><b>Combinations decide.</b> Network access is ordinary; reading private app data is odd;
- *       together they are exfiltration. Escalations are applied across the whole package, because a
- *       careful attacker puts the collection and the upload in different files.
+ *   <li><b>Combinations guide review.</b> Network access alongside sensitive capabilities deserves
+ *       attention, including across different files. Co-occurrence alone does not prove that the
+ *       capabilities are connected or that data was transferred.
  *   <li><b>Purpose excuses capability.</b> A translation engine must reach the network. Charging it for
  *       that produces a scary-looking report about a plugin doing its job, which trains the user to
  *       ignore reports.
@@ -99,46 +99,47 @@ public final class RiskScorer {
         return excused;
     }
 
-    /** Adds findings for combinations that only become visible across the whole package. */
+    /** Adds capability context across the package without claiming an observed data flow. */
     private static void applyCombinationEscalations(ScanReport report) {
         Set<Category> categories = report.categories();
 
         if (categories.contains(Category.SENSITIVE_DATA) && categories.contains(Category.NETWORK)) {
-            report.add(new Signal("CMB101", Category.SENSITIVE_DATA, Severity.CRITICAL,
-                    "Reads private data and has a way to send it out",
-                    "The package both reaches for data that is not its own and talks to the network. That is"
-                            + " the shape of data theft, whatever the individual files look like."));
+            report.add(new Signal("CMB101", Category.SENSITIVE_DATA, Severity.MEDIUM,
+                    "Sensitive-data and network capabilities coexist",
+                    "The package contains sensitive-data access and network indicators. Their co-occurrence"
+                            + " does not establish that the data reaches the network; review their use."));
         }
         if (categories.contains(Category.DYNAMIC_CODE) && categories.contains(Category.NETWORK)
                 && !report.hasRule("CMB002")) {
-            report.add(new Signal("CMB102", Category.DYNAMIC_CODE, Severity.CRITICAL,
-                    "Can fetch and run code chosen after installation",
-                    "Network access plus a class loader means what you reviewed is not necessarily what will"
-                            + " run."));
+            report.add(new Signal("CMB102", Category.DYNAMIC_CODE, Severity.MEDIUM,
+                    "Code-loading and network capabilities coexist",
+                    "The package contains code-loading and network indicators. Their co-occurrence"
+                            + " does not establish that downloaded code is loaded; review the code source."));
         }
         if (categories.contains(Category.COMMAND_EXEC) && categories.contains(Category.NETWORK)
                 && !report.hasRule("CMB003")) {
-            report.add(new Signal("CMB103", Category.COMMAND_EXEC, Severity.CRITICAL,
-                    "Can run commands and take instructions from the network",
-                    "Process execution combined with network access is remote control."));
+            report.add(new Signal("CMB103", Category.COMMAND_EXEC, Severity.MEDIUM,
+                    "Command-execution and network capabilities coexist",
+                    "The package contains command-execution and network indicators. Their co-occurrence"
+                            + " does not establish that network input controls commands; review their use."));
         }
         if (categories.contains(Category.RECON) && categories.contains(Category.NETWORK)) {
-            report.add(new Signal("CMB105", Category.RECON, Severity.CRITICAL,
-                    "Captures what you do and can send it out",
-                    "Clipboard, screen, camera or location capture together with network access is"
-                            + " surveillance."));
+            report.add(new Signal("CMB105", Category.RECON, Severity.MEDIUM,
+                    "Capture and network capabilities coexist",
+                    "The package contains capture and network indicators. Their co-occurrence"
+                            + " does not establish that captured content is transmitted; review their use."));
         }
         if (categories.contains(Category.CROSS_PLUGIN) && categories.contains(Category.NETWORK)) {
             report.add(new Signal("CMB106", Category.CROSS_PLUGIN, Severity.HIGH,
                     "Reaches into MT Manager's files and has network access",
-                    "A plugin that reads MT Manager's own data and can reach the network can take whatever"
-                            + " it finds there off the device."));
+                    "MT Manager data-access and network indicators coexist. This does not establish that"
+                            + " MT Manager's data is transmitted; review the scope and purpose of access."));
         }
         if (categories.contains(Category.DESTRUCTIVE) && categories.contains(Category.OBFUSCATION)) {
             report.add(new Signal("CMB104", Category.DESTRUCTIVE, Severity.HIGH,
-                    "Destructive behaviour that has been hidden",
-                    "Bulk deletion or encryption combined with concealment. Nothing legitimate needs to hide"
-                            + " that it deletes your files."));
+                    "Destructive and obfuscation indicators coexist",
+                    "Deletion or encryption indicators coexist with obfuscation indicators. This does not establish"
+                            + " deliberate concealment of destructive behavior; review both findings."));
         }
 
         int breadth = 0;
@@ -153,9 +154,9 @@ public final class RiskScorer {
         }
         if (breadth >= 4) {
             report.add(new Signal("CMB107", Category.PROVENANCE, Severity.HIGH,
-                    "Does far more than a plugin needs to",
-                    "Capabilities across " + breadth + " unrelated areas. Even if every one had an"
-                            + " explanation, the combination does not belong in a file-manager plugin."));
+                    "Capabilities span several risk categories",
+                    "Indicators span " + breadth + " risk categories. Review whether these capabilities fit"
+                            + " the plugin's purpose; category breadth alone does not prove malicious use."));
         }
     }
 
@@ -207,9 +208,8 @@ public final class RiskScorer {
             return Verdict.LIKELY_MALICIOUS;
         }
         int score = report.score();
-        if (score >= Severity.CRITICAL.weight()) {
-            return Verdict.LIKELY_MALICIOUS;
-        }
+        // Independent capabilities may accumulate a large score without establishing intent.
+        // Only the direct critical evidence above can produce a likely-malicious verdict.
         if (score >= Severity.HIGH.weight()) {
             return Verdict.SUSPICIOUS;
         }

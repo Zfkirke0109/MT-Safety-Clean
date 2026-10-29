@@ -1,17 +1,19 @@
 package mt.safety.scanner.core;
 
+import java.util.concurrent.atomic.AtomicBoolean;
+
 /**
  * Bounds the work a single scan may do.
  *
- * <p>The scan runs on MT Manager's UI thread when the plugin's settings screen is opened, and the
- * packages it reads are untrusted: a plugin can trivially ship a 2 GB asset or a zip bomb. Every
- * read goes through a budget so a hostile or merely huge package degrades into a truncated report
- * instead of freezing MT Manager.
+ * <p>Cooperative limits run inside the scanner-owned worker. The caller also enforces a process
+ * deadline and heap limit, since a byte budget cannot preempt a blocked decoder or regular expression.
  */
 public final class ScanBudget {
 
     private final long timeLimitMs;
-    private final long deadlineMs;
+    private final long startedNanos;
+    private final long timeLimitNanos;
+    private final AtomicBoolean cancelled;
     private final long maxBytes;
     private long bytesUsed;
     private boolean truncated;
@@ -30,7 +32,7 @@ public final class ScanBudget {
      * A budget for walking files rather than plugin packages.
      *
      * <p>Wider than a plugin scan because there are more files and they are larger; still bounded,
-     * because it runs on MT Manager's UI thread and the folders it walks are whatever the device
+     * because the folders it walks are whatever the device
      * holds. The deep variant is for when the user has asked to wait.
      */
     public static ScanBudget files(boolean deep) {
@@ -43,9 +45,19 @@ public final class ScanBudget {
     }
 
     public ScanBudget(long timeLimitMs, long maxBytes) {
+        this(timeLimitMs, maxBytes, new AtomicBoolean());
+    }
+
+    private ScanBudget(long timeLimitMs, long maxBytes, AtomicBoolean cancelled) {
+        if (timeLimitMs < 0 || maxBytes < 0) {
+            throw new IllegalArgumentException("Negative scan allowance");
+        }
         this.timeLimitMs = timeLimitMs;
-        this.deadlineMs = now() + timeLimitMs;
+        this.timeLimitNanos = timeLimitMs >= Long.MAX_VALUE / 1000000L
+                ? Long.MAX_VALUE : timeLimitMs * 1000000L;
+        this.startedNanos = System.nanoTime();
         this.maxBytes = maxBytes;
+        this.cancelled = cancelled;
     }
 
     /**
@@ -55,12 +67,27 @@ public final class ScanBudget {
      * whole scan and leave the rest of the list unexamined.
      */
     public ScanBudget fresh() {
-        return new ScanBudget(timeLimitMs, maxBytes);
+        return new ScanBudget(timeLimitMs, maxBytes, cancelled);
+    }
+
+    /** Stop the operation and every fresh per-package allowance derived from it. */
+    public void cancel() {
+        cancelled.set(true);
+    }
+
+    /** Deadline, interruption or explicit cancellation, independent of reserved read bytes. */
+    public boolean stopped() {
+        if (cancelled.get() || Thread.currentThread().isInterrupted()
+                || System.nanoTime() - startedNanos >= timeLimitNanos) {
+            truncated = true;
+            return true;
+        }
+        return false;
     }
 
     /** True once the time or byte budget is gone; callers should stop reading and report. */
     public boolean exhausted() {
-        if (bytesUsed >= maxBytes || now() > deadlineMs) {
+        if (stopped() || bytesUsed >= maxBytes) {
             truncated = true;
             return true;
         }
@@ -73,6 +100,9 @@ public final class ScanBudget {
      * @return the number of bytes the caller may actually read, possibly 0
      */
     public int reserve(int bytes) {
+        if (bytes < 0) {
+            throw new IllegalArgumentException("Negative read reservation");
+        }
         if (exhausted()) {
             return 0;
         }
@@ -127,7 +157,4 @@ public final class ScanBudget {
         return bytesUsed;
     }
 
-    private static long now() {
-        return System.currentTimeMillis();
-    }
 }

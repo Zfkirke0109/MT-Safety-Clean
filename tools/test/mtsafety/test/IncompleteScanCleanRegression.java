@@ -317,7 +317,7 @@ public final class IncompleteScanCleanRegression {
                                 && text.contains("Coverage notices:") && text.contains("MFT013")
                                 && ReportFormatter.overview(Arrays.asList(report)).contains("1 incomplete")
                                 && json.contains("\"coverage\": \"PARTIAL\"")
-                                && json.contains("\"truncated\": false"),
+                                && json.contains("\"truncated\": true"),
                         report.coverage() + " :: " + ReportFormatter.summaryLine(report) + " :: " + text);
     }
 
@@ -526,10 +526,21 @@ public final class IncompleteScanCleanRegression {
         members.put("assets/opaque.bin", Fixtures.bytes("inert, deliberately non-XZ method-95 marker"));
         File archive = fixtures.unsupportedMethod95Archive("unsupported-coverage.mtp", members,
                 "assets/opaque.bin");
-        ScanReport r = new PluginScanner(IocDatabase.empty()).scan(archive, ScanBudget.unlimited());
+        ScanReport invalid = new PluginScanner(IocDatabase.empty()).scan(archive, ScanBudget.unlimited());
+        c.that("invalid XZ member cannot make supported inspected peers disappear",
+                invalid.coverage() == Coverage.PARTIAL && invalid.filesScanned() > 0 && !invalid.errors.isEmpty(),
+                invalid.coverage() + " :: " + invalid.errors);
+        // A split-archive envelope is still unsupported as a whole, before any member is admitted.
+        byte[] split;
+        try { split = java.nio.file.Files.readAllBytes(archive.toPath()); }
+        catch (IOException failure) { throw new AssertionError("Could not read split fixture", failure); }
+        split[split.length - 22 + 4] = 1;
+        File unsupported = new File(archive.getParentFile(), "split-coverage.mtp");
+        Fixtures.writeBytes(unsupported, split);
+        ScanReport r = new PluginScanner(IocDatabase.empty()).scan(unsupported, ScanBudget.unlimited());
         String text = ReportFormatter.plainText(r);
         String json = ReportFormatter.json(Arrays.asList(r));
-        c.that("unsupported ZIP95 package has truthful coverage and no inspected-content claims",
+        c.that("unsupported split package has truthful coverage and no inspected-content claims",
                 r.verdict() == Verdict.UNREADABLE && r.coverage() == Coverage.UNSUPPORTED_OR_UNREADABLE
                         && r.dispositionLabel().equals("Could not scan")
                         && text.contains("Coverage: Unsupported or unreadable")
@@ -541,7 +552,7 @@ public final class IncompleteScanCleanRegression {
                         && json.contains("\"verdict\": \"UNREADABLE\""),
                 r.coverage() + " :: " + text);
         String overview = ReportFormatter.overview(Arrays.asList(r));
-        c.that("unsupported ZIP95 package is counted unreadable, never clean",
+        c.that("unsupported split package is counted unreadable, never clean",
                 overview.contains("1 unreadable") && overview.contains("0 clean"), overview);
 
         // A missing path is entirely inaccessible, unlike a readable plugin with some skipped members.

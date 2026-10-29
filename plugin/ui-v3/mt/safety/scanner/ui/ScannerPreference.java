@@ -1,6 +1,12 @@
 package mt.safety.scanner.ui;
 
 import android.content.SharedPreferences;
+import android.os.Handler;
+import android.os.Looper;
+import java.lang.ref.WeakReference;
+import java.util.concurrent.Callable;
+import java.util.concurrent.Executor;
+import mt.safety.scanner.execution.SingleFlight;
 
 import java.io.File;
 
@@ -13,74 +19,81 @@ import mt.safety.scanner.Host;
 import mt.safety.scanner.ScanRunner;
 import mt.safety.scanner.Strings;
 
-import mt.safety.scanner.core.ScanReport;
 
 /**
- * The plugin's settings screen, for MT Manager plugin SDK v3, and the only class that touches an MT
- * Manager type.
- *
- * <p>v3 is the reason this file differs from its v2 sibling. v2 gave a plugin one screen built once
- * out of read-only rows and switches, with no click callback: the design there was to arm an action
- * with a switch and run it on the next open. v3 gives a plugin real click callbacks
- * ({@link PluginPreference.Text#onClick}) and real dialogs ({@link PluginUI#buildDialog}), so this
- * screen offers a button under each flagged plugin that opens a Quarantine / Remove / Cancel dialog
- * and acts at once, and a "Quarantine all" / "Remove all" button for the whole malicious set. The
- * dialog the user confirms is the confirmation the typed path used to get from a code.
- *
- * <p>Everything below the click is the same pure-Java core the v2 build uses, reached through
- * {@link Host}. Porting between v2 and v3 is editing this one file: the context type changed from
- * {@code MTPluginContext} to {@code PluginContext}, and the scan and actions did not.
+ * SDK3 scan/report screen. Other-plugin file management stays in MT Manager's own controls.
+ * Scanner work and local report exports run in the bounded scanner-owned worker.
  */
 public class ScannerPreference implements PluginPreference {
 
     private PluginContext context;
-    private ScanRunner runner;
+    private IsolatedRunner runner;
     private Strings strings;
     private ScanRunner.Result result;
-    private PreferenceScreen screen;
+    private WeakReference<PreferenceScreen> screen = new WeakReference<PreferenceScreen>(null);
+    private static final Handler MAIN = new Handler(Looper.getMainLooper());
+    private static final SingleFlight WORK = new SingleFlight(new Executor() {
+        @Override public void execute(Runnable task) { MAIN.post(task); }
+    });
+    private boolean busy, renderCached;
+    private long operationGeneration, viewGeneration;
+    private int operation;
+    private String status = "";
+    private static final int SCAN = 1, FILES = 2, EXPORT = 3;
+
 
     @Override
     public void onBuild(PluginContext context, Builder builder) {
         this.context = context;
-        seedIndicatorFile(context);
-        this.runner = new ScanRunner(new MtHost(context));
-        this.strings = runner.strings();
-
-        try {
-            this.result = runner.run();
-        } catch (RuntimeException e) {
-            context.log("scan failed", e);
-            builder.title(safe(strings.screenTitle()));
-            builder.addText(safe(strings.problem())).summary(safe(String.valueOf(e)));
-            return;
+        final long view = ++viewGeneration;
+        if (runner == null) {
+            runner = new IsolatedRunner(context, new MtHost(context));
+            strings = runner.strings();
         }
-
         builder.title(safe(strings.screenTitle()));
         builder.subtitle(safe(strings.screenSubtitle()));
-
-        // Keep the screen so an action can rebuild it in place after moving a plugin.
         builder.onCreated(new OnPreferenceScreenCreatedListener() {
-            @Override
-            public void onPreferenceScreenCreated(PluginUI ui, PreferenceScreen created) {
-                screen = created;
+            @Override public void onPreferenceScreenCreated(PluginUI ui, PreferenceScreen created) {
+                if (view == viewGeneration) screen = new WeakReference<PreferenceScreen>(created);
             }
         });
-
-        int malicious = runner.actionTargets(result, "malicious").size();
-        int flagged = runner.actionTargets(result, "flagged").size();
-        int pending = runner.uninstallTargets(result).size();
+        if (!busy && !renderCached) startWork(SCAN);
+        renderCached = false;
+        if (busy) {
+            builder.addText(operation == SCAN ? "Scanning plugins…" : operation == FILES ? "Scanning files…" : "Exporting share-safe report…")
+                    .summary("You can leave this screen. Results appear when the operation finishes.");
+            if (operation == SCAN || operation == FILES || operation == EXPORT) {
+                builder.addText("Cancel operation").onClick(new OnTextItemClickListener() {
+                    @Override public void onClick(PluginUI ui, PreferenceItem item) {
+                        if (busy) {
+                            WORK.cancel();
+                            item.setSummary("Cancellation requested; waiting for the worker to stop.");
+                        }
+                    }
+                });
+            }
+            return;
+        }
+        if (status.length() > 0) builder.addText("Scanner status").summary(safe(status));
+        builder.addText("Scan again / run command").onClick(new OnTextItemClickListener() {
+            @Override public void onClick(PluginUI ui, PreferenceItem item) {
+                if (!busy) { startWork(SCAN); redraw(); }
+            }
+        });
+        builder.addText("Export share-safe report")
+                .summary("Save a content-free report for sharing, with findings and coverage but no evidence snippets.")
+                .onClick(new OnTextItemClickListener() {
+                    @Override public void onClick(PluginUI ui, PreferenceItem item) {
+                        if (!busy) { startWork(EXPORT); redraw(); }
+                    }
+                });
+        builder.addHeader(safe(strings.managementDelegatedTitle()));
+        builder.addText(safe(strings.managementDelegatedTitle())).summary(safe(strings.managementDelegated()));
+        if (result == null) return;
         int held = runner.quarantinedCount();
-        if (flagged > 0 || pending > 0 || held > 0) {
-            builder.addHeader(safe(strings.actionsHeader()));
-            // The button the switches below feed into. Shown even at zero, so the count is visible
-            // as switches are turned on and it is obvious what they are for.
-            addUninstallButton(builder, pending, held);
-            if (flagged > 0) {
-                addBulkButton(builder, "flagged", false, flagged);
-            }
-            if (malicious > 0) {
-                addBulkButton(builder, "malicious", true, malicious);
-            }
+        if (held > 0) {
+            builder.addText("Historical quarantine")
+                    .summary("Stored entries: " + held + ". Review or manage these files in MT Manager. The scanner leaves them unchanged.");
         }
 
         renderRows(builder, result.rows);
@@ -97,88 +110,6 @@ public class ScannerPreference implements PluginPreference {
         builder.addText(safe(strings.commandsHelpTitle())).summary(safe(strings.commandsHelp()));
 
         renderRows(builder, result.aboutRows);
-    }
-
-    /**
-     * The uninstall button: deletes everything selected by a switch, everything the scan called
-     * malicious, and everything already sitting in quarantine.
-     */
-    private void addUninstallButton(Builder builder, final int targets, final int held) {
-        builder.addText(safe(strings.uninstallButton(targets + held)))
-                .summary(safe(strings.uninstallButtonHelp()))
-                .onClick(new OnTextItemClickListener() {
-                    @Override
-                    public void onClick(PluginUI ui, PreferenceItem item) {
-                        confirmUninstall(ui, targets, held);
-                    }
-                });
-    }
-
-    private void confirmUninstall(final PluginUI ui, int targets, int held) {
-        StringBuilder names = new StringBuilder();
-        java.util.List<ScanReport> list = runner.uninstallTargets(result);
-        for (int i = 0; i < list.size() && i < 12; i++) {
-            if (names.length() > 0) {
-                names.append('\n');
-            }
-            names.append("\u2022 ").append(safe(list.get(i).manifest.displayName()));
-        }
-        if (list.size() > 12) {
-            names.append('\n').append(safe(strings.andMore(list.size() - 12)));
-        }
-        String body = strings.uninstallBody(targets, held);
-        if (names.length() > 0) {
-            body = body + "\n\n" + names;
-        }
-        ui.buildDialog()
-                .setTitle(safe(strings.uninstallTitle()))
-                .setMessage(safe(body))
-                .setPositiveButton(safe(strings.confirmAct(true)), new PluginDialog.OnClickListener() {
-                    @Override
-                    public void onClick(PluginDialog dialog, int which) {
-                        finishAction(ui, runner.uninstallSelection(result));
-                    }
-                })
-                .setNegativeButton(safe(strings.cancel()), null)
-                .show();
-    }
-
-    /** A "Quarantine/Remove all X (N)" button that confirms in a dialog before acting. */
-    private void addBulkButton(Builder builder, final String scope, final boolean remove, int count) {
-        builder.addText(safe(strings.bulkButton(remove ? "remove" : "quarantine", scope, count)))
-                .summary(safe(strings.bulkButtonHelp(remove)))
-                .onClick(new OnTextItemClickListener() {
-                    @Override
-                    public void onClick(PluginUI ui, PreferenceItem item) {
-                        confirmBulk(ui, scope, remove);
-                    }
-                });
-    }
-
-    private void confirmBulk(final PluginUI ui, final String scope, final boolean remove) {
-        StringBuilder names = new StringBuilder();
-        java.util.List<ScanReport> targets = runner.actionTargets(result, scope);
-        for (int i = 0; i < targets.size() && i < 12; i++) {
-            if (names.length() > 0) {
-                names.append('\n');
-            }
-            names.append("• ").append(safe(targets.get(i).manifest.displayName()));
-        }
-        if (targets.size() > 12) {
-            names.append('\n').append(safe(strings.andMore(targets.size() - 12)));
-        }
-        ui.buildDialog()
-                .setTitle(safe(strings.confirmTitle(remove ? "remove" : "quarantine")))
-                .setMessage(safe(strings.confirmBody(remove, targets.size()) + "\n\n" + names))
-                .setPositiveButton(safe(strings.confirmAct(remove)), new PluginDialog.OnClickListener() {
-                    @Override
-                    public void onClick(PluginDialog dialog, int which) {
-                        String outcome = runner.actOnScope(result, scope, remove);
-                        finishAction(ui, outcome);
-                    }
-                })
-                .setNegativeButton(safe(strings.cancel()), null)
-                .show();
     }
 
     /**
@@ -204,6 +135,8 @@ public class ScannerPreference implements PluginPreference {
     }
 
     private void confirmFileScan(final PluginUI ui, int signatures) {
+        if (busy) return;
+        final long view = viewGeneration;
         StringBuilder roots = new StringBuilder();
         java.util.List<File> list = runner.fileScanRoots();
         for (int i = 0; i < list.size() && i < 8; i++) {
@@ -228,65 +161,102 @@ public class ScannerPreference implements PluginPreference {
                 .setPositiveButton(safe(strings.scanAction()), new PluginDialog.OnClickListener() {
                     @Override
                     public void onClick(PluginDialog dialog, int which) {
-                        runFileScan(ui);
+                        if (view != viewGeneration || busy) return;
+                        startWork(FILES);
+                        redraw();
                     }
                 })
                 .setNegativeButton(safe(strings.cancel()), null)
                 .show();
     }
 
-    /** Runs the scan and shows what it found in a dialog; the screen itself needs no rebuild. */
-    private void runFileScan(PluginUI ui) {
-        java.util.List<String> hits = new java.util.ArrayList<String>();
-        String outcome;
-        try {
-            outcome = runner.scanFiles("", hits);
-        } catch (RuntimeException e) {
-            context.log("file scan failed", e);
-            outcome = strings.commandFailed(String.valueOf(e.getMessage()));
-        }
-        context.log("file scan: " + outcome);
-        StringBuilder body = new StringBuilder(outcome);
-        for (int i = 0; i < hits.size(); i++) {
-            body.append("\n\n").append(hits.get(i));
-        }
-        ui.buildDialog()
-                .setTitle(safe(strings.filesResultTitle()))
-                .setMessage(safe(body.toString()))
-                .setPositiveButton(safe(strings.dismiss()), null)
-                .show();
-    }
-
-    /** Reports the outcome and rebuilds the screen so acted-on plugins drop off the list. */
-    private void finishAction(PluginUI ui, String outcome) {
-        if (outcome != null && outcome.length() > 0) {
-            ui.showToast(safe(outcome));
-            context.log("action: " + outcome);
-        }
-        if (screen != null) {
-            screen.recreate();
+    /** Scan, definition reads and report exports never run on a UI callback. */
+    private void startWork(int kind) {
+        if (busy) return;
+        long token = ++operationGeneration;
+        operation = kind;
+        busy = true;
+        status = "";
+        boolean accepted = WORK.submit(new Operation(context, runner, kind), new Completion(this, token, kind));
+        if (!accepted) {
+            busy = false;
+            status = "Another scanner operation is still running. Wait for it to finish and scan again.";
         }
     }
 
-    /**
-     * Renders the scanner's rows.
-     *
-     * <p>A row the core marked actionable becomes a button that acts on that one plugin; every other
-     * row is read-only text. {@code java.util.List} is spelled out because implementing
-     * {@link PluginPreference} brings its nested {@code List} option type into scope.
-     */
+    private void redraw() {
+        renderCached = true;
+        PreferenceScreen current = screen.get();
+        if (current != null) {
+            try { current.recreate(); }
+            catch (RuntimeException detached) { screen.clear(); }
+        }
+    }
+
+    private static final class Outcome {
+        ScanRunner.Result scan;
+        String text = "";
+    }
+
+    /** Holds no preference-screen or PluginUI reference while the background work is running. */
+    private static final class Operation implements Callable<Outcome> {
+        private final PluginContext context;
+        private final IsolatedRunner runner;
+        private final int kind;
+        Operation(PluginContext context, IsolatedRunner runner, int kind) {
+            this.context = context; this.runner = runner; this.kind = kind;
+        }
+        @Override public Outcome call() throws Exception {
+            Outcome outcome = new Outcome();
+            if (kind == SCAN || kind == EXPORT) {
+                seedIndicatorFile(context);
+                outcome.scan = kind == SCAN ? runner.run() : runner.exportShareSafeReport();
+            } else {
+                java.util.List<String> hits = new java.util.ArrayList<String>();
+                StringBuilder body = new StringBuilder(runner.scanFiles("", hits));
+                for (String hit : hits) body.append("\n\n").append(hit);
+                outcome.text = body.toString();
+            }
+            return outcome;
+        }
+    }
+
+    private static final class Completion implements SingleFlight.Callback<Outcome> {
+        private final WeakReference<ScannerPreference> owner;
+        private final long token;
+        private final int kind;
+        Completion(ScannerPreference owner, long token, int kind) {
+            this.owner = new WeakReference<ScannerPreference>(owner); this.token = token; this.kind = kind;
+        }
+        @Override public void completed(Outcome outcome, Throwable error) {
+            ScannerPreference current = owner.get();
+            if (current == null || current.operationGeneration != token) return;
+            current.busy = false;
+            if (error != null) {
+                current.result = null;
+                current.status = kind == EXPORT
+                        ? "Export unavailable, cancelled or incomplete. No completed share-safe export was confirmed."
+                        : "Scan unavailable, cancelled or incomplete. No all-clear was produced. "
+                                + (error.getMessage() == null ? "Worker failed." : error.getMessage());
+            } else if (kind == SCAN || kind == EXPORT) {
+                current.result = outcome.scan;
+                current.status = kind == EXPORT ? outcome.scan.commandOutcome
+                        : "Scan finished. Review the findings and coverage below.";
+            } else {
+                current.status = outcome.text;
+            }
+            current.redraw();
+        }
+    }
+
+    /** Findings remain read-only, including legacy action rows returned by an older report. */
     private void renderRows(Builder builder, java.util.List<ScanRunner.Row> rows) {
         for (int i = 0; i < rows.size(); i++) {
             ScanRunner.Row row = rows.get(i);
             if (row.header) {
                 builder.addHeader(safe(row.title));
-            } else if (row.toggle && row.key != null) {
-                // A switch, not an action: it marks this plugin for the uninstall button. Nothing
-                // happens while the screen is open, so one touched by accident can be turned off.
-                builder.addSwitch(safe(row.title), row.key)
-                        .defaultValue(false)
-                        .summaryOn(safe(strings.selectedOn()))
-                        .summaryOff(safe(row.summary));
+            } else if (row.toggle) {
+                builder.addText(safe(strings.managementDelegatedTitle())).summary(safe(strings.managementDelegated()));
             } else {
                 builder.addText(safe(row.title)).summary(safe(row.summary));
             }
@@ -312,16 +282,9 @@ public class ScannerPreference implements PluginPreference {
                 return;
             }
             try {
-                java.io.OutputStream out = new java.io.FileOutputStream(target);
-                try {
-                    byte[] buffer = new byte[8192];
-                    int read;
-                    while ((read = in.read(buffer)) > 0) {
-                        out.write(buffer, 0, read);
-                    }
-                } finally {
-                    out.close();
-                }
+                byte[] content = mt.safety.scanner.core.Bytes.readAtMost(in, 1024 * 1024 + 1);
+                if (content.length > 1024 * 1024) throw new java.io.IOException("Indicator asset limit");
+                mt.safety.scanner.core.AtomicFiles.createIfAbsent(target, content);
             } finally {
                 in.close();
             }

@@ -43,7 +43,7 @@ public final class PluginScanner {
 
     /** Scans one package: a {@code .mtp} file or an installed plugin directory. */
     public ScanReport scan(File path, ScanBudget budget) {
-        long started = System.currentTimeMillis();
+        long started = System.nanoTime();
         PluginPackage pkg = null;
         try {
             pkg = PluginPackage.open(path, listing);
@@ -67,6 +67,21 @@ public final class PluginScanner {
 
             ScanReport report = new ScanReport(pkg.label(), path.getAbsolutePath(), pkg.archive(),
                     pkg.installed(), manifest, hash);
+            report.ledger.start();
+            for (PluginPackage.Entry entry : entries) {
+                CoverageLedger.Member member = report.ledger.member(entry);
+                if (entry.directory || entry.name.equals("manifest.json")) {
+                    member.notApplicable(entry.directory ? CoverageLedger.Reason.DIRECTORY
+                            : CoverageLedger.Reason.MANIFEST_METADATA);
+                }
+            }
+            report.ledger.set(CoverageLedger.PackageAnalyzer.MANIFEST,
+                    manifest.unreadable ? CoverageLedger.Status.FAILED : CoverageLedger.Status.COMPLETE,
+                    manifest.unreadable ? CoverageLedger.Reason.READ_FAILED : !manifest.present
+                            ? CoverageLedger.Reason.MANIFEST_MISSING : CoverageLedger.Reason.OK);
+            report.ledger.set(CoverageLedger.PackageAnalyzer.CONTENT_HASH,
+                    hash.length() == 0 ? CoverageLedger.Status.PARTIAL : CoverageLedger.Status.COMPLETE,
+                    hash.length() == 0 ? CoverageLedger.Reason.HASH_UNAVAILABLE : CoverageLedger.Reason.OK);
             try {
                 String identityPath = pkg.actionIdentityPath();
                 report.setDestructiveActionIdentity(hash.length() > 0
@@ -84,6 +99,14 @@ public final class PluginScanner {
 
             ManifestRules.apply(report, manifest, pkg, entries, budget);
             ArchiveRules.apply(report, pkg, entries, budget);
+            report.ledger.set(CoverageLedger.PackageAnalyzer.STRUCTURE,
+                    budget.wasTruncated() ? CoverageLedger.Status.PARTIAL : CoverageLedger.Status.COMPLETE,
+                    budget.wasTruncated() ? CoverageLedger.Reason.READ_FAILED : CoverageLedger.Reason.OK);
+            report.ledger.set(CoverageLedger.PackageAnalyzer.CODE_VISIBILITY,
+                    report.hasRule("MFT012") || report.hasRule("MFT013") ? CoverageLedger.Status.PARTIAL
+                            : CoverageLedger.Status.COMPLETE,
+                    report.hasRule("MFT012") || report.hasRule("MFT013") ? CoverageLedger.Reason.NOT_VISIBLE
+                            : CoverageLedger.Reason.OK);
             int scanned = CodeRules.apply(report, pkg, entries, budget, database, signatures);
 
             for (String problem : database.loadErrors()) {
@@ -98,8 +121,18 @@ public final class PluginScanner {
                 report.addError("Some selected signature definitions were unsupported or exceeded load limits.");
                 budget.markTruncated();
             }
+            report.ledger.set(CoverageLedger.PackageAnalyzer.IOC_DEFINITIONS,
+                    database.loadErrors().isEmpty() ? CoverageLedger.Status.COMPLETE : CoverageLedger.Status.PARTIAL,
+                    database.loadErrors().isEmpty() ? CoverageLedger.Reason.OK : CoverageLedger.Reason.DEFINITIONS_INCOMPLETE);
+            boolean signaturesComplete = signatures.complete() && signatures.unsupportedCount() == 0
+                    && signatures.cappedCount() == 0;
+            report.ledger.set(CoverageLedger.PackageAnalyzer.SIGNATURE_DEFINITIONS,
+                    signaturesComplete ? CoverageLedger.Status.COMPLETE : CoverageLedger.Status.PARTIAL,
+                    signaturesComplete ? CoverageLedger.Reason.OK : CoverageLedger.Reason.DEFINITIONS_INCOMPLETE);
+            report.ledger.finishPending(budget.wasTruncated() ? CoverageLedger.Reason.BUDGET_EXHAUSTED
+                    : CoverageLedger.Reason.NOT_ATTEMPTED);
             report.setFilesScanned(scanned);
-            report.setTruncated(budget.wasTruncated());
+            report.setTruncated(budget.wasTruncated() || report.ledger.incomplete());
             if (report.truncated()) {
                 report.add(new Signal("SCN001", Category.PROVENANCE, Severity.INFO,
                         "The scan did not complete every check",
@@ -110,7 +143,7 @@ public final class PluginScanner {
                                 + " evidence of malware."));
             }
             RiskScorer.score(report, database);
-            report.setElapsedMs(System.currentTimeMillis() - started);
+            report.setElapsedMs((System.nanoTime() - started) / 1000000L);
             return report;
         } catch (IOException e) {
             String why = describeOpenFailure(e);
@@ -118,7 +151,10 @@ public final class PluginScanner {
                     path.isDirectory(), PluginManifest.missing(), "");
             report.addError("could not open the package: " + why);
             report.setVerdict(Verdict.UNREADABLE, "The package could not be opened: " + why);
-            report.setElapsedMs(System.currentTimeMillis() - started);
+            report.ledger.start();
+            report.ledger.set(CoverageLedger.PackageAnalyzer.STRUCTURE, CoverageLedger.Status.FAILED,
+                    CoverageLedger.Reason.READ_FAILED);
+            report.setElapsedMs((System.nanoTime() - started) / 1000000L);
             return report;
         } catch (RuntimeException e) {
             // A malformed package must never take the host application down with it.
@@ -126,7 +162,10 @@ public final class PluginScanner {
                     path.isDirectory(), PluginManifest.missing(), "");
             report.addError("the package could not be parsed: " + e);
             report.setVerdict(Verdict.UNREADABLE, "The package could not be parsed safely.");
-            report.setElapsedMs(System.currentTimeMillis() - started);
+            report.ledger.start();
+            report.ledger.set(CoverageLedger.PackageAnalyzer.STRUCTURE, CoverageLedger.Status.FAILED,
+                    CoverageLedger.Reason.PARSE_FAILED);
+            report.setElapsedMs((System.nanoTime() - started) / 1000000L);
             return report;
         } finally {
             if (pkg != null) {
@@ -259,9 +298,9 @@ public final class PluginScanner {
             if (!entry.directory && entry.name.equals("manifest.json")) {
                 try {
                     byte[] data = pkg.read(entry, 512 * 1024, budget);
-                    if (data.length == 0) {
+                    if (data.length == 0 || data.length != entry.size) {
                         budget.markTruncated();
-                        return PluginManifest.unreadable("not read within the scan budget");
+                        return PluginManifest.unreadable("not fully read within the manifest or scan budget");
                     }
                     return PluginManifest.parse(data);
                 } catch (IOException e) {

@@ -2,34 +2,27 @@ package mt.safety.scanner;
 
 import java.io.File;
 import java.io.FileInputStream;
-import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.List;
 
 import mt.safety.scanner.core.Bytes;
 import mt.safety.scanner.core.DirectoryListing;
 import mt.safety.scanner.core.Json;
-import mt.safety.scanner.core.PluginManifest;
-import mt.safety.scanner.core.PluginPackage;
 import mt.safety.scanner.core.ScanBudget;
 
-/**
- * Moves a plugin out of the way without destroying it.
- *
- * <p>Deleting is the wrong default for three reasons: MT Manager keeps its own record of installed
- * plugins and removing files underneath it can leave that record inconsistent; a plugin the user was
- * wrong about is gone for good; and a plugin worth reporting to others is evidence. So quarantine moves
- * the plugin's directory into this scanner's own storage, records where it came from, and can put it
- * back.
- *
- * <p>The recommended route is still MT Manager's own plugin management screen, which uninstalls
- * cleanly. Quarantine is for the cases that route does not cover: a plugin that misbehaves on load, or
- * one the user wants preserved before removal.
- */
+/** Read-only access to historical quarantine data. Plugin management is delegated to MT Manager. */
 public final class Quarantine {
+    private static final String INFO_FILE = "quarantine-info.json";
+    private static final int MAX_ACTION_ENTRIES = 8000;
+    private final File store;
+    private String listingProblem;
+
+    /** Every mutation API returns this outcome without inspecting targets or invoking guards. */
+    public static final String DELEGATED_MESSAGE = "Action not performed. Use MT Manager's plugin management"
+            + " screen to manage installed plugins. Inspect historical quarantine files and their original"
+            + " paths in MT Manager for manual recovery; this scanner preserves all held data.";
 
     public interface MoveGuard {
         boolean allow(File pluginDir);
@@ -40,13 +33,6 @@ public final class Quarantine {
         }
     }
 
-    private static final String INFO_FILE = "quarantine-info.json";
-    private static final int MAX_DEPTH = 24;
-    private static final int MAX_ACTION_ENTRIES = 8000;
-    /** Test seam for deterministic failed-rename coverage. */
-    private static final String FORCE_COPY_FALLBACK_PROPERTY = "mtsafety.forceCopyFallback";
-
-    /** What happened, in a sentence fit to show the user. */
     public static final class Result {
         public final boolean ok;
         public final String message;
@@ -64,7 +50,6 @@ public final class Quarantine {
         }
     }
 
-    /** A quarantined plugin. */
     public static final class Item {
         public final File directory;
         public final String pluginId;
@@ -79,13 +64,6 @@ public final class Quarantine {
         }
     }
 
-    private final File store;
-    private String listingProblem;
-
-    /**
-     * @param store a directory this plugin owns, normally a subdirectory of
-     *              {@code MTPluginContext.getFilesDir()}
-     */
     public Quarantine(File store) {
         this.store = store;
     }
@@ -94,24 +72,10 @@ public final class Quarantine {
         return store;
     }
 
-    /** Why the last quarantine listing was unavailable; null for a complete listing. */
     public String listingProblem() {
         return listingProblem;
     }
 
-    /**
-     * Why the quarantine store must not be used, or {@code null} when it is sound.
-     *
-     * <p>The link checks elsewhere cover the plugin being moved and the entries already held. The store
-     * itself was the gap: replace {@code filesDir/quarantine} with a link and every plugin this tool
-     * moves aside lands wherever that link points, {@code list} reads whatever is sitting there as
-     * though it were quarantined, and {@code restore} will copy it back out to a path taken from an
-     * {@code .info} file someone else wrote. Nothing downstream can recover from that, so it is refused
-     * at the door.
-     *
-     * <p>A linked ancestor is still fine, and has to be: on Android {@code /sdcard} is itself a link to
-     * {@code /storage/emulated/0}. Only the last path component is in question.
-     */
     private String storeProblem() {
         if (store.exists() && !store.isDirectory()) {
             return "The quarantine folder at " + store.getAbsolutePath() + " is not a directory, so"
@@ -120,158 +84,13 @@ public final class Quarantine {
         try {
             if (store.exists() && isLink(store)) {
                 return "The quarantine folder at " + store.getAbsolutePath() + " is a link to somewhere"
-                        + " else, so nothing was done. Delete or inspect it by hand before using"
-                        + " quarantine again.";
+                        + " else, so nothing was done. Inspect it in MT Manager for manual recovery.";
             }
         } catch (IOException e) {
             return "The quarantine folder at " + store.getAbsolutePath() + " could not be resolved ("
                     + e.getMessage() + "), so nothing was done.";
         }
         return null;
-    }
-
-    /**
-     * The same check, plus creating the store when it is simply not there yet.
-     *
-     * <p>Split from {@link #storeProblem} because reading quarantine must never bring the folder into
-     * existence: {@code list} on a fresh install should say the quarantine is empty, not create it.
-     */
-    private String ensureUsableStore() {
-        String problem = storeProblem();
-        if (problem != null) {
-            return problem;
-        }
-        if (!store.isDirectory() && !store.mkdirs()) {
-            return "Could not create the quarantine folder at " + store.getAbsolutePath();
-        }
-        return null;
-    }
-
-    /**
-     * Retained for source compatibility. A caller must supply the scan-bound guard overload.
-     */
-    public Result quarantine(File pluginDir, String ownPluginId) {
-        return quarantine(pluginDir, ownPluginId, null);
-    }
-
-    /**
-     * Moves {@code pluginDir} only if {@code guard} still approves it immediately before filesystem
-     * mutation. If rename fails, the source is retained; copy-and-delete is not atomic enough to
-     * preserve the authorized snapshot safely.
-     */
-    public Result quarantine(File pluginDir, String ownPluginId, MoveGuard guard) {
-        if (guard == null) {
-            return new Result(false, "Installed plugins must be quarantined from a scan-verified action;"
-                    + " nothing was moved.");
-        }
-        if (pluginDir == null || !pluginDir.isDirectory()) {
-            return new Result(false, "Not a directory: " + pluginDir);
-        }
-        if (ownPluginId == null || ownPluginId.length() == 0) {
-            return new Result(false, "The scanner's identity is unavailable; nothing was moved.");
-        }
-        if (!DirectoryListing.supportedFor(pluginDir)) {
-            return new Result(false, "This runtime cannot safely enumerate every file in "
-                    + pluginDir.getAbsolutePath() + " (" + DirectoryListing.unsupportedReason()
-                    + "), so nothing was done.");
-        }
-        if (!new File(pluginDir, "manifest.json").isFile()
-                && !new File(pluginDir, mt.safety.scanner.core.PluginPackage.INSTALLED_ARCHIVE).isFile()) {
-            return new Result(false, "No manifest.json or plugin.mtp here, so this is not an installed"
-                    + " plugin: " + pluginDir.getName());
-        }
-        String metadataProblem = reservedMetadataProblem(pluginDir);
-        if (metadataProblem != null) {
-            return new Result(false, metadataProblem);
-        }
-        // Refuse links even for rename: the source identity must describe this directory's contents.
-        String escaping = findEscapingLink(pluginDir);
-        if (escaping != null) {
-            return new Result(false, "This plugin contains a link pointing outside its own folder ("
-                    + escaping + "). Moving it could affect files elsewhere, so nothing was done."
-                    + " Inspect it by hand.");
-        }
-        String pluginId = readPluginId(pluginDir);
-        if (ownPluginId.equals(pluginId) || "mt.safety.scanner".equals(pluginId)) {
-            return new Result(false, "That is this scanner. Uninstall it from MT Manager's plugin list"
-                    + " if you want it gone.");
-        }
-        String storeProblem = ensureUsableStore();
-        if (storeProblem != null) {
-            return new Result(false, storeProblem);
-        }
-
-        // A bulk action can encounter two plugins with the same directory name in one millisecond.
-        File target = freeDestination(pluginDir.getName());
-        if (target == null) {
-            return new Result(false, "Could not find a free name in the quarantine folder for "
-                    + pluginDir.getName());
-        }
-        String originalPath = pluginDir.getAbsolutePath();
-
-        Result rejected = checkMoveGuard(pluginDir, guard);
-        if (rejected != null) {
-            return rejected;
-        }
-        boolean moved = !Boolean.getBoolean(FORCE_COPY_FALLBACK_PROPERTY) && pluginDir.renameTo(target);
-        if (!moved) {
-            // A copy followed by recursive deletion cannot bind each deleted file to the authorized
-            // snapshot atomically. Refusing also avoids cleaning up a destination another process
-            // could have replaced. Cross-volume moves must be handled manually in MT Manager.
-            return new Result(false, "Could not rename the plugin into quarantine. Copy-and-delete moves"
-                    + " are not supported safely; the source was left in place. Use MT Manager's plugin"
-                    + " management screen.");
-        }
-
-        if (!writeInfo(target, pluginId, originalPath)) {
-            // Without the note there is nothing recording where this came from, so "use restore" would
-            // be a promise the quarantine cannot keep. Say where it went instead.
-            return new Result(true, "Moved " + (pluginId.length() > 0 ? pluginId : pluginDir.getName())
-                    + " to " + target.getAbsolutePath() + ", but its restore note could not be written,"
-                    + " so it cannot be restored automatically. Move it back by hand if you need it.",
-                    target);
-        }
-        return new Result(true, "Quarantined " + (pluginId.length() > 0 ? pluginId : pluginDir.getName())
-                + ". Restart MT Manager, then check its plugin list. Use \"restore\" to undo.", target);
-    }
-
-    private Result checkMoveGuard(File pluginDir, MoveGuard guard) {
-        if (guard == null) {
-            return null;
-        }
-        String escaping = findEscapingLink(pluginDir);
-        if (escaping != null) {
-            return new Result(false, "A link appeared in the plugin folder (" + escaping
-                    + "); nothing was moved.");
-        }
-        if (!guard.allow(pluginDir)) {
-            return new Result(false, "The plugin's complete contents cannot be reverified; nothing was moved.");
-        }
-        return null;
-    }
-
-    /** A directory entry check also observes dangling links, for which File.exists() is false. */
-    private static String reservedMetadataProblem(File directory) {
-        final boolean[] reserved = {false};
-        final ActionTraversal traversal = new ActionTraversal();
-        try {
-            DirectoryListing.forEachChild(directory, new DirectoryListing.Visitor() {
-                @Override
-                public void visit(File child) throws IOException {
-                    traversal.visit();
-                    if (INFO_FILE.equals(child.getName())) {
-                        reserved[0] = true;
-                        throw new IOException("reserved metadata entry");
-                    }
-                }
-            });
-        } catch (IOException e) {
-            if (!reserved[0]) {
-                return "The plugin's directory could not be checked safely; nothing was moved.";
-            }
-        }
-        return reserved[0] ? "The plugin already contains " + INFO_FILE
-                + "; quarantine would overwrite its contents, so nothing was moved." : null;
     }
 
     private static final class ActionTraversal {
@@ -285,70 +104,23 @@ public final class Quarantine {
         }
     }
 
-    /** Puts a quarantined plugin back where it came from. */
+    /** Retained compatibility entry; management is delegated even when a guard approves. */
+    public Result quarantine(File pluginDir, String ownPluginId) {
+        return new Result(false, DELEGATED_MESSAGE);
+    }
+
+    public Result quarantine(File pluginDir, String ownPluginId, MoveGuard guard) {
+        return new Result(false, DELEGATED_MESSAGE);
+    }
+
     public Result restore(String identifier) {
-        String storeProblem = storeProblem();
-        if (storeProblem != null) {
-            return new Result(false, storeProblem);
-        }
-        List<Item> items = list();
-        if (listingProblem != null) {
-            return new Result(false, listingProblem);
-        }
-        for (int i = 0; i < items.size(); i++) {
-            Item item = items.get(i);
-            if (!matches(item, identifier)) {
-                continue;
-            }
-            String escaping = findEscapingLink(item.directory);
-            if (escaping != null) {
-                return new Result(false, "The quarantined plugin cannot be safely resolved (" + escaping
-                        + "); nothing was restored.");
-            }
-            File destination = new File(item.originalPath);
-            if (destination.exists()) {
-                return new Result(false, "Something already exists at " + item.originalPath
-                        + ". Move it aside first.");
-            }
-            File parent = destination.getParentFile();
-            if (parent != null && !parent.isDirectory() && !parent.mkdirs()) {
-                return new Result(false, "Could not recreate " + parent.getAbsolutePath());
-            }
-            if (!Boolean.getBoolean(FORCE_COPY_FALLBACK_PROPERTY) && item.directory.renameTo(destination)) {
-                new File(destination, INFO_FILE).delete();
-                return new Result(true, "Restored to " + item.originalPath + ". Restart MT Manager.");
-            }
-            return new Result(false, "Could not rename the quarantined plugin back to " + item.originalPath
-                    + ". Copy-and-delete restores are not supported safely. The plugin and its restore"
-                    + " note remain in quarantine; inspect it by hand.");
-        }
-        return new Result(false, "Nothing in quarantine matches \"" + identifier + "\".");
+        return new Result(false, DELEGATED_MESSAGE);
     }
 
-    /** Permanently deletes a quarantined plugin. */
     public Result purge(String identifier) {
-        String storeProblem = storeProblem();
-        if (storeProblem != null) {
-            return new Result(false, storeProblem);
-        }
-        List<Item> items = list();
-        if (listingProblem != null) {
-            return new Result(false, listingProblem);
-        }
-        for (int i = 0; i < items.size(); i++) {
-            Item item = items.get(i);
-            if (!matches(item, identifier)) {
-                continue;
-            }
-            if (deleteTree(item.directory, 0)) {
-                return new Result(true, "Deleted " + item.directory.getName() + " permanently.");
-            }
-            return new Result(false, "Could not delete " + item.directory.getAbsolutePath());
-        }
-        return new Result(false, "Nothing in quarantine matches \"" + identifier + "\".");
+        return new Result(false, DELEGATED_MESSAGE);
     }
 
-    /** Everything currently held in quarantine. */
     public List<Item> list() {
         final List<Item> out = new ArrayList<Item>();
         final ActionTraversal traversal = new ActionTraversal();
@@ -362,7 +134,7 @@ public final class Quarantine {
         }
         if (!DirectoryListing.supportedFor(store)) {
             listingProblem = "The quarantine listing is unavailable (" + DirectoryListing.unsupportedReason()
-                    + "); no restore or purge was authorized.";
+                    + "); use MT Manager for manual recovery.";
             return out;
         }
         try {
@@ -401,104 +173,12 @@ public final class Quarantine {
         } catch (IOException failure) {
             // A listing failure means "do not trust this as a quarantine list".
             listingProblem = "The quarantine listing was incomplete (" + failure.getMessage()
-                    + "); no restore or purge was authorized.";
+                    + "); use MT Manager for manual recovery.";
             return new ArrayList<Item>();
         }
         return out;
     }
 
-    private boolean matches(Item item, String identifier) {
-        if (identifier == null || identifier.length() == 0) {
-            return false;
-        }
-        return identifier.equals(item.pluginId) || identifier.equals(item.directory.getName())
-                || item.directory.getName().endsWith("-" + identifier);
-    }
-
-    private boolean writeInfo(File directory, String pluginId, String originalPath) {
-        StringBuilder sb = new StringBuilder();
-        sb.append("{\n  \"pluginId\": ").append(Json.quote(pluginId)).append(",\n");
-        sb.append("  \"originalPath\": ").append(Json.quote(originalPath)).append(",\n");
-        sb.append("  \"quarantinedAt\": ").append(Json.quote(String.valueOf(System.currentTimeMillis())));
-        sb.append("\n}\n");
-        try {
-            OutputStream out = new FileOutputStream(new File(directory, INFO_FILE));
-            try {
-                out.write(sb.toString().getBytes("UTF-8"));
-            } finally {
-                out.close();
-            }
-            return true;
-        } catch (IOException e) {
-            return false;
-        }
-    }
-
-    /** The id of the plugin in {@code dir}, from an unpacked manifest or from inside plugin.mtp. */
-    private String readPluginId(File dir) {
-        File manifest = new File(dir, "manifest.json");
-        if (manifest.isFile()) {
-            try {
-                InputStream in = new FileInputStream(manifest);
-                try {
-                    return PluginManifest.parse(Bytes.readAtMost(in, 512 * 1024)).pluginId;
-                } finally {
-                    in.close();
-                }
-            } catch (IOException e) {
-                return "";
-            }
-        }
-        File inner = new File(dir, mt.safety.scanner.core.PluginPackage.INSTALLED_ARCHIVE);
-        return inner.isFile() ? PluginManifest.readFrom(inner).pluginId : "";
-    }
-
-    /** An unused directory inside the store, or null when even the suffixed names are taken. */
-    private File freeDestination(String sourceName) {
-        String base = System.currentTimeMillis() + "-" + safeName(sourceName);
-        File candidate = new File(store, base);
-        for (int suffix = 2; candidate.exists() && suffix < 1000; suffix++) {
-            candidate = new File(store, base + "-" + suffix);
-        }
-        return candidate.exists() ? null : candidate;
-    }
-
-    private static String safeName(String name) {
-        StringBuilder sb = new StringBuilder(name.length());
-        for (int i = 0; i < name.length(); i++) {
-            char c = name.charAt(i);
-            sb.append(Character.isLetterOrDigit(c) || c == '.' || c == '_' || c == '-' ? c : '_');
-        }
-        return sb.length() == 0 ? "plugin" : sb.toString();
-    }
-
-    /**
-     * Returns the first entry that resolves outside {@code root}, or null when there is none.
-     *
-     * <p>{@code java.nio.file} is unavailable on the Android versions this supports, so a link is
-     * identified the same way the scanner identifies one: by comparing canonical paths.
-     */
-    private static String findEscapingLink(File root) {
-        try {
-            if (isLink(root)) {
-                return root.getName();
-            }
-            return walkForEscape(root, root.getCanonicalPath(), 0, new ActionTraversal());
-        } catch (IOException e) {
-            // If the tree cannot even be resolved, treat it as unsafe to move.
-            return root.getName();
-        }
-    }
-
-    /**
-     * True when {@code file}'s own last path component is a link.
-     *
-     * <p>Compared against the canonical form of its parent rather than against its own absolute path,
-     * because a plugin's real location routinely sits under a linked ancestor: on Android
-     * {@code /sdcard} is itself a link to {@code /storage/emulated/0}, so rejecting anything whose
-     * canonical path differs from its absolute path would refuse nearly every genuine plugin. What
-     * matters is whether this directory is a door to somewhere else, not whether the road to it was.
-     */
     private static boolean isLink(File file) throws IOException {
         File parent = file.getParentFile();
         if (parent == null) {
@@ -506,120 +186,5 @@ public final class Quarantine {
         }
         String expected = parent.getCanonicalPath() + File.separator + file.getName();
         return !expected.equals(file.getCanonicalPath());
-    }
-
-    private static String walkForEscape(File dir, String rootCanonical, int depth,
-            ActionTraversal traversal) throws IOException {
-        if (depth > MAX_DEPTH) {
-            return dir.getName();
-        }
-        if (!DirectoryListing.supportedFor(dir)) {
-            return dir.getName();
-        }
-        final String[] found = {null};
-        try {
-            DirectoryListing.forEachChild(dir, new DirectoryListing.Visitor() {
-                @Override
-                public void visit(File child) throws IOException {
-                    traversal.visit();
-                    if (found[0] != null) {
-                        throw new IOException("unsafe directory entry: " + found[0]);
-                    }
-                    String canonical = child.getCanonicalPath();
-                    if (!canonical.equals(rootCanonical)
-                            && !canonical.startsWith(rootCanonical + File.separator)) {
-                        found[0] = child.getName();
-                        throw new IOException("escaping directory entry: " + found[0]);
-                    }
-                    if (child.isDirectory()) {
-                        found[0] = walkForEscape(child, rootCanonical, depth + 1, traversal);
-                        if (found[0] != null) {
-                            throw new IOException("unsafe directory entry: " + found[0]);
-                        }
-                    }
-                }
-            });
-        } catch (IOException e) {
-            return dir.getName();
-        }
-        return found[0];
-    }
-
-    /**
-     * Deletes a tree, refusing to treat a linked root as the root.
-     *
-     * <p>Taking the canonical path of {@code file} as the boundary is only correct once {@code file} is
-     * known not to be a link itself. If it is, its target becomes the boundary, every child of that
-     * target then tests as inside it, and the recursion deletes somewhere else entirely. A quarantine
-     * entry replaced by a link to {@code /sdcard/DCIM} would have taken the photo library with it. The
-     * link is removed as the link it is; whatever it points at is left alone.
-     */
-    private static boolean deleteTree(File file, int depth) {
-        if (file == null) {
-            return false;
-        }
-        try {
-            if (isLink(file)) {
-                return file.delete();
-            }
-        } catch (IOException e) {
-            // Unresolvable means unverifiable. Deleting the name alone is the only safe move left.
-            return file.delete();
-        }
-        if (findEscapingLink(file) != null) {
-            return false;
-        }
-        return deleteTree(file, canonicalOrNull(file), depth, new ActionTraversal());
-    }
-
-    /**
-     * Deletes a tree without following anything that leaves it.
-     *
-     * <p>A child resolving outside the root is deleted as the link it is, never descended into:
-     * deleting through a link would take files with it that were never part of what was removed.
-     */
-    private static boolean deleteTree(File file, String rootCanonical, int depth,
-            ActionTraversal traversal) {
-        if (file == null || !file.exists() || depth > MAX_DEPTH) {
-            return false;
-        }
-        if (file.isDirectory() && !escapes(file, rootCanonical)) {
-            if (!DirectoryListing.supportedFor(file)) {
-                return false;
-            }
-            try {
-                DirectoryListing.forEachChild(file, new DirectoryListing.Visitor() {
-                    @Override
-                    public void visit(File child) throws IOException {
-                        traversal.visit();
-                        if (!deleteTree(child, rootCanonical, depth + 1, traversal)) {
-                            throw new IOException("could not delete " + child.getName());
-                        }
-                    }
-                });
-            } catch (IOException e) {
-                return false;
-            }
-        }
-        return file.delete();
-    }
-
-    private static boolean escapes(File file, String rootCanonical) {
-        if (rootCanonical == null) {
-            return true;
-        }
-        String canonical = canonicalOrNull(file);
-        if (canonical == null) {
-            return true;
-        }
-        return !canonical.equals(rootCanonical) && !canonical.startsWith(rootCanonical + File.separator);
-    }
-
-    private static String canonicalOrNull(File file) {
-        try {
-            return file.getCanonicalPath();
-        } catch (IOException e) {
-            return null;
-        }
     }
 }

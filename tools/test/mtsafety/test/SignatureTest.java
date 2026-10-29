@@ -428,7 +428,8 @@ final class SignatureTest {
         ScanRunner.Result next = new ScanRunner(host).run();
         check.that("the scan that follows the import uses it",
                 verdictOf(next, "demo.carrier") == Verdict.KNOWN_BAD
-                        && new ScanRunner(host).actionTargets(next, "malicious").size() == 1,
+                        && new ScanRunner(host).actionTargets(next, "malicious").isEmpty()
+                        && new ScanRunner(host).actOnScope(next, "malicious", true).contains("MT Manager"),
                 String.valueOf(verdictOf(next, "demo.carrier")));
         boolean aboutMentions = false;
         for (int i = 0; i < imported.aboutRows.size(); i++) {

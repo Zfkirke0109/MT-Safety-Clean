@@ -1,10 +1,7 @@
 package mt.safety.scanner.core;
 
 import java.io.File;
-import java.io.FileOutputStream;
 import java.io.IOException;
-import java.io.OutputStreamWriter;
-import java.io.Writer;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -86,13 +83,16 @@ public final class IocDatabase {
 
     /** Reads a database from disk; a missing file is not an error. */
     public static IocDatabase load(File file) {
-        if (file == null || !file.isFile()) {
+        if (file == null || !file.exists()) {
             return empty();
         }
         try {
+            if (!file.isFile()) throw new IOException("selected indicator path is not a regular file");
             java.io.InputStream in = new java.io.FileInputStream(file);
             try {
-                byte[] data = Bytes.readAtMost(in, 2 * 1024 * 1024);
+                int limit = 2 * 1024 * 1024;
+                byte[] data = Bytes.readAtMost(in, limit + 1);
+                if (data.length > limit) throw new IOException("indicator input exceeds 2 MiB limit");
                 return parse(Bytes.text(data));
             } finally {
                 PluginPackage.closeQuietly(in);
@@ -279,63 +279,18 @@ public final class IocDatabase {
     }
 
     /**
-     * Writes the database to disk, creating parent directories as needed.
-     *
-     * <p>Written to a temporary file and then moved into place, and the writer is closed inside the
-     * try so a failure during the flush is raised rather than swallowed. This file holds the user's
-     * security decisions: losing it silently, or replacing a good copy with a truncated one, is worse
-     * than failing loudly.
+     * Writes the database through unique same-directory staging, creating its parent when needed.
+     * A write, sync, close or rename failure is reported and never deletes the previous trust list.
+     * See {@link AtomicFiles} for filesystem and concurrent same-UID mutation limits.
      */
     public void save(File file) throws IOException {
-        File parent = file.getParentFile();
+        if (file == null) {
+            throw new IOException("no indicator file destination");
+        }
+        File parent = file.getAbsoluteFile().getParentFile();
         if (parent != null && !parent.isDirectory() && !parent.mkdirs()) {
             throw new IOException("could not create " + parent.getAbsolutePath());
         }
-        File temporary = new File(file.getAbsolutePath() + ".tmp");
-        boolean written = false;
-        try {
-            Writer writer = new OutputStreamWriter(new FileOutputStream(temporary), "UTF-8");
-            try {
-                writer.write(toJson());
-                writer.flush();
-            } finally {
-                // close() flushes, so its failure is the one that matters most: it must propagate.
-                writer.close();
-            }
-            written = true;
-        } finally {
-            if (!written) {
-                temporary.delete();
-            }
-        }
-        // Move the old list aside rather than deleting it. Deleting first leaves a window where a
-        // failed rename destroys the user's trust decisions outright, which is the one outcome this
-        // method exists to prevent.
-        File backup = new File(file.getAbsolutePath() + ".bak");
-        backup.delete();
-        boolean hadExisting = file.exists();
-        if (hadExisting && !file.renameTo(backup)) {
-            // Could not set the old copy aside. A direct replace still works on filesystems that
-            // allow renaming onto an existing name, and leaves the old file untouched if it does not.
-            if (!temporary.renameTo(file)) {
-                temporary.delete();
-                throw new IOException("could not replace " + file.getAbsolutePath()
-                        + "; your existing list is unchanged");
-            }
-            return;
-        }
-        if (!temporary.renameTo(file)) {
-            if (hadExisting && !backup.renameTo(file)) {
-                temporary.delete();
-                throw new IOException("could not write " + file.getAbsolutePath()
-                        + "; the previous list is at " + backup.getAbsolutePath());
-            }
-            temporary.delete();
-            throw new IOException("could not move the new list into place at " + file.getAbsolutePath()
-                    + "; your existing list is unchanged");
-        }
-        if (hadExisting) {
-            backup.delete();
-        }
+        AtomicFiles.write(file, toJson().getBytes("UTF-8"));
     }
 }

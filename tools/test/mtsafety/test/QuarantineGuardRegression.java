@@ -1,167 +1,109 @@
 package mtsafety.test;
 
 import java.io.File;
-import java.io.RandomAccessFile;
-import java.lang.reflect.Method;
+import java.nio.file.Files;
 import java.util.Collections;
-import java.util.LinkedHashMap;
 import java.util.Map;
 
 import mt.safety.scanner.Quarantine;
-import mt.safety.scanner.ScanRunner;
-import mt.safety.scanner.core.PluginManifest;
-import mt.safety.scanner.core.PluginPackage;
-import mt.safety.scanner.core.ScanBudget;
-import mt.safety.scanner.core.ScanReport;
 
-/** Regressions for callable guards and refusing non-atomic copy/delete moves. */
+/** A caller-supplied guard, old test property, or identifier cannot bypass delegation. */
 public final class QuarantineGuardRegression {
-    private QuarantineGuardRegression() {
-    }
+    private QuarantineGuardRegression() { }
 
     public static void main(String[] args) throws Exception {
-        final int[] failed = {0};
+        final int[] counts = {0, 0};
         run(new ActionsTest.Checker() {
             @Override
             public void that(String description, boolean condition, String context) {
+                counts[condition ? 0 : 1]++;
                 System.out.println((condition ? "PASS " : "FAIL ") + description + ": " + context);
-                if (!condition) {
-                    failed[0]++;
-                }
             }
         });
-        if (failed[0] != 0) {
-            throw new AssertionError(failed[0] + " quarantine guard regressions failed");
-        }
+        System.out.println(counts[0] + " passed, " + counts[1] + " failed");
+        if (counts[1] != 0) { throw new AssertionError("guard policy failures: " + counts[1]); }
     }
 
-    static void run(ActionsTest.Checker check) throws Exception {
-        File root = new File(System.getProperty("java.io.tmpdir"),
-                "mtsafety-quarantine-guard-" + System.nanoTime());
-        if (!root.mkdirs()) {
-            throw new IllegalStateException("could not create " + root);
-        }
-        Fixtures fixtures = new Fixtures(root);
-        Map<String, byte[]> members = new LinkedHashMap<String, byte[]>();
-        members.put("manifest.json", Fixtures.bytes(Fixtures.manifest("guard.victim", "Guard", "x.A")));
-        members.put("src/x/A.java", Fixtures.bytes("package x; public class A {}"));
-        Map<String, byte[]> siblings = new LinkedHashMap<String, byte[]>();
-        siblings.put("extracted.txt", Fixtures.bytes("must not be moved without an identity"));
-        Quarantine quarantine = new Quarantine(new File(root, "store"));
-        File unguarded = fixtures.installedArchive("unguarded", members, siblings);
-        Quarantine.Result refusedNull = quarantine.quarantine(unguarded, "mt.safety.scanner", null);
-        check.that("three-argument null guard cannot move an archive and uninspected siblings",
-                !refusedNull.ok && unguarded.isDirectory()
-                        && new File(unguarded, "extracted.txt").isFile(), refusedNull.message);
-
-        Quarantine.MoveGuard sourceOnly = new Quarantine.MoveGuard() {
+    static void run(ActionsTest.Checker c) throws Exception {
+        File root = Files.createTempDirectory("mtsafety-guard-policy-").toFile();
+        File source = new Fixtures(root).directoryPlugin("source",
+                Fixtures.manifest("guard.victim", "Guard", "x.A"),
+                Collections.singletonMap("src/x/A.java", "package x; public class A {}"));
+        File store = new File(root, "store");
+        File held = new File(store, "old-held");
+        File recovery = new File(root, "missing-parent/recovery");
+        Fixtures.write(new File(held, "quarantine-info.json"), "{\"pluginId\":\"guard.old\",\"originalPath\":"
+                + mt.safety.scanner.core.Json.quote(recovery.getAbsolutePath()) + ",\"quarantinedAt\":\"old\"}");
+        Fixtures.write(new File(held, "keep.bin"), "held data");
+        Map<String, String> beforeSource = DelegatedActionPolicyRegression.snapshot(source);
+        Map<String, String> beforeStore = DelegatedActionPolicyRegression.snapshot(store);
+        Quarantine quarantine = new Quarantine(store);
+        final int[] calls = {0};
+        Quarantine.MoveGuard permissive = new Quarantine.MoveGuard() {
             @Override
-            public boolean allow(File source) {
-                return true;
-            }
+            public boolean allow(File directory) { calls[0]++; return true; }
+            @Override
+            public boolean allowCopyTarget(File from, File to) { calls[0]++; return true; }
         };
-        check.that("a source guard does not implicitly authorize a copied target",
-                !sourceOnly.allowCopyTarget(unguarded, new File(root, "other")),
-                "default copy-target approval");
-
-        File unpacked = fixtures.directoryPlugin("unguarded-unpacked",
-                Fixtures.manifest("unpacked.victim", "Unpacked", "x.A"), Collections.<String, String>emptyMap());
-        Quarantine.Result refusedLegacy = quarantine.quarantine(unpacked, "mt.safety.scanner");
-        check.that("legacy unpacked quarantine cannot bypass the scan guard",
-                !refusedLegacy.ok && unpacked.isDirectory(), refusedLegacy.message);
-        File unpackedNull = fixtures.directoryPlugin("unguarded-unpacked-null",
-                Fixtures.manifest("unpacked.victim2", "Unpacked2", "x.A"), Collections.<String, String>emptyMap());
-        Quarantine.Result refusedUnpackedNull = quarantine.quarantine(unpackedNull, "mt.safety.scanner", null);
-        check.that("three-argument unpacked quarantine cannot bypass the scan guard",
-                !refusedUnpackedNull.ok && unpackedNull.isDirectory(), refusedUnpackedNull.message);
-
-        File reserved = fixtures.directoryPlugin("reserved-metadata",
-                Fixtures.manifest("reserved.victim", "Reserved", "x.A"), Collections.<String, String>emptyMap());
-        Fixtures.write(new File(reserved, "quarantine-info.json"), "original plugin data");
-        Quarantine.Result refusedMetadata = quarantine.quarantine(reserved, "mt.safety.scanner", sourceOnly);
-        check.that("quarantine does not overwrite a plugin's reserved metadata filename",
-                !refusedMetadata.ok && new File(reserved, "quarantine-info.json").isFile(),
-                refusedMetadata.message);
-
+        for (int i = 0; i < 8; i++) {
+            Quarantine.Result refused;
+            if (i == 0) { refused = quarantine.quarantine(source, "mt.safety.scanner"); }
+            else if (i == 1) { refused = quarantine.quarantine(source, "mt.safety.scanner", null); }
+            else if (i == 2) { refused = quarantine.quarantine(source, "mt.safety.scanner", permissive); }
+            else if (i == 3) { refused = quarantine.quarantine(null, null, permissive); }
+            else if (i == 4) { refused = quarantine.restore("guard.old"); }
+            else if (i == 5) { refused = quarantine.restore(held.getName()); }
+            else if (i == 6) { refused = quarantine.purge("guard.old"); }
+            else { refused = quarantine.purge(null); }
+            c.that("quarantine public entry " + i + " refuses with explicit delegated outcome",
+                    !refused.ok && refused.location == null && DelegatedActionPolicyRegression.delegated(refused.message),
+                    refused.message);
+            DelegatedActionPolicyRegression.survives(c, "quarantine entry " + i, source, store, recovery,
+                    beforeSource, beforeStore);
+        }
+        c.that("delegation does not invoke caller-controlled guards", calls[0] == 0, "calls=" + calls[0]);
         String property = "mtsafety.forceCopyFallback";
         String previous = System.getProperty(property);
-        File copySource = fixtures.installedArchive("copy-source", members, null);
-        Quarantine.Result parked;
         try {
-            System.setProperty(property, "true");
-            Quarantine.Result refusedCopy = quarantine.quarantine(copySource, "mt.safety.scanner", sourceOnly);
-            check.that("failed quarantine rename refuses copy-delete and preserves the complete source",
-                    !refusedCopy.ok && copySource.isDirectory()
-                            && new File(copySource, "plugin.mtp").isFile()
-                            && quarantine.list().isEmpty(), refusedCopy.message);
-            System.clearProperty(property);
-            File restoreSource = fixtures.installedArchive("restore-source", members, null);
-            parked = quarantine.quarantine(restoreSource, "mt.safety.scanner", sourceOnly);
-            check.that("same-volume guarded rename remains available", parked.ok && parked.location != null,
-                    parked.message);
-            if (parked.ok) {
-                System.setProperty(property, "true");
-                Quarantine.Result refusedRestore = quarantine.restore(parked.location.getName());
-                check.that("failed restore rename preserves quarantine data and its restore note",
-                        !refusedRestore.ok && parked.location.isDirectory()
-                                && new File(parked.location, "quarantine-info.json").isFile()
-                                && !restoreSource.exists(), refusedRestore.message);
-                System.clearProperty(property);
-                Quarantine.Result restored = quarantine.restore(parked.location.getName());
-                check.that("a refused restore remains retryable", restored.ok && restoreSource.isDirectory(),
-                        restored.message);
+            for (String value : new String[] {"true", "false"}) {
+                System.setProperty(property, value);
+                Quarantine.Result refused = quarantine.quarantine(source, "mt.safety.scanner", permissive);
+                c.that("legacy copy fallback setting " + value + " cannot enable mutation",
+                        !refused.ok && DelegatedActionPolicyRegression.delegated(refused.message), refused.message);
+                DelegatedActionPolicyRegression.survives(c, "copy property " + value, source, store, recovery,
+                        beforeSource, beforeStore);
             }
         } finally {
-            if (previous == null) {
-                System.clearProperty(property);
-            } else {
-                System.setProperty(property, previous);
-            }
+            if (previous == null) { System.clearProperty(property); }
+            else { System.setProperty(property, previous); }
         }
-
-        File large = fixtures.directoryPlugin("large-identity",
-                Fixtures.manifest("large.identity", "Large", "x.A"), Collections.<String, String>emptyMap());
-        RandomAccessFile sparse = new RandomAccessFile(new File(large, "large.bin"), "rw");
-        try {
-            sparse.setLength(25L * 1024 * 1024);
-        } finally {
-            sparse.close();
-        }
-        PluginPackage pkg = PluginPackage.open(large);
-        ScanReport largeReport;
-        try {
-            largeReport = new ScanReport("Large", large.getAbsolutePath(), false, true,
-                    PluginManifest.parse(Fixtures.bytes(Fixtures.manifest("large.identity", "Large", "x.A"))),
-                    pkg.contentHash(ScanBudget.unlimited()));
-            largeReport.setDestructiveActionIdentity(pkg.destructiveActionIdentityComplete(),
-                    pkg.actionIdentityPath());
-        } finally {
-            pkg.close();
-        }
-        Method verify = ScanRunner.class.getDeclaredMethod("verifyActionIdentity", ScanReport.class);
-        verify.setAccessible(true);
-        Object outcome = verify.invoke(null, largeReport);
-        check.that("action identity rehash refuses input larger than its action hash allowance",
-                largeReport.contentHash.length() > 0 && "IDENTITY_UNAVAILABLE".equals(String.valueOf(outcome)),
-                String.valueOf(outcome));
-
-        File outerStore = new File(root, "bounded-store");
-        File wide = new File(outerStore, "wide");
-        if (!wide.mkdirs()) {
-            throw new IllegalStateException("could not create " + wide);
-        }
+        c.that("historical metadata remains readable", quarantine.list().size() == 1
+                && "guard.old".equals(quarantine.list().get(0).pluginId)
+                && recovery.getAbsolutePath().equals(quarantine.list().get(0).originalPath)
+                && "old".equals(quarantine.list().get(0).quarantinedAt), "historical fields");
+        File fresh = new File(root, "not-created");
+        Quarantine absent = new Quarantine(fresh);
+        c.that("reading or refusing actions never creates a quarantine store", absent.list().isEmpty()
+                && !absent.quarantine(source, "mt.safety.scanner", permissive).ok
+                && !absent.restore("any").ok && !absent.purge("any").ok && !fresh.exists(), "absent store");
+        File linkedStore = new File(root, "linked-store");
+        Files.createSymbolicLink(linkedStore.toPath(), store.toPath());
+        Map<String, String> linkBefore = DelegatedActionPolicyRegression.snapshot(linkedStore);
+        Quarantine linked = new Quarantine(linkedStore);
+        c.that("linked historical store refuses listing", linked.list().isEmpty()
+                && linked.listingProblem() != null, String.valueOf(linked.listingProblem()));
+        c.that("linked store actions delegate without touching link or destination", !linked.restore("guard.old").ok
+                && !linked.purge("guard.old").ok
+                && linkBefore.equals(DelegatedActionPolicyRegression.snapshot(linkedStore))
+                && beforeStore.equals(DelegatedActionPolicyRegression.snapshot(store)), "link and store survive");
+        File wide = new File(root, "wide");
+        if (!wide.mkdir()) { throw new IllegalStateException("could not create wide fixture"); }
         for (int i = 0; i < 8001; i++) {
-            if (!new File(wide, "entry-" + i).mkdir()) {
-                throw new IllegalStateException("could not create wide fixture entry " + i);
-            }
+            if (!new File(wide, "entry-" + i).mkdir()) { throw new IllegalStateException("wide fixture entry"); }
         }
-        Quarantine wideListing = new Quarantine(wide);
-        check.that("quarantine listing rejects an over-limit result instead of retaining it",
-                wideListing.list().isEmpty() && wideListing.listingProblem() != null,
-                String.valueOf(wideListing.listingProblem()));
-        Quarantine.Result refusedPurge = new Quarantine(outerStore).purge("wide");
-        check.that("purge refuses an over-limit safety preflight before deleting any entry",
-                !refusedPurge.ok && new File(wide, "entry-0").isDirectory()
-                        && new File(wide, "entry-8000").isDirectory(), refusedPurge.message);
+        Quarantine bounded = new Quarantine(wide);
+        c.that("historical listing retains its entry bound", bounded.list().isEmpty()
+                && bounded.listingProblem() != null && new File(wide, "entry-0").isDirectory()
+                && new File(wide, "entry-8000").isDirectory(), String.valueOf(bounded.listingProblem()));
     }
 }

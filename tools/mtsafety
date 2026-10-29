@@ -6,14 +6,16 @@
 set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 classes="${TMPDIR:-/tmp}/mt-safety-build/classes"
+runtime="${TMPDIR:-/tmp}/mt-safety-build/toolchain/xz-java8.jar"
+python3 "$root/tools/toolchain.py" "$(dirname "$runtime")" runtime >&2
 # Compared against a marker file rather than the output directory: a directory's mtime does not move
 # when existing class files are overwritten, so comparing against it recompiles on every run once any
 # source is newer than the directory itself.
 marker="$classes/.built"
-if [ ! -f "$marker" ] || [ -n "$(find "$root/plugin/src" "$root/tools/src" -name '*.java' -newer "$marker" 2>/dev/null | head -1)" ]; then
+if [ ! -f "$marker" ] || [ "$root/tools/toolchain-lock.json" -nt "$marker" ] || [ -n "$(find "$root/plugin/src" "$root/tools/src" -name '*.java' -newer "$marker" 2>/dev/null | head -1)" ]; then
   mkdir -p "$classes"
-  javac --release 8 -encoding UTF-8 -nowarn -d "$classes" \
+  javac --release 8 -encoding UTF-8 -nowarn -classpath "$runtime" -d "$classes" \
     $(find "$root/plugin/src/mt/safety/scanner/core" "$root/tools/src" -name '*.java')
   touch "$marker"
 fi
-exec java -cp "$classes" mtsafety.cli.MtSafetyCli "$@"
+exec java -cp "$classes:$runtime" mtsafety.cli.MtSafetyCli "$@"

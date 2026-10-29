@@ -27,29 +27,36 @@ public final class SignatureRules {
      *
      * @param complete true when {@code data} holds the entire member, so a whole-file hash is valid
      */
-    public static void match(ScanReport report, Map<String, Signal> byRule, PluginPackage.Entry entry,
+    public static boolean match(ScanReport report, Map<String, Signal> byRule, PluginPackage.Entry entry,
             byte[] data, boolean complete, SignatureDatabase signatures) {
         if (signatures == null || signatures.isEmpty() || data == null || data.length == 0) {
-            return;
+            return true;
         }
         Digests digests = null;
         if (complete && signatures.wantsHashes()) {
             digests = signatures.digest(data);
             if (signatures.isKnownClean(digests, data.length)) {
-                return;
+                return true;
             }
             SignatureDatabase.Match hit = signatures.matchHash(digests, data.length);
             if (hit != null) {
                 report(report, byRule, entry, hit);
                 // A hash names the exact file; a pattern hit on the same bytes adds nothing.
-                return;
+                return true;
             }
         }
         int fileType = SignatureDatabase.fileType(data, entry.extension());
-        List<SignatureDatabase.Match> hits = signatures.matchPatterns(data, fileType, MAX_PATTERN_HITS);
+        // Synthetic decoded prefixes may have no trustworthy full length. Absolute/unanchored
+        // patterns still apply, but an EOF-relative anchor cannot use the prefix boundary.
+        long logicalSize = complete ? data.length : entry.size > data.length ? entry.size : -1L;
+        SignatureDatabase.PatternResult matching = signatures.matchPatternsChecked(data, fileType,
+                MAX_PATTERN_HITS, logicalSize);
+        List<SignatureDatabase.Match> hits = matching.hits;
         for (int i = 0; i < hits.size(); i++) {
             report(report, byRule, entry, hits.get(i));
         }
+        if (!matching.complete) report.addError("Signature matching incomplete: work or hit limit at " + entry.name);
+        return matching.complete;
     }
 
     private static void report(ScanReport report, Map<String, Signal> byRule, PluginPackage.Entry entry,

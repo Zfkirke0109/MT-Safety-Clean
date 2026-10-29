@@ -295,7 +295,10 @@ public final class FileScanner {
             }
         }
         int fileType = SignatureDatabase.fileType(data, extension);
-        List<SignatureDatabase.Match> hits = signatures.matchPatterns(data, fileType, MAX_PATTERN_HITS);
+        SignatureDatabase.PatternResult matching = signatures.matchPatternsChecked(data, fileType, MAX_PATTERN_HITS, size);
+        List<SignatureDatabase.Match> hits = matching.hits;
+        if (!matching.complete) result.problem("Signature matching incomplete: work or hit limit at " + path
+                + (member.length() == 0 ? "" : "!" + member));
         for (int i = 0; i < hits.size(); i++) {
             result.hits.add(new Hit(path, member, hits.get(i), size));
         }
@@ -369,9 +372,6 @@ public final class FileScanner {
             int count = 0;
             for (int i = 0; i < entries.size(); i++) {
                 PluginPackage.Entry entry = entries.get(i);
-                if (entry.directory || entry.size <= 0) {
-                    continue;
-                }
                 if (++count > MAX_ARCHIVE_MEMBERS) {
                     result.problem("archive member count limit reached: " + file.getAbsolutePath());
                     break;
@@ -384,7 +384,18 @@ public final class FileScanner {
                     result.stoppedBecause = Stop.BUDGET;
                     break;
                 }
-                byte[] member = pkg.read(entry, ARCHIVE_MEMBER_BYTES, budget);
+                byte[] member;
+                try {
+                    member = pkg.read(entry, ARCHIVE_MEMBER_BYTES, budget);
+                } catch (IOException unreadable) {
+                    result.problem("could not read archive member " + file.getAbsolutePath() + "!"
+                            + entry.name + ": " + unreadable.getMessage());
+                    continue;
+                }
+                if (entry.directory && entry.size != 0) {
+                    result.problem("archive directory contains payload data: " + file.getAbsolutePath()
+                            + "!" + entry.name);
+                }
                 if (member.length < entry.size) {
                     result.problem("only a member prefix was checked: " + file.getAbsolutePath()
                             + "!" + entry.name);

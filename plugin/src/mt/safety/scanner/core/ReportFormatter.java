@@ -116,6 +116,12 @@ public final class ReportFormatter {
         }
         sb.append("\n");
         sb.append("Coverage: ").append(report.coverage().label()).append('\n');
+        if (report.ledger.active()) {
+            sb.append("Checks  : ").append(report.ledger.members().size()).append(" member records, ")
+                    .append(report.ledger.incompleteChecks()).append(" incomplete checks; ")
+                    .append(report.ledger.droppedMembers()).append(" omitted by ledger limit.\n")
+                    .append("The local JSON includes every recorded analyzer status and reason code.\n");
+        }
 
         List<Signal> signals = report.signalsBySeverity();
         boolean packageFindings = report.hasPackageFindings();
@@ -259,6 +265,7 @@ public final class ReportFormatter {
         sb.append("      \"reason\": ").append(quoted(report.verdictReason())).append(",\n");
         sb.append("      \"truncated\": ").append(report.truncated()).append(",\n");
         sb.append("      \"filesScanned\": ").append(report.filesScanned()).append(",\n");
+        appendLedger(sb, report.ledger);
         sb.append("      \"errors\": [");
         for (int i = 0; i < report.errors.size(); i++) {
             if (i > 0) {
@@ -288,6 +295,36 @@ public final class ReportFormatter {
             sb.append(i + 1 < signals.size() ? ",\n" : "\n");
         }
         sb.append("      ]\n    }");
+    }
+
+    private static void appendLedger(StringBuilder sb, CoverageLedger ledger) {
+        sb.append("      \"coverageLedger\": {\"schemaVersion\":1,\"active\":").append(ledger.active())
+                .append(",\"memberLimit\":").append(CoverageLedger.MAX_MEMBERS)
+                .append(",\"omittedMembers\":").append(ledger.droppedMembers())
+                .append(",\"incompleteChecks\":").append(ledger.incompleteChecks()).append(",\"package\":{");
+        int n = 0;
+        for (CoverageLedger.PackageAnalyzer a : CoverageLedger.PackageAnalyzer.values()) {
+            if (n++ > 0) sb.append(',');
+            sb.append(quoted(a.name())).append(':'); appendCheck(sb, ledger.get(a));
+        }
+        sb.append("},\"members\":["); n = 0;
+        for (CoverageLedger.Member member : ledger.members()) {
+            if (n++ > 0) sb.append(',');
+            sb.append("{\"id\":").append(member.id).append(",\"label\":").append(quoted(member.label))
+                    .append(",\"nameHash\":").append(quoted(member.nameHash)).append(",\"analyzers\":{");
+            int check = 0;
+            for (CoverageLedger.Analyzer a : CoverageLedger.Analyzer.values()) {
+                if (check++ > 0) sb.append(',');
+                sb.append(quoted(a.name())).append(':'); appendCheck(sb, member.get(a));
+            }
+            sb.append("}}");
+        }
+        sb.append("]},\n");
+    }
+
+    private static void appendCheck(StringBuilder sb, CoverageLedger.Check check) {
+        sb.append("{\"status\":").append(quoted(check.status.name())).append(",\"reason\":")
+                .append(quoted(check.reason.name())).append(",\"bytes\":").append(check.bytes).append('}');
     }
 
     /** One line saying what signature database, if any, a scan ran with. */
