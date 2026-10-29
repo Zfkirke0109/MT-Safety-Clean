@@ -1,5 +1,6 @@
-assets/  (directory)
 assets/indicators.json  173d1623ad67920b10d7b528a970948439808de0b1dcbb045d5ab92348e424f3
-classes.dex  (compiled; not hashed)
+assets/licenses/xz-1.12.txt  1e77ef26cee5216d6531e49cbf2f6111a0270dc7b322fc65477063c5aff88766
+assets/scanner-worker.dex  e979ced80767285c6992c8b10475b9eda5b2e3ea3e6e1a90fbe14d6ed5c08e14
+classes.dex  350166131e89b78e9b40e2edfd637b0bc0db534cfdd846e17803cde3b6979c2c
 icon.png  af976337717f5a815702be1065df7244c0f0de7dd8d424f4bf33ea9bc8450ef1
-manifest.json  f7563939a398dbd706d8825000f87060abf1659f9a2c880de61de260f0b26c14
+manifest.json  c5ccf4a2acad1666907e1fa9c9b0319cc35b9b824d4eeca071fcd2004ac61ae4
