@@ -6,7 +6,6 @@ import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 
@@ -92,7 +91,7 @@ public final class FileScanner {
         public long elapsedMs;
 
         public boolean truncated() {
-            return stoppedBecause != Stop.NONE;
+            return stoppedBecause != Stop.NONE || !problems.isEmpty();
         }
 
         void problem(String message) {
@@ -117,6 +116,10 @@ public final class FileScanner {
         }
     }
 
+    private static final class StopWalk extends IOException {
+        private static final long serialVersionUID = 1L;
+    }
+
     private final SignatureDatabase signatures;
 
     public FileScanner(SignatureDatabase signatures) {
@@ -136,9 +139,21 @@ public final class FileScanner {
         Result result = new Result();
         String excluded = excludedArea == null ? "" : canonical(excludedArea);
         List<Pending> queue = new ArrayList<Pending>();
-        int visited = 0;
+        final int[] visited = {0};
 
         for (int i = 0; i < roots.size(); i++) {
+            if (++visited[0] > MAX_VISITED || result.hits.size() >= MAX_HITS) {
+                result.stoppedBecause = result.hits.size() >= MAX_HITS ? Stop.HITS : Stop.COUNT;
+                break;
+            }
+            if (budget.exhausted()) {
+                result.stoppedBecause = Stop.BUDGET;
+                break;
+            }
+            if (queue.size() >= MAX_QUEUE) {
+                result.stoppedBecause = Stop.COUNT;
+                break;
+            }
             File root = roots.get(i);
             if (root == null || !root.exists() || !root.canRead()) {
                 continue;
@@ -161,39 +176,48 @@ public final class FileScanner {
             if (isUnder(pending.dir, excluded)) {
                 continue;
             }
-            File[] children = pending.dir.listFiles();
-            if (children == null) {
-                result.problem("could not list " + pending.dir.getAbsolutePath());
-                continue;
-            }
-            Arrays.sort(children);
-            for (int i = 0; i < children.length; i++) {
-                File child = children[i];
-                if (++visited > MAX_VISITED) {
-                    result.stoppedBecause = Stop.COUNT;
-                    break;
-                }
-                if (escapes(child, pending.rootCanonical)) {
-                    // A link out of the root leads somewhere the user did not point at.
-                    continue;
-                }
-                if (child.isDirectory()) {
-                    if (pending.depth + 1 > MAX_DEPTH || queue.size() >= MAX_QUEUE) {
-                        result.stoppedBecause = Stop.COUNT;
-                        break;
+            try {
+                DirectoryListing.forEachChild(pending.dir, new DirectoryListing.Visitor() {
+                    @Override
+                    public void visit(File child) throws IOException {
+                        if (budget.exhausted()) {
+                            result.stoppedBecause = Stop.BUDGET;
+                            throw new StopWalk();
+                        }
+                        if (++visited[0] > MAX_VISITED) {
+                            result.stoppedBecause = Stop.COUNT;
+                            throw new StopWalk();
+                        }
+                        if (escapes(child, pending.rootCanonical)) {
+                            result.problem("entry resolves outside its search root: " + child.getName());
+                            return;
+                        }
+                        if (child.isDirectory()) {
+                            if (pending.depth + 1 > MAX_DEPTH || queue.size() >= MAX_QUEUE) {
+                                result.stoppedBecause = Stop.COUNT;
+                                throw new StopWalk();
+                            }
+                            queue.add(new Pending(child, pending.depth + 1, pending.rootCanonical));
+                        } else if (child.isFile()) {
+                            scanFile(child, result, budget);
+                            if (result.hits.size() >= MAX_HITS) {
+                                result.stoppedBecause = Stop.HITS;
+                            }
+                            if (result.stoppedBecause != Stop.NONE) {
+                                throw new StopWalk();
+                            }
+                        } else {
+                            result.problem("entry could not be inspected: " + child.getName());
+                        }
                     }
-                    queue.add(new Pending(child, pending.depth + 1, pending.rootCanonical));
-                } else if (child.isFile()) {
-                    if (budget.exhausted()) {
-                        result.stoppedBecause = Stop.BUDGET;
-                        break;
-                    }
-                    scanFile(child, result, budget);
-                    if (result.hits.size() >= MAX_HITS) {
-                        result.stoppedBecause = Stop.HITS;
-                        break;
-                    }
-                }
+                });
+            } catch (StopWalk stopped) {
+                // The caller-visible stop reason was set before closing the stream.
+            } catch (IOException e) {
+                result.problem("could not list " + pending.dir.getAbsolutePath() + ": " + e.getMessage());
+            } catch (RuntimeException e) {
+                result.problem("could not safely list " + pending.dir.getAbsolutePath() + ": "
+                        + e.getClass().getSimpleName());
             }
         }
         // Directories still queued when the loop ended were never listed.
@@ -245,6 +269,9 @@ public final class FileScanner {
         if (check(path, "", data, digests, size, extensionOf(file.getName()), result)) {
             return;
         }
+        if (data.length < size) {
+            result.problem("only a prefix was checked for patterns: " + file.getAbsolutePath());
+        }
         if (Bytes.looksLikeZip(data)) {
             scanArchive(file, result, budget);
         }
@@ -268,7 +295,10 @@ public final class FileScanner {
             }
         }
         int fileType = SignatureDatabase.fileType(data, extension);
-        List<SignatureDatabase.Match> hits = signatures.matchPatterns(data, fileType, MAX_PATTERN_HITS);
+        SignatureDatabase.PatternResult matching = signatures.matchPatternsChecked(data, fileType, MAX_PATTERN_HITS, size);
+        List<SignatureDatabase.Match> hits = matching.hits;
+        if (!matching.complete) result.problem("Signature matching incomplete: work or hit limit at " + path
+                + (member.length() == 0 ? "" : "!" + member));
         for (int i = 0; i < hits.size(); i++) {
             result.hits.add(new Hit(path, member, hits.get(i), size));
         }
@@ -342,17 +372,34 @@ public final class FileScanner {
             int count = 0;
             for (int i = 0; i < entries.size(); i++) {
                 PluginPackage.Entry entry = entries.get(i);
-                if (entry.directory || entry.size <= 0) {
-                    continue;
+                if (++count > MAX_ARCHIVE_MEMBERS) {
+                    result.problem("archive member count limit reached: " + file.getAbsolutePath());
+                    break;
                 }
-                if (++count > MAX_ARCHIVE_MEMBERS || result.hits.size() >= MAX_HITS) {
+                if (result.hits.size() >= MAX_HITS) {
+                    result.stoppedBecause = Stop.HITS;
                     break;
                 }
                 if (budget.exhausted()) {
                     result.stoppedBecause = Stop.BUDGET;
                     break;
                 }
-                byte[] member = pkg.read(entry, ARCHIVE_MEMBER_BYTES, budget);
+                byte[] member;
+                try {
+                    member = pkg.read(entry, ARCHIVE_MEMBER_BYTES, budget);
+                } catch (IOException unreadable) {
+                    result.problem("could not read archive member " + file.getAbsolutePath() + "!"
+                            + entry.name + ": " + unreadable.getMessage());
+                    continue;
+                }
+                if (entry.directory && entry.size != 0) {
+                    result.problem("archive directory contains payload data: " + file.getAbsolutePath()
+                            + "!" + entry.name);
+                }
+                if (member.length < entry.size) {
+                    result.problem("only a member prefix was checked: " + file.getAbsolutePath()
+                            + "!" + entry.name);
+                }
                 if (member.length == 0) {
                     continue;
                 }
@@ -388,7 +435,9 @@ public final class FileScanner {
             return false;
         }
         String path = canonical(child);
-        return !path.equals(rootCanonical) && !path.startsWith(rootCanonical + File.separator);
+        String boundary = rootCanonical.endsWith(File.separator)
+                ? rootCanonical : rootCanonical + File.separator;
+        return !path.equals(rootCanonical) && !path.startsWith(boundary);
     }
 
     private static String canonical(File file) {

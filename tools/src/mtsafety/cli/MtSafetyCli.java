@@ -5,6 +5,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import mt.safety.scanner.core.Discovery;
+import mt.safety.scanner.core.Coverage;
 import mt.safety.scanner.core.FileScanner;
 import mt.safety.scanner.core.PluginManifest;
 import mt.safety.scanner.core.IocDatabase;
@@ -99,6 +100,13 @@ public final class MtSafetyCli {
             System.err.println("mtsafety: signatures: " + signatures.problems().get(i));
         }
 
+        boolean actionNeeded = false;
+        boolean incomplete = !signatures.problems().isEmpty()
+                || signatures.unsupportedCount() > 0 || signatures.cappedCount() > 0;
+        for (String problem : unavailableRoots(fileRoots, false)) {
+            System.err.println("mtsafety: " + problem);
+            incomplete = true;
+        }
         if (!fileRoots.isEmpty()) {
             // A file scan is a different job from a package scan and reports differently: a list of
             // files that matched, rather than a verdict per plugin. Both can be asked for at once.
@@ -109,16 +117,25 @@ public final class MtSafetyCli {
             FileScanner.Result scan = new FileScanner(signatures).scan(fileRoots, null,
                     deep ? ScanBudget.unlimited() : new ScanBudget(600000L, 8L * 1024 * 1024 * 1024));
             System.out.print(ReportFormatter.fileScanText(scan, signatures));
+            actionNeeded = !scan.hits.isEmpty();
+            incomplete |= scan.truncated();
             if (targets.isEmpty() && discoverRoots.isEmpty()) {
-                System.exit(scan.hits.isEmpty() ? EXIT_OK : EXIT_ACTION_NEEDED);
+                System.exit(actionNeeded ? EXIT_ACTION_NEEDED : incomplete ? EXIT_ERROR : EXIT_OK);
                 return;
             }
             System.out.println();
         }
 
         List<File> packages = new ArrayList<File>(targets);
+        Discovery discovery = new Discovery();
+        List<String> discoveryProblems = unavailableRoots(discoverRoots, true);
         if (!discoverRoots.isEmpty()) {
-            List<Discovery.Candidate> found = new Discovery().find(discoverRoots);
+            List<Discovery.Candidate> found = discovery.find(discoverRoots);
+            discoveryProblems.addAll(discovery.problems());
+            incomplete |= !discoveryProblems.isEmpty();
+            for (String problem : discoveryProblems) {
+                System.err.println("mtsafety: discovery incomplete: " + problem);
+            }
             for (int i = 0; i < found.size(); i++) {
                 packages.add(found.get(i).path);
             }
@@ -128,7 +145,7 @@ public final class MtSafetyCli {
         }
         if (packages.isEmpty()) {
             System.err.println("No plugin packages found. An .mtp file, or a folder holding manifest.json.");
-            System.exit(EXIT_ERROR);
+            System.exit(actionNeeded ? EXIT_ACTION_NEEDED : EXIT_ERROR);
             return;
         }
 
@@ -142,25 +159,34 @@ public final class MtSafetyCli {
         }
         scanner.finishSet(reports);
 
-        System.out.print(json ? ReportFormatter.json(reports, signatures)
+        System.out.print(json ? ReportFormatter.json(reports, signatures, discoveryProblems)
                 : ReportFormatter.plainText(reports, signatures));
 
-        boolean actionNeeded = false;
-        boolean unreadable = false;
         for (int i = 0; i < reports.size(); i++) {
-            Verdict verdict = reports.get(i).verdict();
+            ScanReport report = reports.get(i);
+            Verdict verdict = report.verdict();
             if (verdict.actionable()) {
                 actionNeeded = true;
-            } else if (verdict == Verdict.UNREADABLE) {
-                unreadable = true;
             }
+            incomplete |= report.coverage() != Coverage.COMPLETE;
         }
         // A package that could not be read is the read error the usage text promises to report. Silent
         // success there would tell a script everything was fine about something nothing examined.
         if (actionNeeded) {
             System.exit(EXIT_ACTION_NEEDED);
         }
-        System.exit(unreadable ? EXIT_ERROR : EXIT_OK);
+        System.exit(incomplete ? EXIT_ERROR : EXIT_OK);
+    }
+
+    /** Explicit CLI roots are promises of scope; optional Android discovery roots remain unchanged. */
+    private static List<String> unavailableRoots(List<File> roots, boolean directoryOnly) {
+        List<String> problems = new ArrayList<String>();
+        for (File root : roots) {
+            if (!root.exists() || !root.canRead() || (directoryOnly && !root.isDirectory())) {
+                problems.add("could not inspect the requested search root: " + root.getPath());
+            }
+        }
+        return problems;
     }
 
     /**

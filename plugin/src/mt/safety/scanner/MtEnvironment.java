@@ -133,9 +133,15 @@ public final class MtEnvironment {
      */
     public static List<Discovery.Candidate> findPlugins(List<File> roots, String ownPluginId,
             File ownFilesDir) {
+        return findPlugins(roots, ownPluginId, ownFilesDir, new Discovery());
+    }
+
+    /** The supplied discovery instance retains search-limit and listing-failure diagnostics. */
+    public static List<Discovery.Candidate> findPlugins(List<File> roots, String ownPluginId,
+            File ownFilesDir, Discovery discovery) {
         // Excluded during the walk: the quarantine store lives here and would otherwise use up the
         // bounded number of directories discovery is willing to visit.
-        List<Discovery.Candidate> found = new Discovery().find(roots, ownFilesDir);
+        List<Discovery.Candidate> found = discovery.find(roots, ownFilesDir);
         String ownArea = ownFilesDir == null ? "" : canonicalPath(ownFilesDir);
         List<Discovery.Candidate> out = new ArrayList<Discovery.Candidate>();
         for (int i = 0; i < found.size(); i++) {

@@ -269,6 +269,8 @@ public final class ArchiveRules {
             report.add(signal);
         } catch (IOException e) {
             report.addError("could not re-read the package structure: " + e.getMessage());
+            // Without the structure, members may be missing from what was inspected.
+            budget.markTruncated();
         }
     }
 

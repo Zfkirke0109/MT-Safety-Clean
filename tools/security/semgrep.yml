@@ -1,0 +1,38 @@
+rules:
+  - id: java-unsafe-deserialization
+    languages: [java]
+    severity: ERROR
+    message: Review Java native deserialization of untrusted data.
+    pattern: (ObjectInputStream $IN).readObject(...)
+  - id: java-insecure-hostname-verifier
+    languages: [java]
+    severity: ERROR
+    message: Hostname verification must not unconditionally trust a peer.
+    pattern: |
+      boolean verify(String $HOST, SSLSession $SESSION) { return true; }
+  - id: java-weak-tls-protocol
+    languages: [java]
+    severity: ERROR
+    message: Explicit obsolete SSL/TLS protocol selection.
+    pattern-either:
+      - pattern: SSLContext.getInstance("SSL")
+      - pattern: SSLContext.getInstance("TLSv1")
+      - pattern: SSLContext.getInstance("TLSv1.1")
+  - id: java-dynamic-code-loader
+    languages: [java]
+    severity: ERROR
+    message: Scanner must never dynamically load scanned code.
+    pattern-either:
+      - pattern: new DexClassLoader(...)
+      - pattern: new dalvik.system.DexClassLoader(...)
+      - pattern: new PathClassLoader(...)
+      - pattern: new dalvik.system.PathClassLoader(...)
+      - pattern: System.load($PATH)
+      - pattern: System.loadLibrary($NAME)
+  - id: java-process-from-scanned-content
+    languages: [java]
+    severity: WARNING
+    message: Inspect each command launch for fixed scanner-owned command and arguments.
+    pattern-either:
+      - pattern: Runtime.getRuntime().exec(...)
+      - pattern: new ProcessBuilder(...)

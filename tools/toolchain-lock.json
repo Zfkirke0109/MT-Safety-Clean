@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "inputs": [
+    {
+      "name": "r8",
+      "version": "8.9.35",
+      "file": "r8.jar",
+      "url": "https://maven.google.com/com/android/tools/r8/8.9.35/r8-8.9.35.jar",
+      "sha256": "204b2fc2b0f4e888dc0ef748b58090def1bf4185068d36abbb94841dbc7107a8",
+      "license": "BSD-3-Clause",
+      "scope": "build"
+    },
+    {
+      "name": "android-platform",
+      "version": "30_r03",
+      "file": "platform.zip",
+      "url": "https://dl.google.com/android/repository/platform-30_r03.zip",
+      "sha256": "f3f5b75744dbf6ee6ed3e8174a71e513bfee502d0bc3463ea97e517bff68d84e",
+      "license": "LicenseRef-Android-SDK",
+      "scope": "compile-only",
+      "extract": {
+        "member": "android-11/android.jar",
+        "file": "android.jar",
+        "sha256": "96ccfdc84d15fad4e22d76cbb8ef38b150a4b56327957067875ca7e18113a424"
+      }
+    },
+    {
+      "name": "mt-plugin-api",
+      "version": "3.0.0",
+      "file": "mt-api.aar",
+      "url": "https://maven.mt2.cn/bin/mt/plugin/api/3.0.0/api-3.0.0.aar",
+      "sha256": "a51c800eb904e41834ded615376e8c60a33788b073bbb967777ac61d6c88f82d",
+      "license": "NOASSERTION",
+      "scope": "compile-only",
+      "extract": {
+        "member": "classes.jar",
+        "file": "mt-plugin-api.jar",
+        "sha256": "6e90db4fd75342d717c22469a3a2407bbcce0b43f7790f99088983c42115b84a"
+      }
+    },
+    {
+      "name": "xz",
+      "version": "1.12",
+      "file": "xz-1.12.jar",
+      "url": "https://repo.maven.apache.org/maven2/org/tukaani/xz/1.12/xz-1.12.jar",
+      "sha256": "3e158a87bd73d8afb4b6e8239c013b7d049c48563f45860ce99cd2e448cf4a6b",
+      "license": "0BSD",
+      "scope": "runtime",
+      "flatten": {
+        "file": "xz-java8.jar",
+        "sha256": "91574957aacdfafaa3c14c5c5f16076d0c3150754ebdec79c2ae60e43ad98c87"
+      }
+    }
+  ]
+}

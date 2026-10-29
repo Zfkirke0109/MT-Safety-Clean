@@ -30,6 +30,7 @@ import mt.safety.scanner.core.Verdict;
 public final class ScannerTest {
 
     private static int passed;
+    private static int skipped;
     private static final List<String> failures = new ArrayList<String>();
 
     public static void main(String[] args) throws Exception {
@@ -61,9 +62,15 @@ public final class ScannerTest {
         };
         SignatureTest.run(checker, fixtures);
         ActionsTest.run(checker);
+        IncompleteScanCleanRegression.run(checker, fixtures);
+        TraversalRegression.run(checker);
+        ReviewRegression.run(checker, fixtures);
+        CliRegression.run(checker, fixtures);
+        SignatureDatabaseRegressionTest.run(checker);
+        CapabilityScoringRegression.run(checker, fixtures);
 
         System.out.println();
-        System.out.println(passed + " checks passed, " + failures.size() + " failed");
+        System.out.println(passed + " checks passed, " + failures.size() + " failed, " + skipped + " skipped");
         if (!failures.isEmpty()) {
             for (int i = 0; i < failures.size(); i++) {
                 System.out.println("  FAILED: " + failures.get(i));
@@ -136,7 +143,7 @@ public final class ScannerTest {
                                 + " } }\n")));
         check("disconnected backup-file and network APIs are only capability co-occurrence",
                 backupReport.hasRule("SEN006") && backupReport.hasRule("NET001")
-                        && backupReport.hasRule("CMB101"),
+                        && backupReport.hasRule("CMB101") && backupReport.verdict() == Verdict.REVIEW,
                 backupReport.verdict() + " :: " + summarise(backupReport));
 
         // A package wrapped in a folder is still an ordinary plugin, just rezipped.
@@ -181,8 +188,8 @@ public final class ScannerTest {
         ScanReport exfil = scan(fixtures.directoryPlugin("exfil",
                 Fixtures.manifest("evil.exfil", "Handy Tools", "x.Collect"),
                 Fixtures.sources("src/x/Collect.java", collector, "src/x/Send.java", uploader)));
-        check("data theft across two files is caught",
-                exfil.verdict() == Verdict.LIKELY_MALICIOUS && exfil.hasRule("CMB101"),
+        check("sensitive-access and network evidence across files is retained without inferring data flow",
+                exfil.verdict() == Verdict.SUSPICIOUS && exfil.hasRule("CMB101"),
                 exfil.verdict() + " score=" + exfil.score() + " :: " + summarise(exfil));
         check("the drop endpoint is named in the report", exfil.hasRule("NET003"), summarise(exfil));
 
@@ -239,8 +246,8 @@ public final class ScannerTest {
         ScanReport backdoorReport = scan(fixtures.directoryPlugin("backdoor",
                 Fixtures.manifest("evil.shell", "Root Helper", "x.Shell"),
                 Fixtures.sources("src/x/Shell.java", backdoor)));
-        check("remote shell is caught",
-                backdoorReport.verdict() == Verdict.LIKELY_MALICIOUS && backdoorReport.hasRule("CMB003"),
+        check("shell and network capabilities remain suspicious without inferring remote control",
+                backdoorReport.verdict() == Verdict.SUSPICIOUS && backdoorReport.hasRule("CMB003"),
                 backdoorReport.verdict() + " :: " + summarise(backdoorReport));
         check("the hardcoded address is reported", backdoorReport.hasRule("NET002"),
                 summarise(backdoorReport));
@@ -258,8 +265,8 @@ public final class ScannerTest {
         ScanReport spyReport = scan(fixtures.directoryPlugin("spy",
                 Fixtures.manifest("evil.spy", "Clipboard Helper", "x.Watch"),
                 Fixtures.sources("src/x/Watch.java", spy)));
-        check("clipboard surveillance is caught",
-                spyReport.verdict() == Verdict.LIKELY_MALICIOUS && spyReport.hasRule("CMB105"),
+        check("clipboard and network capabilities remain suspicious without inferring surveillance",
+                spyReport.verdict() == Verdict.SUSPICIOUS && spyReport.hasRule("CMB105"),
                 spyReport.verdict() + " :: " + summarise(spyReport));
 
         // Reaching into MT Manager's own storage, where every other plugin lives.
@@ -321,8 +328,9 @@ public final class ScannerTest {
         File method95Archive = fixtures.unsupportedMethod95Archive(
                 "unsupported-method-95.mtp", method95, "assets/opaque.bin");
         ScanReport method95Report = scan(method95Archive);
-        check("method 95 in both ZIP headers is reported unsupported, not decoded",
-                hasMethod95Headers(method95Archive) && method95Report.verdict() == Verdict.UNREADABLE
+        check("invalid XZ payload leaves partial coverage while supported peers remain inspected",
+                hasMethod95Headers(method95Archive) && method95Report.coverage() == mt.safety.scanner.core.Coverage.PARTIAL
+                        && method95Report.filesScanned() > 0
                         && !method95Report.errors.isEmpty(),
                 method95Report.verdict() + " :: " + method95Report.errors);
 
@@ -438,10 +446,12 @@ public final class ScannerTest {
                 changedReport.verdict() + " :: " + summarise(changedReport));
 
         // Trust is a judgement about risk, not a silencer: critical findings still get through.
+        // Use a direct extortion-text finding; API co-occurrence alone is no longer critical.
         String critical = ""
                 + "package demo;\n"
                 + "public class C {\n"
                 + "  static final String P = \"/data/data/com.whatsapp/databases\";\n"
+                + "  static final String NOTE = \"Your files are encrypted.\";\n"
                 + "  public void f() throws Exception {\n"
                 + "    new java.net.URL(\"https://webhook.site/x\").openConnection();\n"
                 + "  }\n"
@@ -455,7 +465,7 @@ public final class ScannerTest {
         ScanReport criticalAfter = new PluginScanner(trustingCritical)
                 .scan(criticalDir, ScanBudget.unlimited());
         check("trust does not silence a critical finding",
-                criticalAfter.verdict() == Verdict.LIKELY_MALICIOUS,
+                criticalAfter.verdict() == Verdict.LIKELY_MALICIOUS && criticalAfter.hasRule("DES002"),
                 criticalAfter.verdict() + " :: " + summarise(criticalAfter));
 
         IocDatabase denying = IocDatabase.empty();
@@ -713,8 +723,8 @@ public final class ScannerTest {
         File evilPlugin = fixtures.installedArchive("evil.v3", evil, null);
         ScanReport evilReport = new PluginScanner(IocDatabase.empty())
                 .scan(evilPlugin, ScanBudget.unlimited());
-        check("a v3 package whose dex hides a real payload is still caught",
-                evilReport.verdict() == Verdict.LIKELY_MALICIOUS, summarise(evilReport)
+        check("a v3 package retains suspicious capabilities extracted from dex",
+                evilReport.verdict() == Verdict.SUSPICIOUS, summarise(evilReport)
                         + " :: " + evilReport.verdict());
         check("the payload's capabilities are read out of the dex string table",
                 evilReport.hasRule("SEN001") && evilReport.hasRule("NET003") && evilReport.hasRule("EXE001"),
@@ -1312,31 +1322,30 @@ public final class ScannerTest {
                                 mt.safety.scanner.core.PluginManifest.readFrom(identityMtp).pluginId),
                 "folder and archive must agree");
 
-        // Quarantine and restore must round-trip, leaving nothing behind on either side.
+        // Retired file actions must preserve the source and never create a quarantine store.
         File store = new File(fixtures.root(), "quarantine-store");
         mt.safety.scanner.Quarantine quarantine = new mt.safety.scanner.Quarantine(store);
         File victim = fixtures.directoryPlugin("to-quarantine",
                 Fixtures.manifest("demo.victim", "Victim", "demo.A"),
                 Fixtures.sources("src/demo/A.java", benign));
-        mt.safety.scanner.Quarantine.Result moved = quarantine.quarantine(victim, "mt.safety.scanner");
-        check("quarantine moves the plugin out of its folder",
-                moved.ok && !victim.exists() && quarantine.list().size() == 1,
+        mt.safety.scanner.Quarantine.Result moved =
+                ActionsTest.guardedQuarantine(quarantine, victim, "mt.safety.scanner");
+        check("quarantine delegates to MT Manager without changing the source",
+                !moved.ok && victim.isDirectory() && !store.exists() && quarantine.list().isEmpty(),
                 moved.message);
         mt.safety.scanner.Quarantine.Result back = quarantine.restore("demo.victim");
-        check("restore puts it back and empties the quarantine",
-                back.ok && victim.isDirectory() && new File(victim, "manifest.json").isFile()
-                        && quarantine.list().isEmpty(),
+        check("restore delegates without creating or changing files",
+                !back.ok && victim.isDirectory() && new File(victim, "manifest.json").isFile()
+                        && !store.exists() && quarantine.list().isEmpty(),
                 back.message);
-        check("restore refuses to move this scanner itself",
-                !quarantine.quarantine(victim, "demo.victim").ok,
+        check("quarantine refuses to move this scanner itself",
+                !ActionsTest.guardedQuarantine(quarantine, victim, "demo.victim").ok,
                 "quarantining the scanner's own id must be refused");
 
-        // Destructive commands have to be discoverable in both languages, not only English. MT
-        // Manager's users are largely Chinese-speaking, so an English-only help string hides exactly
-        // the commands that delete things.
+        // Both languages expose read-only inspection and the MT Manager recovery path.
         mt.safety.scanner.Strings english = mt.safety.scanner.Strings.forLanguage("en");
         mt.safety.scanner.Strings chinese = mt.safety.scanner.Strings.forLanguage("zh");
-        String[] mustMention = {"quarantine malicious", "remove malicious", "confirm", "cancel"};
+        String[] mustMention = {"quarantined", "import", "export", "export-shareable"};
         StringBuilder missing = new StringBuilder();
         for (int i = 0; i < mustMention.length; i++) {
             if (!english.commandsHelp().contains(mustMention[i])) {
@@ -1346,7 +1355,7 @@ public final class ScannerTest {
                 missing.append("zh:").append(mustMention[i]).append(' ');
             }
         }
-        check("both languages document the destructive commands",
+        check("both languages document inspection and delegated management",
                 missing.length() == 0, missing.toString());
         check("the two help strings really are different translations",
                 !english.commandsHelp().equals(chinese.commandsHelp()),
@@ -1641,6 +1650,13 @@ public final class ScannerTest {
     }
 
     private static void check(String description, boolean condition, String context) {
+        // Optional platform fixtures explicitly report their unavailable capability in context.
+        // Keep that missing evidence out of the passing-security-check count.
+        if (condition && context != null && context.startsWith("skipped")) {
+            skipped++;
+            System.out.println("  SKIP " + description + "  [" + context + "]");
+            return;
+        }
         if (condition) {
             passed++;
             System.out.println("  ok   " + description);

@@ -1,9 +1,12 @@
 package mt.safety.scanner.core;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -43,15 +46,23 @@ import java.util.Set;
  */
 public final class SignatureDatabase {
 
-    /** Hash entries loaded before the database refuses more. Roughly 40 MB of memory at this size. */
-    public static final int MAX_HASHES = 300000;
-    /** Byte patterns loaded before the database refuses more. */
-    public static final int MAX_PATTERNS = 40000;
-    /** Largest signature file read; anything past this is reported rather than partly loaded. */
-    public static final int MAX_FILE_BYTES = 64 * 1024 * 1024;
-    /** Longest usable line. Some published patterns run to thousands of characters. */
+    /** All hash classes also share the global entry and memory budgets below. */
+    public static final int MAX_HASHES = 100000;
+    /** Kept below the memory budget even for ordinary short patterns during indexing. */
+    public static final int MAX_PATTERNS = 16000;
+    public static final int MAX_INPUT_BYTES = 16 * 1024 * 1024;
+    public static final int MAX_FILE_BYTES = MAX_INPUT_BYTES;
+    public static final long MAX_RETAINED_BYTES = 32L * 1024 * 1024;
+    public static final int MAX_RETAINED_ENTRIES = 100000;
+    /** Bounds source bookkeeping as well as file contents. */
+    public static final int MAX_DEFINITION_FILES = 256;
     private static final int MAX_LINE_CHARS = 64 * 1024;
     private static final int MAX_PROBLEMS = 20;
+    private static final int MAX_PROBLEM_CHARS = 512;
+    public static final int MAX_DIRECTORY_ENTRIES = 4096;
+    private static final long DIRECTORY_LIST_NANOS = 4000000000L;
+    private static final long LOAD_NANOS = 10000000000L;
+    private static long incompleteStampSequence;
 
     /** ClamAV target types this scanner can recognise a file as. */
     public static final int TARGET_PE = 1;
@@ -83,8 +94,8 @@ public final class SignatureDatabase {
     /**
      * A table of fixed-width digests, sorted for binary search.
      *
-     * <p>Kept as one packed byte array rather than a map of strings: three hundred thousand entries
-     * is an ordinary size for a hash database, and at that size the object overhead of a map keyed by
+     * <p>Kept as one packed byte array rather than a map of strings: large collections of entries
+     * are ordinary for a hash database, and at that size the object overhead of a map keyed by
      * hex strings is most of the memory the plugin would ever use.
      */
     private static final class HashTable {
@@ -216,6 +227,13 @@ public final class SignatureDatabase {
     private int capped;
     private long newestMillis;
     private boolean indexed;
+    private long inputBytes;
+    private final long loadStarted = System.nanoTime();
+    // Covers overlapping source snapshots (256 paths of <=4096 chars), bounded line/diagnostic
+    // scratch, fixed bucket tables and reference arrays during indexing, with allowance to spare.
+    private long retainedBytes = 8L * 1024 * 1024;
+    private int retainedEntries;
+    private String sourceStamp = incompleteStamp();
 
     private SignatureDatabase() {
     }
@@ -242,26 +260,31 @@ public final class SignatureDatabase {
     /** Loads several files or directories into one database. */
     public static SignatureDatabase load(List<File> paths) {
         SignatureDatabase db = new SignatureDatabase();
-        for (int i = 0; i < paths.size(); i++) {
-            File path = paths.get(i);
-            if (path == null || !path.exists()) {
-                continue;
-            }
-            if (path.isDirectory()) {
-                File[] children = path.listFiles();
-                if (children == null) {
-                    db.problem("could not list " + path.getName());
-                    continue;
+        try {
+            List<Source> sources = sources(paths, db);
+            MessageDigest digest = newDigest();
+            for (Source source : sources) {
+                checkDeadline(db.loadStarted);
+                try {
+                    db.readFile(source, digest);
+                } catch (IOException e) {
+                    db.problem("could not completely read " + source.file.getName() + ": " + e.getMessage());
+                } catch (RuntimeException e) {
+                    db.problem("could not safely read " + source.file.getName() + ": "
+                            + e.getClass().getSimpleName());
                 }
-                Arrays.sort(children);
-                for (int c = 0; c < children.length; c++) {
-                    if (children[c].isFile() && isSignatureFile(children[c].getName())) {
-                        db.readFile(children[c]);
-                    }
-                }
-            } else if (path.isFile()) {
-                db.readFile(path);
             }
+            String parsedStamp = finishStamp(digest, sources);
+            String currentStamp = fingerprint(paths);
+            if (!parsedStamp.equals(currentStamp)) {
+                db.problem("signature definitions changed during loading; reload before relying on them");
+            } else if (db.problems.isEmpty() && db.capped == 0 && db.unsupported == 0) {
+                db.sourceStamp = parsedStamp;
+            }
+        } catch (IOException e) {
+            db.problem("could not completely load definitions: " + e.getMessage());
+        } catch (RuntimeException e) {
+            db.problem("could not safely load definitions: " + e.getClass().getSimpleName());
         }
         db.index();
         return db;
@@ -281,34 +304,204 @@ public final class SignatureDatabase {
         return ext.equals("cvd") || ext.equals("cld") || ext.equals("cud");
     }
 
-    /**
-     * A fingerprint of a signature folder: which files it holds and when they changed.
-     *
-     * <p>Loading a large database is the slowest thing the plugin does, and the settings screen is
-     * rebuilt on every open. Comparing this stamp lets a caller keep the last database in memory
-     * while the folder is unchanged, without ever serving a stale one after an import.
-     */
-    public static String stamp(File directory) {
-        StringBuilder sb = new StringBuilder();
-        File[] children = directory == null ? null : directory.listFiles();
-        if (children == null) {
-            return "";
+    /** Bounded SHA-256 fingerprint of source paths, metadata and their complete contents. */
+    public static String stamp(File path) {
+        try {
+            return fingerprint(Collections.singletonList(path));
+        } catch (IOException e) {
+            return incompleteStamp();
+        } catch (RuntimeException e) {
+            return incompleteStamp();
         }
-        // The folder's own location is part of the stamp: two folders holding files of the same
-        // names, sizes and times are still two folders.
-        sb.append(directory.getAbsolutePath()).append('\n');
-        Arrays.sort(children);
-        for (int i = 0; i < children.length; i++) {
-            File child = children[i];
-            if (child.isFile() && isSignatureFile(child.getName())) {
-                sb.append(child.getName()).append(':').append(child.length()).append(':')
-                        .append(child.lastModified()).append('\n');
-            }
-        }
-        return sb.toString();
     }
 
-    private void readFile(File file) {
+    /** Only a complete, unchanged load can be reused by a cache. */
+    public String sourceStamp() {
+        return sourceStamp;
+    }
+
+    private static synchronized String incompleteStamp() {
+        return "!incomplete-signature-definitions:" + ++incompleteStampSequence;
+    }
+
+    private static final class Source {
+        final File file;
+        final long size;
+        final long modified;
+
+        Source(File file) throws IOException {
+            this.file = file;
+            if (!file.isFile()) { throw new IOException("definition source is not a regular file"); }
+            size = file.length();
+            modified = file.lastModified();
+            if (file.getAbsolutePath().length() > 4096 || size < 0 || size > MAX_FILE_BYTES) {
+                throw new DefinitionLimitException("definition source path or file byte limit reached");
+            }
+        }
+
+        void header(MessageDigest digest) throws IOException {
+            // Explicit lengths avoid ambiguity between file names and contents.
+            byte[] path = file.getAbsolutePath().getBytes("UTF-8");
+            digest.update((path.length + ":").getBytes("UTF-8"));
+            digest.update(path);
+            digest.update((":" + size + ":" + modified + ":").getBytes("UTF-8"));
+        }
+
+        void verify(long read) throws IOException {
+            if (!file.isFile() || read != size || file.length() != size
+                    || file.lastModified() != modified) {
+                throw new IOException("signature definitions changed during reading");
+            }
+        }
+    }
+
+    /** Global limits refuse the set; independent source failures must not discard usable sources. */
+    private static final class DefinitionLimitException extends IOException {
+        private static final long serialVersionUID = 1L;
+        DefinitionLimitException(String message) { super(message); }
+    }
+
+    private static List<Source> sources(List<File> paths) throws IOException {
+        return sources(paths, null);
+    }
+
+    private static List<Source> sources(List<File> paths, SignatureDatabase diagnostics) throws IOException {
+        List<Source> out = new ArrayList<Source>();
+        if (paths.size() > MAX_DIRECTORY_ENTRIES) {
+            throw new DefinitionLimitException("definition source count limit reached");
+        }
+        long total = 0;
+        long started = System.nanoTime();
+        for (File path : paths) {
+            checkDeadline(started);
+            if (path == null) { continue; }
+            List<File> files;
+            try {
+                if (!path.exists()) { continue; }
+                files = path.isDirectory() ? signatureFiles(path, started)
+                        : Collections.singletonList(path);
+            } catch (IOException e) {
+                collectionProblem(diagnostics, path, e);
+                continue;
+            } catch (RuntimeException e) {
+                collectionProblem(diagnostics, path, e);
+                continue;
+            }
+            for (File file : files) {
+                if (out.size() >= MAX_DEFINITION_FILES) {
+                    throw new DefinitionLimitException("definition file count limit reached (" + MAX_DEFINITION_FILES + ")");
+                }
+                Source source;
+                try {
+                    source = new Source(file);
+                } catch (IOException e) {
+                    collectionProblem(diagnostics, file, e);
+                    continue;
+                } catch (RuntimeException e) {
+                    collectionProblem(diagnostics, file, e);
+                    continue;
+                }
+                total += source.size;
+                if (total > MAX_INPUT_BYTES) {
+                    throw new DefinitionLimitException("aggregate definition input exceeds " + Bytes.humanSize(MAX_INPUT_BYTES));
+                }
+                out.add(source);
+            }
+        }
+        return out;
+    }
+
+    private static void collectionProblem(SignatureDatabase diagnostics, File path, Exception failure)
+            throws IOException {
+        if (failure instanceof DefinitionLimitException) { throw (DefinitionLimitException) failure; }
+        String message = "could not inspect definition source " + path.getName() + ": "
+                + failure.getClass().getSimpleName() + ": " + failure.getMessage();
+        if (diagnostics == null) { throw new IOException(message, failure); }
+        diagnostics.problem(message);
+    }
+
+    private static MessageDigest newDigest() {
+        try { return MessageDigest.getInstance("SHA-256"); }
+        catch (NoSuchAlgorithmException e) { throw new IllegalStateException(e); }
+    }
+
+    private static String fingerprint(List<File> paths) throws IOException {
+        MessageDigest digest = newDigest();
+        long total = 0;
+        long started = System.nanoTime();
+        List<Source> snapshot = sources(paths);
+        for (Source source : snapshot) {
+            source.header(digest);
+            long count = 0;
+            try (InputStream in = new FileInputStream(source.file)) {
+                byte[] buffer = new byte[8192];
+                int n;
+                while (count < source.size) {
+                    checkDeadline(started);
+                    n = in.read(buffer, 0, (int) Math.min(buffer.length, source.size - count));
+                    if (n == -1) { break; }
+                    count += n;
+                    total += n;
+                    if (total > MAX_INPUT_BYTES || count > source.size) {
+                        throw new IOException("definition input byte limit or mutation detected");
+                    }
+                    digest.update(buffer, 0, n);
+                }
+            }
+            source.verify(count);
+        }
+        checkDeadline(started);
+        List<Source> current = sources(paths);
+        if (current.size() != snapshot.size()) { throw new IOException("definitions changed during fingerprinting"); }
+        for (int i = 0; i < current.size(); i++) {
+            Source a = snapshot.get(i);
+            Source b = current.get(i);
+            if (!a.file.equals(b.file) || a.size != b.size || a.modified != b.modified) {
+                throw new IOException("definitions changed during fingerprinting");
+            }
+        }
+        return finishStamp(digest, snapshot);
+    }
+
+    private static void checkDeadline(long started) throws IOException {
+        if (Thread.currentThread().isInterrupted() || System.nanoTime() - started >= LOAD_NANOS) {
+            throw new IOException("definition loading interrupted or time limit reached");
+        }
+    }
+
+    private static String finishStamp(MessageDigest digest, List<Source> sources) {
+        StringBuilder stamp = new StringBuilder(Bytes.hex(digest.digest()));
+        for (Source source : sources) { stamp.append('\n').append(source.file.getName()); }
+        return stamp.toString();
+    }
+
+    /** Collects only a bounded directory, then preserves the existing sorted load/stamp order. */
+    private static List<File> signatureFiles(File directory, final long collectionStarted) throws IOException {
+        final List<File> files = new ArrayList<File>();
+        final int[] visited = {0};
+        final long started = System.nanoTime();
+        DirectoryListing.forEachChild(directory, new DirectoryListing.Visitor() {
+            @Override
+            public void visit(File child) throws IOException {
+                checkDeadline(collectionStarted);
+                if (++visited[0] > MAX_DIRECTORY_ENTRIES
+                        || System.nanoTime() - started >= DIRECTORY_LIST_NANOS) {
+                    throw new DefinitionLimitException("signature directory entry or time limit reached");
+                }
+                if (child.isFile() && isSignatureFile(child.getName())) {
+                    if (files.size() >= MAX_DEFINITION_FILES || child.getAbsolutePath().length() > 4096) {
+                        throw new DefinitionLimitException("definition file count or path limit reached");
+                    }
+                    files.add(child);
+                }
+            }
+        });
+        Collections.sort(files);
+        return files;
+    }
+
+    private void readFile(Source source, MessageDigest digest) throws IOException {
+        File file = source.file;
         String name = file.getName();
         String ext = extensionOf(name);
         if (isPackedBundle(name)) {
@@ -319,50 +512,74 @@ public final class SignatureDatabase {
             problem(name + " is not a signature file this scanner reads (.hdb .hsb .ndb .fp .sfp .ign2)");
             return;
         }
-        if (file.length() > MAX_FILE_BYTES) {
-            problem(name + " is larger than " + Bytes.humanSize(MAX_FILE_BYTES) + " and was not loaded");
-            return;
-        }
-        byte[] data;
-        try {
-            InputStream in = new FileInputStream(file);
-            try {
-                data = Bytes.readAtMost(in, MAX_FILE_BYTES);
-            } finally {
-                PluginPackage.closeQuietly(in);
-            }
-        } catch (IOException e) {
-            problem("could not read " + name + ": " + e.getMessage());
-            return;
-        }
-        files.add(name);
-        newestMillis = Math.max(newestMillis, file.lastModified());
-        String text = Bytes.text(data);
+        source.header(digest);
+        long count = 0;
         int lineNumber = 0;
-        int start = 0;
-        while (start < text.length()) {
-            int end = text.indexOf('\n', start);
-            if (end < 0) {
-                end = text.length();
+        ByteArrayOutputStream line = new ByteArrayOutputStream();
+        boolean oversized = false;
+        try (InputStream in = new FileInputStream(file)) {
+            byte[] buffer = new byte[8192];
+            int n;
+            while (count < source.size) {
+                checkDeadline(loadStarted);
+                n = in.read(buffer, 0, (int) Math.min(buffer.length, source.size - count));
+                if (n == -1) { break; }
+                count += n;
+                inputBytes += n;
+                if (inputBytes > MAX_INPUT_BYTES || count > source.size) {
+                    throw new IOException("definition input byte limit or mutation detected");
+                }
+                digest.update(buffer, 0, n);
+                for (int i = 0; i < n; i++) {
+                    if (buffer[i] == '\n') {
+                        finishLine(name, ext, line, oversized, ++lineNumber);
+                        line.reset();
+                        oversized = false;
+                    } else if (line.size() < MAX_LINE_CHARS * 4) {
+                        line.write(buffer[i]);
+                    } else {
+                        oversized = true;
+                    }
+                }
             }
-            lineNumber++;
-            if (end - start > MAX_LINE_CHARS) {
-                unsupported++;
-                start = end + 1;
-                continue;
-            }
-            String line = text.substring(start, end).trim();
-            start = end + 1;
-            if (line.length() == 0 || line.charAt(0) == '#') {
-                continue;
-            }
-            readLine(name, ext, line, lineNumber);
         }
+        if (line.size() > 0 || oversized) {
+            finishLine(name, ext, line, oversized, ++lineNumber);
+        }
+        source.verify(count);
+        files.add(name);
+        newestMillis = Math.max(newestMillis, source.modified);
+    }
+
+    private void finishLine(String file, String ext, ByteArrayOutputStream bytes,
+            boolean oversized, int number) {
+        if (oversized) { unsupported++; return; }
+        String line = Bytes.text(bytes.toByteArray());
+        if (line.length() > MAX_LINE_CHARS) { unsupported++; return; }
+        line = line.trim();
+        if (line.length() > 0 && line.charAt(0) != '#') { readLine(file, ext, line, number); }
+    }
+
+    /** Conservative allocation allowance: includes construction, sorting, indexes and UTF-16 names. */
+    private boolean reserve(long bytes) {
+        if (retainedEntries >= MAX_RETAINED_ENTRIES || bytes > MAX_RETAINED_BYTES - retainedBytes) {
+            capped++;
+            if (capped == 1) {
+                problem("definition retained entry or memory limit reached (" + MAX_RETAINED_ENTRIES
+                        + " entries, " + Bytes.humanSize(MAX_RETAINED_BYTES) + ")");
+            }
+            return false;
+        }
+        retainedEntries++;
+        retainedBytes += bytes;
+        return true;
     }
 
     private void readLine(String fileName, String ext, String line, int lineNumber) {
         if (ext.equals("ign2")) {
-            ignoredNames.add(line);
+            if (!ignoredNames.contains(line) && reserve(192L + 4L * line.length())) {
+                ignoredNames.add(line);
+            }
             return;
         }
         if (ext.equals("ndb") || ext.equals("ndu")) {
@@ -401,7 +618,7 @@ public final class SignatureDatabase {
             capped++;
             return;
         }
-        table.add(digest, size, name);
+        if (reserve(320L + 4L * name.length())) { table.add(digest, size, name); }
     }
 
     private void readPattern(String fileName, String line, int lineNumber) {
@@ -432,7 +649,23 @@ public final class SignatureDatabase {
             return;
         }
         try {
-            patterns.add(HexSignature.compile(name, target, parts[2].trim(), parts[3].trim()));
+            String body = parts[3].trim();
+            // Literal/gap positions need under 64 bytes per character, including compile scratch.
+            // Alternatives allocate 256-byte membership tables per position: allow 192 per char.
+            long allowance = 512L + 4L * name.length() + 64L * body.length();
+            boolean alternative = false;
+            for (int i = 0; i < body.length(); i++) {
+                if (body.charAt(i) == '(') { alternative = true; }
+                if (alternative) { allowance += 128; }
+                if (body.charAt(i) == ')') { alternative = false; }
+            }
+            if (allowance > MAX_RETAINED_BYTES - retainedBytes
+                    || retainedEntries >= MAX_RETAINED_ENTRIES) {
+                reserve(allowance);
+                return;
+            }
+            HexSignature signature = HexSignature.compile(name, target, parts[2].trim(), body);
+            if (reserve(allowance)) { patterns.add(signature); }
         } catch (HexSignature.SyntaxException e) {
             unsupported++;
             problem(fileName + ":" + lineNumber + " " + e.getMessage());
@@ -595,47 +828,72 @@ public final class SignatureDatabase {
      * there are tried. Patterns that could start with anything are tried once each over the whole
      * blob, which is why they are worth keeping rare.
      */
+    /** Matches retained before a cutoff remain valid; complete is independent of hits. */
+    public static final class PatternResult {
+        public final List<Match> hits;
+        public final boolean complete;
+        private PatternResult(List<Match> hits, boolean complete) {
+            this.hits = Collections.unmodifiableList(hits); this.complete = complete;
+        }
+    }
+
+    /** Legacy list view. Production scans use matchPatternsChecked to retain completeness. */
     public List<Match> matchPatterns(byte[] data, int fileType, int limit) {
+        return matchPatternsChecked(data, fileType, limit).hits;
+    }
+
+    public PatternResult matchPatternsChecked(byte[] data, int fileType, int limit) {
+        return matchPatternsChecked(data, fileType, limit, data == null ? -1L : data.length);
+    }
+
+    /** Match an admitted prefix without interpreting its boundary as the logical end of file. */
+    public PatternResult matchPatternsChecked(byte[] data, int fileType, int limit, long logicalSize) {
         List<Match> out = new ArrayList<Match>();
-        if (!indexed || data == null || data.length == 0 || patterns.isEmpty() || limit <= 0) {
-            return out;
+        if (!indexed || data == null || data.length == 0 || patterns.isEmpty()) {
+            return new PatternResult(out, true);
         }
+        if (limit <= 0) return new PatternResult(out, false);
         Set<String> seen = new HashSet<String>();
-        for (int i = 0; i < anchored.length && out.size() < limit; i++) {
-            HexSignature signature = anchored[i];
-            if (signature.appliesTo(fileType) && signature.matches(data)) {
-                record(out, seen, signature);
-            }
-        }
-        for (int i = 0; i < unbucketed.length && out.size() < limit; i++) {
-            HexSignature signature = unbucketed[i];
-            if (signature.appliesTo(fileType) && signature.matches(data)) {
-                record(out, seen, signature);
-            }
-        }
-        for (int at = 0; at < data.length && out.size() < limit; at++) {
-            int first = data[at] & 0xFF;
-            if (at + 1 < data.length) {
-                HexSignature[] bucket = byTwoBytes[(first << 8) | (data[at + 1] & 0xFF)];
-                if (bucket != null) {
-                    tryBucket(bucket, data, at, fileType, out, seen, limit);
+        HexSignature.Work work = new HexSignature.Work(8 * HexSignature.MAX_STEPS);
+        try {
+            for (HexSignature signature : anchored) {
+                work.step();
+                if (signature.appliesTo(fileType) && signature.matches(data, work, logicalSize)) {
+                    record(out, seen, signature);
+                    if (out.size() >= limit) return new PatternResult(out, false);
                 }
             }
-            HexSignature[] bucket = byOneByte[first];
-            if (bucket != null) {
-                tryBucket(bucket, data, at, fileType, out, seen, limit);
+            for (HexSignature signature : unbucketed) {
+                work.step();
+                if (signature.appliesTo(fileType) && signature.matches(data, work, logicalSize)) {
+                    record(out, seen, signature);
+                    if (out.size() >= limit) return new PatternResult(out, false);
+                }
             }
+            for (int at = 0; at < data.length; at++) {
+                work.step();
+                int first = data[at] & 0xFF;
+                if (at + 1 < data.length) {
+                    HexSignature[] bucket = byTwoBytes[(first << 8) | (data[at + 1] & 0xFF)];
+                    if (bucket != null) tryBucket(bucket, data, at, fileType, out, seen, limit, work);
+                }
+                HexSignature[] bucket = byOneByte[first];
+                if (bucket != null) tryBucket(bucket, data, at, fileType, out, seen, limit, work);
+            }
+            return new PatternResult(out, true);
+        } catch (HexSignature.LimitReached cutoff) {
+            return new PatternResult(out, false);
         }
-        return out;
     }
 
     private static void tryBucket(HexSignature[] bucket, byte[] data, int at, int fileType,
-            List<Match> out, Set<String> seen, int limit) {
-        for (int i = 0; i < bucket.length && out.size() < limit; i++) {
-            HexSignature signature = bucket[i];
+            List<Match> out, Set<String> seen, int limit, HexSignature.Work work) {
+        for (HexSignature signature : bucket) {
+            work.step();
             if (signature.appliesTo(fileType) && !seen.contains(signature.name())
-                    && signature.matchesAt(data, at)) {
+                    && signature.matchesAt(data, at, work)) {
                 record(out, seen, signature);
+                if (out.size() >= limit) throw new HexSignature.LimitReached();
             }
         }
     }
@@ -752,6 +1010,18 @@ public final class SignatureDatabase {
         return cleanMd5.size() + cleanSha1.size() + cleanSha256.size();
     }
 
+    /** Accepted entries across all classes; includes entries later disabled by ign2. */
+    public int retainedEntryCount() { return retainedEntries; }
+
+    /** Conservative allocation high-water allowance, not a measured JVM heap size. */
+    public long retainedBytes() { return retainedBytes; }
+
+    public long inputBytes() { return inputBytes; }
+
+    public int ignoredCount() { return ignoredNames.size(); }
+
+    public boolean complete() { return problems.isEmpty() && unsupported == 0 && capped == 0; }
+
     /** Lines that were readable but use syntax or targets this scanner does not implement. */
     public int unsupportedCount() {
         return unsupported;
@@ -773,6 +1043,9 @@ public final class SignatureDatabase {
     }
 
     private void problem(String message) {
+        if (message.length() > MAX_PROBLEM_CHARS) {
+            message = message.substring(0, MAX_PROBLEM_CHARS) + "...";
+        }
         if (problems.size() < MAX_PROBLEMS - 1) {
             problems.add(message);
         } else if (problems.size() == MAX_PROBLEMS - 1) {

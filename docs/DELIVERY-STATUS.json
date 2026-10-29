@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "status": "READY_FOR_USER_INSTALL",
+  "repository": "Zfkirke0109/MT-Safety-Clean",
+  "pull_request": 10,
+  "baseline_commit": "66f9860f1291672a9e685f4230b1a16d4a9de821",
+  "source_commit": "c74e295ea3e58147db1c451123be2719beeadd80",
+  "artifact": {
+    "repository_path": "dist/mt-safety-scanner.mtp",
+    "download_ref": "current_pr_head",
+    "filename": "MT-Safety-Scanner-v2.3-S26-c74e295ea3e5.mtp",
+    "sha256": "13cee3d63c735ca33fc1b475cdd0c2180049b1de8eec70c4c0bcf2afdb01ef41",
+    "size_bytes": 859528,
+    "source_commit": "c74e295ea3e58147db1c451123be2719beeadd80",
+    "worker_sha256": "e979ced80767285c6992c8b10475b9eda5b2e3ea3e6e1a90fbe14d6ed5c08e14",
+    "version_name": "v2.3",
+    "version_code": 5
+  },
+  "review": {
+    "material_findings_remaining": 0,
+    "standards": "PASS_INDEPENDENT_ASSISTANT_REVIEW",
+    "specification": "PASS_INDEPENDENT_ASSISTANT_REVIEW",
+    "formal_copilot_review": "NOT_VERIFIED_HISTORICAL_QUOTA_BLOCK",
+    "report": "docs/PR-10-REMEDIATION-2026-10-29.md"
+  },
+  "validation": {
+    "main_checks_passed": 610,
+    "main_checks_failed": 0,
+    "main_checks_skipped": 0,
+    "focused_regressions": "PASS",
+    "python_integrity_tests_passed": 15,
+    "android_sdk_compile_and_d8_min24": "PASS",
+    "sdk_preference_snapshot_assertions_passed": 8,
+    "gitleaks_with_positive_control": "PASS",
+    "semgrep_with_positive_control": "PASS_49_JAVA_FILES_5_RULES_2_REVIEWED_FIXED_OS_LAUNCHES",
+    "same_toolchain_byte_reproducibility": "PASS",
+    "all_actual_package_member_comparison": "PASS",
+    "android_worker_harness": {
+      "status": "PASS",
+      "device": "Zachary's S26 Ultra SM-S948U",
+      "sdk_int": 37,
+      "identity": "ordinary_app_uid",
+      "checks_passed": 16,
+      "max_heap_bytes": 100663296,
+      "receipt": "evidence/remediation-2026-10-29/android-worker.json"
+    },
+    "mt_host_installation_testing": "NOT_RUN",
+    "physical_api24_25_testing": "NOT_RUN",
+    "codeql": "NOT_RUN"
+  },
+  "ci_gate": {
+    "query_current_pr_head_before_delivery": true,
+    "required_job_names": [
+      "build",
+      "static-and-secret"
+    ],
+    "require_pre_commit_ci_success": true,
+    "require_all_current_head_checks_to_finish_successfully": true,
+    "note": "This manifest never substitutes for live current-head CI results. A pending or failed check prevents delivery."
+  },
+  "delivery": {
+    "device": "Zachary's S26 Ultra SM-S948U",
+    "directory": "/sdcard/Download",
+    "overwrite_different_file": false,
+    "verify_phone_sha256_and_size": true,
+    "install_authorized": false,
+    "merge_authorized": false,
+    "release_publication_authorized": false,
+    "notify_once_after_verified_delivery": true
+  }
+}

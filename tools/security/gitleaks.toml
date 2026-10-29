@@ -1,0 +1,12 @@
+title = "MT Scanner secret checks"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Three reviewed public build/source SHA256 values; no path or broad hex exemption"
+regexes = [
+  '''^a51c800eb904e41834ded615376e8c60a33788b073bbb967777ac61d6c88f82d$''',
+  '''^6e90db4fd75342d717c22469a3a2407bbcce0b43f7790f99088983c42115b84a$''',
+  '''^62795a3f15ed721d3ee029d20f3c423aad76dddb05638db13883c5789690b5cd$''',
+]

@@ -13,6 +13,9 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
 import mt.safety.scanner.core.Indicator.Scope;
+import mt.safety.scanner.core.CoverageLedger.Analyzer;
+import mt.safety.scanner.core.CoverageLedger.Status;
+import mt.safety.scanner.core.CoverageLedger.Reason;
 
 /**
  * Applies the indicator catalogue to every readable member of a package.
@@ -44,6 +47,23 @@ public final class CodeRules {
     private static final int NESTED_MEMBER_LIMIT = 512 * 1024;
     private static final int MAX_NESTED_ENTRIES = 400;
     private static final int MAX_NESTED_DEPTH = 2;
+
+    /** Logical offsets in this fixed memory stream include inflater pushback after member EOF. */
+    private static final class NestedZipStream extends ZipInputStream {
+        private final int length;
+
+        NestedZipStream(byte[] data) {
+            super(new ByteArrayInputStream(data));
+            length = data.length;
+        }
+
+        long nextHeaderOffset() throws IOException {
+            // ZipInputStream.available() is only 0/1. Its inherited input is instead a
+            // PushbackInputStream over our ByteArrayInputStream; both report exact remaining bytes.
+            // Call only initially or after the preceding member has reached EOF/readEnd().
+            return length - in.available();
+        }
+    }
 
     private static final Set<String> SOURCE_EXTENSIONS = new HashSet<String>();
     private static final Set<String> TEXT_EXTENSIONS = new HashSet<String>();
@@ -101,18 +121,23 @@ public final class CodeRules {
             ScanBudget budget, IocDatabase database, SignatureDatabase signatures) {
         Map<String, Signal> byRule = new HashMap<String, Signal>();
         int scanned = 0;
+        for (PluginPackage.Entry entry : entries) { report.ledger.member(entry); }
 
         for (PluginPackage.Entry entry : entries) {
+            CoverageLedger.Member coverage = report.ledger.member(entry);
             if (entry.directory) {
+                coverage.notApplicable(Reason.DIRECTORY);
                 continue;
             }
             // The manifest is metadata, judged by ManifestRules on what it declares. Searching its
             // text for indicators reported a plugin for naming its own classes under bin.mt.plugin
             // and for the dexMode flag every v3 package carries.
             if (entry.name.equals("manifest.json")) {
+                coverage.notApplicable(Reason.MANIFEST_METADATA);
                 continue;
             }
             if (budget.exhausted()) {
+                skipped(coverage, Reason.BUDGET_EXHAUSTED);
                 budget.markTruncated();
                 break;
             }
@@ -125,27 +150,32 @@ public final class CodeRules {
                 data = pkg.read(entry, limit, budget);
             } catch (IOException e) {
                 report.addError("could not read " + entry.name + ": " + e.getMessage());
+                failedRead(coverage, e);
+                // A member that cannot be read is content that was not inspected.
+                budget.markTruncated();
                 continue;
             }
-            if (data.length == 0) {
-                continue;
-            }
+            boolean completeRead = data.length == entry.size && entry.size <= limit;
+            recordRead(coverage, completeRead, data.length, entry.size > limit
+                    ? Reason.MEMBER_LIMIT : Reason.BUDGET_EXHAUSTED);
             if (entry.size > limit) {
                 // Only the first part of this member was read, so a finding could be sitting past the
                 // cap. The report says the scan was incomplete rather than implying full coverage.
                 budget.markTruncated();
             }
-            scanned++;
+            if (data.length > 0) { scanned++; }
 
             // Known-malware signatures see the member's bytes as they are, before any text is
             // extracted from them. A whole-file hash only means something for a complete read.
-            SignatureRules.match(report, byRule, entry, data, data.length >= entry.size, signatures);
+            boolean signaturesComplete = SignatureRules.match(report, byRule, entry, data, completeRead, signatures);
 
             // A jar's members are deflated, so searching the container's raw bytes finds nothing at
             // all. libs/ is the documented home for third-party jars, which makes it the obvious
             // place to hide a payload: it has to be opened, not just skimmed.
             if (Bytes.looksLikeZip(data)) {
-                scanNestedArchive(report, byRule, entry.name, data, budget, database, signatures, 1);
+                scanNestedArchive(report, byRule, entry.name, data, budget, database, signatures, 1, coverage);
+            } else {
+                coverage.set(Analyzer.NESTED_ARCHIVE, Status.NOT_APPLICABLE, Reason.NON_ARCHIVE, 0);
             }
 
             String text = scope == Scope.BINARY ? Bytes.extractedText(data, 6) : Bytes.text(data);
@@ -160,6 +190,8 @@ public final class CodeRules {
                 checkSourceShape(report, byRule, entry, text);
             }
             checkEncodedPayloads(report, byRule, entry, text);
+            recordAnalysis(coverage, completeRead, data.length, database, signatures);
+            recordSignatureCutoff(coverage, signaturesComplete, data.length, budget);
         }
         return scanned;
     }
@@ -192,47 +224,299 @@ public final class CodeRules {
     /**
      * Opens an archived member and applies the same rules to what is inside it.
      *
-     * <p>Bounded in every direction: entry count, bytes per entry, nesting depth, and the scan budget,
-     * because the archive being opened is the untrusted thing under examination.
+     * <p>Nested entry count, nesting depth, decompressed output per member, and logical scan-budget
+     * reservations are bounded. The enclosing member is already held in a bounded byte array. A
+     * reservation accounts for bytes returned to this scanner, including the one-byte EOF probe; it
+     * does not meter compressed input that {@link ZipInputStream}'s inflater may buffer internally.
+     * The deadline is checked between operations and cannot preempt inflater CPU work or bound its
+     * per-byte cost. A capped or failed member stops traversal before advancing the stream, which
+     * would otherwise inflate the unread remainder.
      *
      * <p>Evidence keeps the path that leads to it, {@code libs/helper.jar!evil/Evil.class}, so a
      * finding can be traced back to the file it actually came from.
      */
+    /** Uses raw admitted member slices for XZ/mixed-codec archives; preserves bounded legacy salvage. */
     private static void scanNestedArchive(ScanReport report, Map<String, Signal> byRule, String parentName,
+            byte[] data, ScanBudget budget, IocDatabase database, SignatureDatabase signatures, int depth,
+            CoverageLedger.Member container) {
+        long errorsBefore = report.errorEvents();
+        int membersBefore = report.ledger.members().size();
+        int droppedBefore = report.ledger.droppedMembers();
+        scanNestedArchiveBody(report, byRule, parentName, data, budget, database, signatures, depth);
+        boolean complete = depth <= MAX_NESTED_DEPTH && report.errorEvents() == errorsBefore && !budget.stopped()
+                && droppedBefore == report.ledger.droppedMembers();
+        Reason reason = depth > MAX_NESTED_DEPTH ? Reason.DEPTH_LIMIT : Reason.READ_FAILED;
+        for (int i = membersBefore; i < report.ledger.members().size(); i++) {
+            CoverageLedger.Member member = report.ledger.members().get(i);
+            for (Analyzer analyzer : Analyzer.values()) {
+                CoverageLedger.Check check = member.get(analyzer);
+                if (check.status != Status.COMPLETE && check.status != Status.NOT_APPLICABLE) {
+                    complete = false;
+                    reason = check.reason;
+                }
+            }
+        }
+        if (complete) { reason = Reason.OK; }
+        else if (budget.exhausted()) { reason = Reason.BUDGET_EXHAUSTED; }
+        container.set(Analyzer.NESTED_ARCHIVE, complete ? Status.COMPLETE : Status.PARTIAL,
+                reason, data.length);
+    }
+
+    private static void scanNestedArchiveBody(ScanReport report, Map<String, Signal> byRule, String parentName,
+            byte[] data, ScanBudget budget, IocDatabase database, SignatureDatabase signatures, int depth) {
+        ArchiveIndex.View view;
+        try {
+            view = ArchiveIndex.open(data);
+        } catch (IOException e) {
+            // The established legacy salvage reads only a bounded prefix and always records the
+            // missing index. This retains previously readable evidence from malformed input.
+            scanNestedArchiveLegacy(report, byRule, parentName, data, budget, database, signatures, depth);
+            return;
+        }
+        if (view.legacyMethodsOnly()) {
+            PluginPackage.closeQuietly(view);
+            scanNestedArchiveLegacy(report, byRule, parentName, data, budget, database, signatures, depth);
+            return;
+        }
+        try {
+            if (depth > MAX_NESTED_DEPTH) {
+                report.addError(parentName + ": nested archive deeper than " + MAX_NESTED_DEPTH
+                        + " levels was not inspected");
+                budget.markTruncated();
+                return;
+            }
+            if (!view.problems.isEmpty()) {
+                report.addError(parentName + ": " + view.problems.get(0));
+                budget.markTruncated();
+            }
+            Map<ArchiveIndex.Member, CoverageLedger.Member> records =
+                    new java.util.IdentityHashMap<ArchiveIndex.Member, CoverageLedger.Member>();
+            for (ArchiveIndex.Member member : view.localOrder) {
+                records.put(member, report.ledger.addMember(parentName + "!" + member.name));
+            }
+            int count = 0;
+            for (ArchiveIndex.Member member : view.localOrder) {
+                CoverageLedger.Member coverage = records.get(member);
+                if (count++ >= MAX_NESTED_ENTRIES || budget.exhausted()) {
+                    report.addError(parentName + ": nested entry or scan budget limit reached");
+                    Reason reason = count > MAX_NESTED_ENTRIES ? Reason.ENTRY_LIMIT : Reason.BUDGET_EXHAUSTED;
+                    for (CoverageLedger.Member record : records.values()) {
+                        if (record.get(Analyzer.READ).reason == Reason.NOT_ATTEMPTED) { skipped(record, reason); }
+                    }
+                    budget.markTruncated();
+                    break;
+                }
+                String childName = parentName + "!" + member.name;
+                byte[] child;
+                try {
+                    child = BoundedZipDecoder.read(view.stream(member), member.method, member.flags,
+                            member.compressedSize, member.size, member.crc,
+                            member.name.endsWith("/") ? 1 : NESTED_MEMBER_LIMIT, budget);
+                } catch (IOException e) {
+                    report.addError("could not read " + childName + ": " + e.getMessage());
+                    failedRead(coverage, e);
+                    budget.markTruncated();
+                    continue;
+                }
+                if (member.name.endsWith("/")) {
+                    coverage.notApplicable(Reason.DIRECTORY);
+                    if (child.length != 0) {
+                        report.addError(childName + ": directory entry contains unread data");
+                        coverage.set(Analyzer.READ, Status.PARTIAL, Reason.MEMBER_LIMIT, child.length);
+                        budget.markTruncated();
+                    }
+                    continue;
+                }
+                boolean complete = child.length == member.size;
+                recordRead(coverage, complete, child.length, member.size > NESTED_MEMBER_LIMIT
+                        ? Reason.MEMBER_LIMIT : Reason.BUDGET_EXHAUSTED);
+                PluginPackage.Entry synthetic = new PluginPackage.Entry(childName, member.size,
+                        member.compressedSize, false);
+                analyzeNestedChild(report, byRule, synthetic, child, complete, budget,
+                        database, signatures, depth, coverage);
+                if (!complete) {
+                    for (CoverageLedger.Member record : records.values()) {
+                        if (record.get(Analyzer.READ).reason == Reason.NOT_ATTEMPTED) {
+                            skipped(record, member.size > NESTED_MEMBER_LIMIT
+                                    ? Reason.MEMBER_LIMIT : Reason.BUDGET_EXHAUSTED);
+                        }
+                    }
+                    budget.markTruncated();
+                    break; // Keep the established nested prefix limit and skip later entries.
+                }
+            }
+        } finally {
+            PluginPackage.closeQuietly(view);
+        }
+    }
+
+    private static void analyzeNestedChild(ScanReport report, Map<String, Signal> byRule,
+            PluginPackage.Entry synthetic, byte[] child, boolean complete, ScanBudget budget,
+            IocDatabase database, SignatureDatabase signatures, int depth,
+            CoverageLedger.Member coverage) {
+        String kind = Bytes.detectKind(child);
+        if ("dex".equals(kind) || "elf".equals(kind)) {
+            signalFor(report, byRule, "ARC009", Category.PERSISTENCE, Severity.HIGH,
+                    "An archived library contains executable code",
+                    "A jar under libs/ is expected to hold Java classes. Dalvik bytecode or a"
+                            + " native binary inside one is a payload travelling in a wrapper.")
+                    .withEvidence(synthetic.name, kind + ", " + Bytes.humanSize(child.length));
+        }
+        Scope scope = classify(synthetic.extension());
+        String text = scope == Scope.BINARY ? Bytes.extractedText(child, 6) : Bytes.text(child);
+        boolean signaturesComplete = SignatureRules.match(report, byRule, synthetic, child, complete, signatures);
+        matchIndicators(report, byRule, synthetic, scope, text);
+        matchPairs(report, byRule, synthetic, scope, text);
+        matchUserPatterns(report, byRule, synthetic, text, database);
+        checkEncodedPayloads(report, byRule, synthetic, text);
+        recordAnalysis(coverage, complete, child.length, database, signatures);
+        recordSignatureCutoff(coverage, signaturesComplete, child.length, budget);
+        if (complete && Bytes.looksLikeZip(child)) {
+            scanNestedArchive(report, byRule, synthetic.name, child, budget, database, signatures, depth + 1, coverage);
+        } else if (Bytes.looksLikeZip(child)) {
+            coverage.set(Analyzer.NESTED_ARCHIVE, Status.SKIPPED, Reason.MEMBER_LIMIT, 0);
+        } else {
+            coverage.set(Analyzer.NESTED_ARCHIVE, Status.NOT_APPLICABLE, Reason.NON_ARCHIVE, 0);
+        }
+    }
+
+    private static void scanNestedArchiveLegacy(ScanReport report, Map<String, Signal> byRule, String parentName,
             byte[] data, ScanBudget budget, IocDatabase database, SignatureDatabase signatures, int depth) {
         if (depth > MAX_NESTED_DEPTH) {
+            // The depth cap is a safety bound, not a verdict: what sits below it was never inspected.
+            report.addError(parentName + ": nested archive deeper than " + MAX_NESTED_DEPTH
+                    + " levels was not inspected");
+            budget.markTruncated();
             return;
         }
         Signal executableInside = null;
-        ZipInputStream zin = new ZipInputStream(new ByteArrayInputStream(data));
+        Map<Long, ArchiveIndex.Member> indexedEntries = null;
+        Map<Long, CoverageLedger.Member> records = new HashMap<Long, CoverageLedger.Member>();
+        try {
+            indexedEntries = ArchiveIndex.nestedEntries(data);
+            Set<String> nestedNames = new HashSet<String>();
+            for (Map.Entry<Long, ArchiveIndex.Member> indexed : indexedEntries.entrySet()) {
+                if (!nestedNames.add(indexed.getValue().name)) {
+                    report.addError(parentName + ": duplicate nested member: " + indexed.getValue().name);
+                    budget.markTruncated();
+                }
+                records.put(indexed.getKey(), report.ledger.addMember(parentName + "!" + indexed.getValue().name));
+            }
+        } catch (IOException e) {
+            // ZipInputStream treats some truncated local headers as ordinary EOF. Missing/invalid
+            // index metadata must revoke completeness even when that stream never throws. Still
+            // inspect its bounded readable prefix so prior malicious evidence is not discarded.
+            report.addError(parentName + ": " + e.getMessage());
+            budget.markTruncated();
+        }
+        NestedZipStream zin = new NestedZipStream(data);
         try {
             ZipEntry ze;
             int count = 0;
-            while ((ze = zin.getNextEntry()) != null) {
+            while (true) {
+                long localOffset = zin.nextHeaderOffset();
+                ze = zin.getNextEntry();
+                if (ze == null) {
+                    if (indexedEntries != null && count != indexedEntries.size()) {
+                        report.addError(parentName + ": nested local and indexed member counts disagree");
+                        budget.markTruncated();
+                    }
+                    break;
+                }
                 if (count++ >= MAX_NESTED_ENTRIES || budget.exhausted()) {
+                    Reason reason = count > MAX_NESTED_ENTRIES ? Reason.ENTRY_LIMIT : Reason.BUDGET_EXHAUSTED;
+                    for (CoverageLedger.Member record : records.values()) {
+                        if (record.get(Analyzer.READ).reason == Reason.NOT_ATTEMPTED) { skipped(record, reason); }
+                    }
                     budget.markTruncated();
                     break;
+                }
+                CoverageLedger.Member coverage = records.get(localOffset);
+                if (coverage == null) { coverage = report.ledger.addMember(parentName + "!" + ze.getName()); }
+                ArchiveIndex.Member indexed = indexedEntries == null ? null : indexedEntries.get(localOffset);
+                if (indexedEntries != null && (indexed == null || !ze.getName().equals(indexed.name))) {
+                    report.addError(parentName + ": nested local member is not bound to its index: "
+                            + ze.getName());
+                    budget.markTruncated();
                 }
                 if (ze.isDirectory()) {
+                    coverage.notApplicable(Reason.DIRECTORY);
+                    if (budget.reserve(1) == 0) {
+                        coverage.set(Analyzer.READ, Status.SKIPPED, Reason.BUDGET_EXHAUSTED, 0);
+                        budget.markTruncated();
+                        break;
+                    }
+                    try {
+                        if (zin.read() >= 0) {
+                            report.addError(parentName + "!" + ze.getName()
+                                    + ": directory entry contains unread data; nested traversal stopped");
+                            coverage.set(Analyzer.READ, Status.PARTIAL, Reason.MEMBER_LIMIT, 1);
+                            budget.markTruncated();
+                            break;
+                        }
+                        if (!verifyNestedMetadata(report, budget, parentName, indexed, ze)) {
+                            coverage.set(Analyzer.READ, Status.FAILED, Reason.READ_FAILED, 0);
+                        }
+                    } catch (IOException e) {
+                        report.addError(parentName + "!" + ze.getName()
+                                + ": could not verify empty directory entry: " + e.getMessage());
+                        failedRead(coverage, e);
+                        budget.markTruncated();
+                        break;
+                    }
                     continue;
                 }
-                int granted = budget.reserve(NESTED_MEMBER_LIMIT);
-                if (granted <= 0) {
+                // One extra output byte is reserved for the end-of-member probe so it is charged too.
+                // This bounds bytes returned by ZipInputStream, not inflater-internal CPU or input reads.
+                int reserved = budget.reserve(NESTED_MEMBER_LIMIT + 1);
+                if (reserved <= 1) {
+                    // No room for data plus the probe: stop without reading or advancing.
+                    skipped(coverage, Reason.BUDGET_EXHAUSTED);
                     budget.markTruncated();
                     break;
                 }
+                int granted = reserved - 1;
                 byte[] child;
                 try {
                     child = Bytes.readAtMost(zin, granted);
                 } catch (IOException e) {
                     report.addError("could not read " + parentName + "!" + ze.getName() + ": "
                             + e.getMessage());
-                    continue;
+                    failedRead(coverage, e);
+                    budget.markTruncated();
+                    // Do not ask ZipInputStream for another entry: it would first drain the
+                    // unread remainder of this potentially enormous or corrupt member.
+                    break;
                 }
-                if (child.length == 0) {
-                    continue;
+                // ZIP streams do not expose a reliable entry size before inflation. Probe at most
+                // the one reserved byte when the allowance is exactly filled; an additional byte
+                // proves truncation.
+                // This accounts for bytes delivered by the nested stream. The inflater may buffer
+                // compressed input internally, and the scan deadline cannot preempt its CPU work.
+                // Importantly, getNextEntry() implicitly inflates the rest of the *current* entry.
+                boolean completeChild = child.length < granted;
+                boolean memberCutShort = false;
+                if (!completeChild) {
+                    try {
+                        if (zin.read() >= 0) {
+                            memberCutShort = true;
+                            budget.markTruncated();
+                        } else {
+                            completeChild = true;
+                        }
+                    } catch (IOException e) {
+                        memberCutShort = true;
+                        budget.markTruncated();
+                        report.addError("could not verify end of " + parentName + "!" + ze.getName()
+                                + ": " + e.getMessage());
+                    }
+                }
+                if (completeChild && !verifyNestedMetadata(report, budget, parentName, indexed, ze)) {
+                    completeChild = false;
                 }
 
+                recordRead(coverage, completeChild, child.length,
+                        granted >= NESTED_MEMBER_LIMIT ? Reason.MEMBER_LIMIT : Reason.BUDGET_EXHAUSTED);
                 String childName = parentName + "!" + ze.getName();
                 PluginPackage.Entry synthetic =
                         new PluginPackage.Entry(childName, child.length, child.length, false);
@@ -253,27 +537,110 @@ public final class CodeRules {
                 Scope childScope = classify(synthetic.extension());
                 String childText = childScope == Scope.BINARY
                         ? Bytes.extractedText(child, 6) : Bytes.text(child);
-                // A member that filled its whole allowance may have been cut short, so only a
-                // shorter read is known to be complete enough for a whole-file hash.
-                SignatureRules.match(report, byRule, synthetic, child, child.length < granted, signatures);
+                // Only compare whole-file hashes when the member really reached EOF.
+                // Pattern matching on the bounded prefix remains useful for partial members.
+                boolean signaturesComplete = SignatureRules.match(report, byRule, synthetic, child, completeChild, signatures);
                 matchIndicators(report, byRule, synthetic, childScope, childText);
                 matchPairs(report, byRule, synthetic, childScope, childText);
                 matchUserPatterns(report, byRule, synthetic, childText, database);
                 checkEncodedPayloads(report, byRule, synthetic, childText);
 
-                if (Bytes.looksLikeZip(child)) {
+                recordAnalysis(coverage, completeChild, child.length, database, signatures);
+                recordSignatureCutoff(coverage, signaturesComplete, child.length, budget);
+                if (!memberCutShort && Bytes.looksLikeZip(child)) {
                     scanNestedArchive(report, byRule, childName, child, budget, database, signatures,
-                            depth + 1);
+                            depth + 1, coverage);
+                } else if (Bytes.looksLikeZip(child)) {
+                    coverage.set(Analyzer.NESTED_ARCHIVE, Status.SKIPPED, Reason.MEMBER_LIMIT, 0);
+                } else {
+                    coverage.set(Analyzer.NESTED_ARCHIVE, Status.NOT_APPLICABLE, Reason.NON_ARCHIVE, 0);
+                }
+                if (memberCutShort) {
+                    for (CoverageLedger.Member record : records.values()) {
+                        if (record.get(Analyzer.READ).reason == Reason.NOT_ATTEMPTED) {
+                            skipped(record, granted >= NESTED_MEMBER_LIMIT
+                                    ? Reason.MEMBER_LIMIT : Reason.BUDGET_EXHAUSTED);
+                        }
+                    }
+                    // Preserve findings in the inspected prefix, but never call getNextEntry()
+                    // after a bounded read stopped short: it would inflate the skipped tail.
+                    break;
                 }
             }
         } catch (IOException e) {
             report.addError("could not open " + parentName + ": " + e.getMessage());
+            budget.markTruncated();
         } catch (RuntimeException e) {
             // A malformed archive must not take the scan down with it.
             report.addError("could not read inside " + parentName + ": " + e);
+            budget.markTruncated();
         } finally {
             PluginPackage.closeQuietly(zin);
+            for (CoverageLedger.Member record : records.values()) {
+                if (record.get(Analyzer.READ).reason == Reason.NOT_ATTEMPTED) {
+                    skipped(record, budget.exhausted() ? Reason.BUDGET_EXHAUSTED : Reason.READ_FAILED);
+                }
+            }
         }
+    }
+
+    private static void skipped(CoverageLedger.Member member, Reason reason) {
+        for (Analyzer analyzer : Analyzer.values()) { member.set(analyzer, Status.SKIPPED, reason, 0); }
+    }
+
+    private static void failedRead(CoverageLedger.Member member, IOException failure) {
+        Reason reason = String.valueOf(failure.getMessage()).contains("unsupported")
+                ? Reason.UNSUPPORTED : Reason.READ_FAILED;
+        skipped(member, reason);
+        member.set(Analyzer.READ, Status.FAILED, reason, 0);
+    }
+
+    private static void recordSignatureCutoff(CoverageLedger.Member member, boolean complete,
+            int bytes, ScanBudget budget) {
+        if (!complete) {
+            member.set(Analyzer.SIGNATURES, Status.PARTIAL, Reason.MATCH_LIMIT, bytes);
+            budget.markTruncated();
+        }
+    }
+
+    private static void recordRead(CoverageLedger.Member member, boolean complete, int bytes, Reason reason) {
+        member.set(Analyzer.READ, complete ? Status.COMPLETE : Status.PARTIAL,
+                complete ? bytes == 0 ? Reason.EMPTY : Reason.OK : reason, bytes);
+    }
+
+    private static void recordAnalysis(CoverageLedger.Member member, boolean complete, int bytes,
+            IocDatabase database, SignatureDatabase signatures) {
+        Status status = complete ? Status.COMPLETE : Status.PARTIAL;
+        Reason reason = complete ? bytes == 0 ? Reason.EMPTY : Reason.OK
+                : member.get(Analyzer.READ).reason;
+        member.set(Analyzer.BUILTIN_RULES, status, reason, bytes);
+        if (database != null && !database.loadErrors().isEmpty()) {
+            member.set(Analyzer.USER_PATTERNS, Status.PARTIAL, Reason.DEFINITIONS_INCOMPLETE, bytes);
+        } else if (database == null || database.patterns().isEmpty()) {
+            member.set(Analyzer.USER_PATTERNS, Status.NOT_APPLICABLE, Reason.NO_USER_PATTERNS, 0);
+        } else {
+            member.set(Analyzer.USER_PATTERNS, status, reason, bytes);
+        }
+        boolean unavailable = signatures != null && (!signatures.problems().isEmpty()
+                || signatures.unsupportedCount() > 0 || signatures.cappedCount() > 0);
+        if (unavailable) {
+            member.set(Analyzer.SIGNATURES, Status.PARTIAL, Reason.DEFINITIONS_INCOMPLETE, bytes);
+        } else if (signatures == null || signatures.isEmpty()) {
+            member.set(Analyzer.SIGNATURES, Status.NOT_APPLICABLE, Reason.NO_DEFINITIONS, 0);
+        } else {
+            member.set(Analyzer.SIGNATURES, status, reason, bytes);
+        }
+    }
+
+    private static boolean verifyNestedMetadata(ScanReport report, ScanBudget budget, String parentName,
+            ArchiveIndex.Member indexed, ZipEntry local) {
+        if (indexed != null && indexed.matches(local)) {
+            return true;
+        }
+        report.addError(parentName + "!" + local.getName()
+                + ": nested local and indexed metadata could not be verified");
+        budget.markTruncated();
+        return false;
     }
 
     /** True when the manifest names this source file as an interface or the settings screen. */

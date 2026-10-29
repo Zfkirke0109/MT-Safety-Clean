@@ -3,9 +3,9 @@ package mt.safety.scanner.core;
 /**
  * The kind of behaviour a finding describes.
  *
- * <p>Categories exist because single indicators are weak and combinations are strong: reading app
- * private data is odd, opening a socket is ordinary, and doing both is exfiltration. {@link
- * RiskScorer} reasons over the set of categories a package triggers, not just the raw score.
+ * <p>Categories let {@link RiskScorer} consider capabilities across the whole package, not just the
+ * raw score. Sensitive-data and network indicators may warrant review together, but their
+ * co-occurrence does not establish that any data was transferred.
  */
 public enum Category {
 

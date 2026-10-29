@@ -5,48 +5,87 @@ on:
     branches: ["**"]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      TMPDIR: /tmp/mt-ci-build
+      MT_OUTPUT_DIR: /tmp/mt-ci-artifacts
+      PYTHONDONTWRITEBYTECODE: '1'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
 
       - name: Set up a JDK
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
         with:
           distribution: temurin
           java-version: "17"
 
-      # The detection core is plain Java and needs only a JDK. The v3 package additionally needs an
-      # Android platform jar, the r8/d8 dexer and MT Manager's plugin API; build.sh downloads those
-      # into this directory, so caching them keeps the network out of the common path.
-      - name: Cache the v3 build toolchain
-        uses: actions/cache@v4
+      - name: Cache reviewed toolchain archives
+        id: toolchain-cache
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: /tmp/mt-ci-build/mt-safety-build/toolchain
+          key: mt-toolchain-${{ runner.os }}-${{ hashFiles('tools/toolchain-lock.json') }}
+
+      # GitHub cache versions include the original path, so restore the old path explicitly.
+      - name: Restore historical toolchain cache as an input-availability fallback
+        if: steps.toolchain-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: /tmp/mt-safety-build/toolchain
           key: mt-toolchain-r8-8.9.35-platform30
 
+      - name: Verify and stage available MT API cache receipts
+        id: api-cache-import
+        run: python3 tools/cached_api_receipts.py /tmp/mt-ci-build/mt-safety-build/toolchain /tmp/mt-safety-build/toolchain /tmp/mt-ci-input-receipts
+
       - name: Compile and test
-        run: tools/build.sh test
+        run: bash tools/build.sh test
 
-      - name: Package the plugin
-        run: tools/build.sh package
+      - name: Package the plugin separately from the checked-in artifact
+        id: package
+        run: bash tools/build.sh package
 
-      - name: Check the committed package still matches the sources
+      - name: Verify package reproducibility
         run: |
-          # The .mtp is committed so it can be downloaded directly, and a zip is not byte-reproducible
-          # because it stores modification times. CONTENTS.txt records a hash per member, so this
-          # compares what is actually inside the artefact rather than only which files are in it. The
-          # compiled classes.dex is recorded but not hashed: d8's output embeds build metadata that
-          # varies run to run, and the sources that produce it are what the test suite covers.
-          git diff --exit-code -- dist/CONTENTS.txt
+          cp "$MT_OUTPUT_DIR/mt-safety-scanner.mtp" /tmp/first-build.mtp
+          bash tools/build.sh package
+          cmp /tmp/first-build.mtp "$MT_OUTPUT_DIR/mt-safety-scanner.mtp"
 
       - name: Check the rule reference is up to date
         run: |
-          tools/build.sh docs
+          bash tools/build.sh docs
           git diff --exit-code -- docs/DETECTION-RULES.md
 
-      - uses: actions/upload-artifact@v4
+      - name: Compare every actual committed member including all DEX bytes
+        run: bash tools/build.sh verify-package dist/mt-safety-scanner.mtp "$MT_OUTPUT_DIR/mt-safety-scanner.mtp"
+
+      # A deliberately stale checked-in artifact must not hide the fresh build needed to synchronize it.
+      - name: Upload newly built plugin and verified receipts
+        if: always() && steps.package.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: mt-safety-scanner-mtp
-          path: dist/mt-safety-scanner.mtp
+          path: /tmp/mt-ci-artifacts/*
+          if-no-files-found: error
+
+      - name: Reverify available MT API bytes after the build
+        if: always()
+        id: api-receipts
+        run: python3 tools/cached_api_receipts.py /tmp/mt-ci-build/mt-safety-build/toolchain /tmp/mt-safety-build/toolchain /tmp/mt-ci-input-receipts
+
+      - name: Upload only verified cached MT API input bytes
+        if: always() && steps.api-receipts.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: build-input-receipt
+          path: |
+            /tmp/mt-ci-input-receipts/mt-api.aar
+            /tmp/mt-ci-input-receipts/mt-plugin-api.jar
+          if-no-files-found: warn

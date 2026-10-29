@@ -1,0 +1,7 @@
+==> compiling core
+tools/test/mt/safety/scanner/core/BoundedZipDecoderRegression.java:113: error: cannot find symbol
+        return BoundedZipDecoder.read(new ByteArrayInputStream(input), method, flags,
+               ^
+  symbol:   variable BoundedZipDecoder
+  location: class BoundedZipDecoderRegression
+1 error

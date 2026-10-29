@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 1,
+  "inputs": [
+    {"name":"gitleaks", "version":"8.28.0", "file":"gitleaks.tar.gz", "url":"https://github.com/gitleaks/gitleaks/releases/download/v8.28.0/gitleaks_8.28.0_linux_x64.tar.gz", "sha256":"a65b5253807a68ac0cafa4414031fd740aeb55f54fb7e55f386acb52e6a840eb", "license":"MIT", "member":"gitleaks"},
+    {"name":"semgrep-core", "version":"1.138.0", "file":"semgrep.whl", "url":"https://files.pythonhosted.org/packages/db/3c/d570f253eebaf3633d76f63ffb933ed61ad8351029b9b3e16da5bb53f9c0/semgrep-1.138.0-cp310.cp311.cp312.cp313.py310.py311.py312.py313-none-musllinux_1_0_x86_64.manylinux2014_x86_64.whl", "sha256":"7a10d1e33191b5314a6375051151e30e4315ffca362d54a18955b7ce1fbdd5f4", "license":"LGPL-2.1-or-later", "member":"semgrep-1.138.0.data/purelib/semgrep/bin/semgrep-core"}
+  ]
+}

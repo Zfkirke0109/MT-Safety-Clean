@@ -49,9 +49,9 @@ public final class HexSignature {
     private static final class Block {
         final byte[] value;
         final byte[] mask;
-        final boolean[][] alternatives;
+        final byte[][][] alternatives;
 
-        Block(byte[] value, byte[] mask, boolean[][] alternatives) {
+        Block(byte[] value, byte[] mask, byte[][][] alternatives) {
             this.value = value;
             this.mask = mask;
             this.alternatives = alternatives;
@@ -61,18 +61,24 @@ public final class HexSignature {
             return value.length;
         }
 
-        boolean matchesAt(byte[] data, int at) {
-            if (at < 0 || at + value.length > data.length) {
-                return false;
-            }
+        boolean matchesAt(byte[] data, int at, Work work) {
+            if (at < 0 || at > data.length - value.length) return false;
             for (int i = 0; i < value.length; i++) {
-                int b = data[at + i] & 0xFF;
-                boolean[] allowed = alternatives == null ? null : alternatives[i];
-                if (allowed != null) {
-                    if (!allowed[b]) {
-                        return false;
+                work.step();
+                byte[][] choices = alternatives == null ? null : alternatives[i];
+                if (choices != null) {
+                    boolean found = false;
+                    for (byte[] choice : choices) {
+                        boolean equal = true;
+                        for (int j = 0; j < choice.length; j++) {
+                            work.step();
+                            if (data[at + i + j] != choice[j]) { equal = false; break; }
+                        }
+                        if (equal) { found = true; break; }
                     }
-                } else if ((b & (mask[i] & 0xFF)) != (value[i] & 0xFF)) {
+                    if (!found) return false;
+                    i += choices[0].length - 1;
+                } else if (((data[at + i] & 0xFF) & (mask[i] & 0xFF)) != (value[i] & 0xFF)) {
                     return false;
                 }
             }
@@ -95,19 +101,31 @@ public final class HexSignature {
     private static final class Position {
         byte value;
         byte mask;
-        boolean[] alternatives;
+        byte[][] alternatives;
     }
 
-    /** Unbounded gaps are capped so a hostile signature cannot make matching quadratic forever. */
+    /** Explicit ranges beyond this supported limit are refused, never shortened. */
     public static final int MAX_GAP = 4096;
+    private static final int MAX_BLOCKS = 64;
+
+    /** Shared by all database buckets and recursive branches in one operation. */
+    static final class Work {
+        private int remaining;
+        Work(int remaining) { this.remaining = remaining; }
+        void step() {
+            if (--remaining < 0 || Thread.currentThread().isInterrupted()) throw new LimitReached();
+        }
+    }
+    static final class LimitReached extends RuntimeException {
+        private static final long serialVersionUID = 1L;
+    }
 
     /**
      * How much work one match attempt may do before it gives up.
      *
      * <p>Several wide gaps in one signature multiply: on data that keeps matching the first block, a
      * pattern like {@code 41*41*41*41} would otherwise explore every combination of gap lengths.
-     * Giving up is safe in the direction that matters, a miss on a contrived input, and it keeps a
-     * signature file from being able to freeze the phone that loaded it.
+     * Exhaustion is reported as incomplete by database matching, never as a completed miss.
      */
     static final int MAX_STEPS = 1 << 20;
 
@@ -174,17 +192,10 @@ public final class HexSignature {
         if (index >= first.length()) {
             return -1;
         }
-        boolean[] allowed = first.alternatives == null ? null : first.alternatives[index];
-        if (allowed != null) {
-            int only = -1;
-            for (int b = 0; b < 256; b++) {
-                if (allowed[b]) {
-                    if (only != -1) {
-                        return -1;
-                    }
-                    only = b;
-                }
-            }
+        byte[][] choices = first.alternatives == null ? null : first.alternatives[index];
+        if (choices != null) {
+            int only = choices[0][0] & 0xFF;
+            for (byte[] choice : choices) if ((choice[0] & 0xFF) != only) return -1;
             return only;
         }
         if ((first.mask[index] & 0xFF) != 0xFF) {
@@ -237,13 +248,14 @@ public final class HexSignature {
             if (anchored < 0 || shift < 0) {
                 throw new SyntaxException("negative offset: " + offset);
             }
-            shift = Math.min(shift, MAX_GAP);
+            if (shift > MAX_GAP) throw new SyntaxException("offset shift exceeds supported limit");
         }
         HexSignature signature = new HexSignature(name, target, anchored, shift, fromEnd);
         String body = hex == null ? "" : hex.trim();
         if (body.length() == 0) {
             throw new SyntaxException("empty pattern");
         }
+        if (body.length() > 65536) throw new SyntaxException("pattern length exceeds supported limit");
         List<Position> current = new ArrayList<Position>();
         int pendingMin = -1;
         int pendingMax = -1;
@@ -251,12 +263,14 @@ public final class HexSignature {
         while (i < body.length()) {
             char c = body.charAt(i);
             if (c == '*') {
+                if (current.isEmpty()) throw new SyntaxException("leading or adjacent gaps are unsupported");
                 signature.closeBlock(current, pendingMin, pendingMax);
                 pendingMin = 0;
-                pendingMax = MAX_GAP;
+                pendingMax = Integer.MAX_VALUE;
                 current = new ArrayList<Position>();
                 i++;
             } else if (c == '{') {
+                if (current.isEmpty()) throw new SyntaxException("leading or adjacent gaps are unsupported");
                 int close = body.indexOf('}', i);
                 if (close < 0) {
                     throw new SyntaxException("unclosed { in " + body);
@@ -320,6 +334,7 @@ public final class HexSignature {
                 throw new SyntaxException("unsupported character '" + c + "' in " + body);
             }
         }
+        if (current.isEmpty()) throw new SyntaxException("trailing gaps are unsupported");
         signature.closeBlock(current, pendingMin, pendingMax);
         // A pattern of wildcards alone would match every file. ClamAV requires fixed bytes too, and
         // two is the least that makes a pattern say anything.
@@ -335,32 +350,32 @@ public final class HexSignature {
         for (int b = 0; b < blocks.size(); b++) {
             Block block = blocks.get(b);
             for (int i = 0; i < block.length(); i++) {
-                boolean[] allowed = block.alternatives == null ? null : block.alternatives[i];
-                if (allowed != null || (block.mask[i] & 0xFF) == 0xFF) {
-                    fixed++;
-                }
+                byte[][] choices = block.alternatives == null ? null : block.alternatives[i];
+                if (choices != null) { fixed += choices[0].length; }
+                else if ((block.mask[i] & 0xFF) == 0xFF) { fixed++; }
             }
         }
         return fixed;
     }
 
-    private void closeBlock(List<Position> current, int gapMin, int gapMax) {
+    private void closeBlock(List<Position> current, int gapMin, int gapMax) throws SyntaxException {
         if (current.isEmpty()) {
             return;
         }
+        if (blocks.size() >= MAX_BLOCKS) throw new SyntaxException("pattern block limit exceeded");
         if (!blocks.isEmpty()) {
             gaps.add(new Gap(Math.max(gapMin, 0), gapMax < 0 ? 0 : gapMax));
         }
         byte[] value = new byte[current.size()];
         byte[] mask = new byte[current.size()];
-        boolean[][] alternatives = null;
+        byte[][][] alternatives = null;
         for (int i = 0; i < current.size(); i++) {
             Position position = current.get(i);
             value[i] = position.value;
             mask[i] = position.mask;
             if (position.alternatives != null) {
                 if (alternatives == null) {
-                    alternatives = new boolean[current.size()][];
+                    alternatives = new byte[current.size()][][];
                 }
                 alternatives[i] = position.alternatives;
             }
@@ -374,19 +389,19 @@ public final class HexSignature {
             int dash = body.indexOf('-');
             if (dash < 0) {
                 int n = Integer.parseInt(body);
-                if (n < 0) {
+                if (n < 0 || n > MAX_GAP) {
                     throw new SyntaxException("bad range {" + body + "}");
                 }
-                return new int[] {Math.min(n, MAX_GAP), Math.min(n, MAX_GAP)};
+                return new int[] {n, n};
             }
             String left = body.substring(0, dash).trim();
             String right = body.substring(dash + 1).trim();
             int min = left.length() == 0 ? 0 : Integer.parseInt(left);
-            int max = right.length() == 0 ? MAX_GAP : Integer.parseInt(right);
-            if (min < 0 || max < min) {
+            int max = right.length() == 0 ? Integer.MAX_VALUE : Integer.parseInt(right);
+            if (min < 0 || max < min || min > MAX_GAP || (right.length() > 0 && max > MAX_GAP)) {
                 throw new SyntaxException("bad range {" + body + "}");
             }
-            return new int[] {Math.min(min, MAX_GAP), Math.min(max, MAX_GAP)};
+            return new int[] {min, max};
         } catch (NumberFormatException e) {
             throw new SyntaxException("bad range {" + body + "}");
         }
@@ -396,6 +411,7 @@ public final class HexSignature {
         String[] parts = body.split("\\|", -1);
         int width = -1;
         List<Position> positions = new ArrayList<Position>();
+        byte[][] choices = new byte[parts.length][];
         for (int p = 0; p < parts.length; p++) {
             String option = parts[p].trim();
             if (option.length() == 0 || option.length() % 2 != 0) {
@@ -406,7 +422,6 @@ public final class HexSignature {
                 width = bytes;
                 for (int b = 0; b < bytes; b++) {
                     Position position = new Position();
-                    position.alternatives = new boolean[256];
                     positions.add(position);
                 }
             } else if (bytes != width) {
@@ -414,15 +429,17 @@ public final class HexSignature {
                 // different length silently would shift every following byte.
                 throw new SyntaxException("alternatives differ in length: (" + body + ")");
             }
+            choices[p] = new byte[bytes];
             for (int b = 0; b < bytes; b++) {
                 char hi = option.charAt(b * 2);
                 char lo = option.charAt(b * 2 + 1);
                 if (!isHexDigit(hi) || !isHexDigit(lo)) {
                     throw new SyntaxException("bad alternative (" + body + ")");
                 }
-                positions.get(b).alternatives[(hexValue(hi) << 4) | hexValue(lo)] = true;
+                choices[p][b] = (byte) ((hexValue(hi) << 4) | hexValue(lo));
             }
         }
+        positions.get(0).alternatives = choices;
         current.addAll(positions);
     }
 
@@ -437,83 +454,64 @@ public final class HexSignature {
         return (Character.toLowerCase(c) - 'a') + 10;
     }
 
-    /** True when this signature matches somewhere in {@code data}, honouring its offset. */
+    /** Legacy convenience method; production callers use the database's explicit completeness. */
     public boolean matches(byte[] data) {
-        if (data == null || blocks.isEmpty()) {
-            return false;
-        }
-        int[] steps = new int[] {MAX_STEPS};
+        try { return matches(data, new Work(MAX_STEPS)); }
+        catch (LimitReached exhausted) { return false; }
+    }
+
+    boolean matches(byte[] data, Work work) {
+        return matches(data, work, data == null ? -1L : data.length);
+    }
+
+    /** logicalSize is the full blob size, or -1 when only an unknown-length prefix is available. */
+    boolean matches(byte[] data, Work work, long logicalSize) {
+        if (data == null || blocks.isEmpty()) return false;
         if (anchoredOffset >= 0) {
-            int base = fromEnd ? data.length - anchoredOffset : anchoredOffset;
-            for (int start = base; start <= base + shift; start++) {
-                if (start >= 0 && matchFrom(data, start, 0, steps)) {
-                    return true;
-                }
+            if (fromEnd && logicalSize < data.length) return false;
+            long base = fromEnd ? logicalSize - anchoredOffset : anchoredOffset;
+            long last = Math.min(base + shift, (long) data.length - blocks.get(0).length());
+            for (long start = Math.max(0L, base); start <= last; start++) {
+                work.step();
+                if (matchFrom(data, (int) start, 0, work)) return true;
             }
             return false;
         }
-        Block first = blocks.get(0);
-        int last = data.length - first.length();
+        int last = data.length - blocks.get(0).length();
         for (int start = 0; start <= last; start++) {
-            if (first.matchesAt(data, start) && matchFrom(data, start, 0, steps)) {
-                return true;
-            }
+            work.step();
+            if (matchFrom(data, start, 0, work)) return true;
         }
         return false;
     }
 
-    /**
-     * True when the pattern matches starting exactly at {@code start}.
-     *
-     * <p>For the bucketed search a database runs: it has already established that the leading bytes
-     * fit, so only the rest needs checking here.
-     */
+    /** Legacy convenience; database bucket matching shares an operation-wide allowance. */
     public boolean matchesAt(byte[] data, int start) {
-        if (data == null || blocks.isEmpty()) {
-            return false;
-        }
-        return matchFrom(data, start, 0, new int[] {MAX_STEPS});
+        try { return matchesAt(data, start, new Work(MAX_STEPS)); }
+        catch (LimitReached exhausted) { return false; }
     }
 
-    /**
-     * Matches block {@code index} at {@code at}, then the rest.
-     *
-     * <p>Iterative over the gap rather than recursive per byte: a signature with several wide gaps
-     * would otherwise recurse thousands of frames deep on a large file. The step budget bounds the
-     * branching a run of variable gaps can cause.
-     */
-    private boolean matchFrom(byte[] data, int at, int index, int[] steps) {
+    boolean matchesAt(byte[] data, int start, Work work) {
+        return data != null && !blocks.isEmpty() && matchFrom(data, start, 0, work);
+    }
+
+    /** At most MAX_BLOCKS stack frames; comparisons and branch attempts consume shared work. */
+    private boolean matchFrom(byte[] data, int at, int index, Work work) {
         int position = at;
         int block = index;
         while (true) {
-            if (--steps[0] < 0) {
-                return false;
-            }
+            work.step();
             Block current = blocks.get(block);
-            if (!current.matchesAt(data, position)) {
-                return false;
-            }
+            if (!current.matchesAt(data, position, work)) return false;
             position += current.length();
-            block++;
-            if (block >= blocks.size()) {
-                return true;
-            }
+            if (++block >= blocks.size()) return true;
             Gap gap = gaps.get(block - 1);
-            if (gap.min == gap.max) {
-                position += gap.min;
-                continue;
-            }
-            // A variable gap is the only place that needs to branch.
-            for (int skip = gap.min; skip <= gap.max; skip++) {
-                if (position + skip > data.length) {
-                    break;
-                }
-                if (matchFrom(data, position + skip, block, steps)) {
-                    return true;
-                }
-                if (steps[0] < 0) {
-                    return false;
-                }
+            int last = Math.min(gap.max, data.length - position - blocks.get(block).length());
+            if (gap.min > last) return false;
+            if (gap.min == gap.max) { position += gap.min; continue; }
+            for (int skip = gap.min; skip <= last; skip++) {
+                work.step();
+                if (matchFrom(data, position + skip, block, work)) return true;
             }
             return false;
         }

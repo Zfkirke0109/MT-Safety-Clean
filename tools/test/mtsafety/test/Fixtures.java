@@ -5,6 +5,7 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.io.RandomAccessFile;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -209,6 +210,65 @@ public final class Fixtures {
             throw new IllegalStateException("could not build fixture " + file.getName(), e);
         }
         return file;
+    }
+
+    /** Makes one indexed member unreadable while leaving the local archive stream valid. */
+    public static void makeMemberUnreadable(File archive, String memberName) {
+        try (RandomAccessFile file = new RandomAccessFile(archive, "rw")) {
+            long length = file.length();
+            long eocd = -1;
+            for (long offset = Math.max(0L, length - 65557L); offset + 22 <= length; offset++) {
+                if (readLe32(file, offset) == 0x06054b50L) {
+                    eocd = offset;
+                }
+            }
+            if (eocd < 0) {
+                throw new IOException("ZIP end record not found");
+            }
+
+            long central = readLe32(file, eocd + 16);
+            int count = readLe16(file, eocd + 10);
+            for (int i = 0; i < count; i++) {
+                if (readLe32(file, central) != 0x02014b50L) {
+                    throw new IOException("invalid ZIP central directory");
+                }
+                int method = readLe16(file, central + 10);
+                int nameLength = readLe16(file, central + 28);
+                int extraLength = readLe16(file, central + 30);
+                int commentLength = readLe16(file, central + 32);
+                byte[] name = new byte[nameLength];
+                file.seek(central + 46);
+                file.readFully(name);
+                if (memberName.equals(new String(name, "UTF-8"))) {
+                    if (method != 8 || readLe32(file, central + 42) >= length) {
+                        throw new IOException("invalid fixture member: " + memberName);
+                    }
+                    file.seek(central + 42);
+                    writeLe32(file, length + 1024L);
+                    return;
+                }
+                central += 46L + nameLength + extraLength + commentLength;
+            }
+            throw new IOException("ZIP member not found: " + memberName);
+        } catch (IOException e) {
+            throw new IllegalStateException("could not make fixture member unreadable in " + archive, e);
+        }
+    }
+
+    private static int readLe16(RandomAccessFile file, long offset) throws IOException {
+        file.seek(offset);
+        return file.readUnsignedByte() | file.readUnsignedByte() << 8;
+    }
+
+    private static long readLe32(RandomAccessFile file, long offset) throws IOException {
+        return (readLe16(file, offset) & 0xFFFFL) | (readLe16(file, offset + 2) & 0xFFFFL) << 16;
+    }
+
+    private static void writeLe32(RandomAccessFile file, long value) throws IOException {
+        file.write((int) value & 0xFF);
+        file.write((int) (value >>> 8) & 0xFF);
+        file.write((int) (value >>> 16) & 0xFF);
+        file.write((int) (value >>> 24) & 0xFF);
     }
 
     /**

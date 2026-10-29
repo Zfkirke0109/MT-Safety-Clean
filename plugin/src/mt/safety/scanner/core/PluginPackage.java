@@ -7,12 +7,10 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.Enumeration;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.zip.ZipEntry;
-import java.util.zip.ZipFile;
 import java.util.zip.ZipInputStream;
 
 /**
@@ -113,6 +111,28 @@ public abstract class PluginPackage {
     public abstract String contentHash(ScanBudget budget) throws IOException;
 
     /**
+     * Whether the package-level content digest covers everything a destructive action would move.
+     *
+     * <p>Most packages hash all of their members. Installed archive directories override this because
+     * MT Manager's extracted siblings are part of the directory action, but not the archive digest.
+     */
+    public boolean destructiveActionIdentityComplete() throws IOException {
+        return true;
+    }
+
+    /** Canonical package path, or an empty string when the final path component is a link. */
+    public String actionIdentityPath() throws IOException {
+        File absolute = location().getAbsoluteFile();
+        File parent = absolute.getParentFile();
+        if (parent == null) {
+            return "";
+        }
+        String actual = absolute.getCanonicalPath();
+        String expected = new File(parent.getCanonicalPath(), absolute.getName()).getPath();
+        return actual.equals(expected) ? actual : "";
+    }
+
+    /**
      * Members whose local headers disagree with the central directory, or that appear twice.
      *
      * <p>Only meaningful for archives. Duplicate names are a real packaging trick: a reviewer's tool
@@ -120,6 +140,10 @@ public abstract class PluginPackage {
      */
     public List<String> structuralAnomalies(ScanBudget budget) throws IOException {
         return Collections.emptyList();
+    }
+
+    boolean manifestListingIncomplete() {
+        return false;
     }
 
     public void close() {
@@ -154,8 +178,23 @@ public abstract class PluginPackage {
         return (int) Math.max(cap, 0L);
     }
 
+    /** Stops recursive listing once a hard safety bound has been reached. */
+    private static final class StopListing extends RuntimeException {
+        private static final long serialVersionUID = 1L;
+
+        private StopListing() {
+            super(null, null, false, false);
+        }
+    }
+
+    private static final StopListing STOP_LISTING = new StopListing();
+
     /** Opens a path as a package, choosing the archive or directory reader. */
     public static PluginPackage open(File file) throws IOException {
+        return open(file, DirectoryListing.defaultOpener());
+    }
+
+    static PluginPackage open(File file, DirectoryListing.Opener listing) throws IOException {
         if (file == null || !file.exists()) {
             throw new IOException("no such path: " + (file == null ? "null" : file.getName()));
         }
@@ -165,9 +204,9 @@ public abstract class PluginPackage {
                 // MT Manager's own layout for an installed plugin: a folder named after the plugin
                 // id holding the archive it was installed from, with whatever MT Manager extracted
                 // beside it. The folder is the install unit; the archive is the package.
-                return new InstalledArchivePackage(file, new ArchivePackage(inner));
+                return new InstalledArchivePackage(file, new ArchivePackage(inner), listing);
             }
-            return new DirectoryPackage(file);
+            return new DirectoryPackage(file, listing);
         }
         return new ArchivePackage(file);
     }
@@ -177,18 +216,18 @@ public abstract class PluginPackage {
     /** A {@code .mtp} (or {@code .zip}) file. */
     static final class ArchivePackage extends PluginPackage {
         private final File file;
-        private ZipFile zip;
+        private ArchiveIndex.View index;
         private List<Entry> cached;
+        private final java.util.IdentityHashMap<Entry, ArchiveIndex.Member> identities =
+                new java.util.IdentityHashMap<Entry, ArchiveIndex.Member>();
 
         ArchivePackage(File file) {
             this.file = file;
         }
 
-        private ZipFile zip() throws IOException {
-            if (zip == null) {
-                zip = new ZipFile(file);
-            }
-            return zip;
+        private ArchiveIndex.View index() throws IOException {
+            if (index == null) { index = ArchiveIndex.open(file); }
+            return index;
         }
 
         @Override
@@ -221,11 +260,11 @@ public abstract class PluginPackage {
                 return cached;
             }
             List<Entry> out = new ArrayList<Entry>();
-            Enumeration<? extends ZipEntry> en = zip().entries();
-            while (en.hasMoreElements()) {
-                ZipEntry ze = en.nextElement();
-                out.add(new Entry(ze.getName(), Math.max(ze.getSize(), 0L),
-                        Math.max(ze.getCompressedSize(), 0L), ze.isDirectory()));
+            for (ArchiveIndex.Member member : index().members) {
+                Entry entry = new Entry(member.name, member.size, member.compressedSize,
+                        member.name.endsWith("/"));
+                out.add(entry);
+                identities.put(entry, member);
             }
             cached = out;
             return out;
@@ -233,28 +272,30 @@ public abstract class PluginPackage {
 
         @Override
         public byte[] read(Entry entry, int limit, ScanBudget budget) throws IOException {
-            int granted = budget.reserve(wanted(entry, limit));
-            if (granted <= 0) {
-                return new byte[0];
+            entries();
+            ArchiveIndex.Member member = identities.get(entry);
+            if (member == null) {
+                // RootedPackage recreates entries. Resolve only an unambiguous identity; duplicates
+                // must never silently select the last matching name as ZipFile.getEntry did.
+                for (ArchiveIndex.Member candidate : index().members) {
+                    if (candidate.name.equals(entry.name) && candidate.size == entry.size
+                            && candidate.compressedSize == entry.compressedSize) {
+                        if (member != null) { throw new IOException("ambiguous duplicate archive identity"); }
+                        member = candidate;
+                    }
+                }
             }
-            ZipEntry ze = zip().getEntry(entry.name);
-            if (ze == null) {
-                return new byte[0];
-            }
-            InputStream in = zip().getInputStream(ze);
-            try {
-                return Bytes.readAtMost(in, granted);
-            } finally {
-                closeQuietly(in);
-            }
+            if (member == null) { throw new IOException("archive member identity was not admitted"); }
+            return BoundedZipDecoder.read(index().stream(member), member.method, member.flags,
+                    member.compressedSize, member.size, member.crc, limit, budget, false);
         }
 
         @Override
         public String contentHash(ScanBudget budget) throws IOException {
-            if (!affordableToHash(file.length(), budget)) {
+            if (!affordableToHash(index().length(), budget)) {
                 return "";
             }
-            InputStream in = new BufferedInputStream(new FileInputStream(file));
+            InputStream in = new BufferedInputStream(index().wholeStream());
             try {
                 return Bytes.sha256(in, budget);
             } finally {
@@ -268,10 +309,47 @@ public abstract class PluginPackage {
                 return Collections.emptyList();
             }
             List<String> problems = new ArrayList<String>();
+            ArchiveIndex.View admitted = index();
+            if (!admitted.problems.isEmpty()) {
+                budget.markTruncated();
+                for (String problem : admitted.problems) {
+                    if (!problem.startsWith("duplicate archive member:")) {
+                        throw new IOException(problem);
+                    }
+                    problems.add(problem);
+                }
+            }
+            for (ArchiveIndex.Member member : admitted.members) {
+                if (member.name.endsWith("/") && member.size != 0) {
+                    budget.markTruncated();
+                    throw new IOException("directory entry contains unread data: " + member.name);
+                }
+            }
+            if (!admitted.legacyMethodsOnly()) {
+                // Raw slices permit supported peers to be inspected even when another member uses
+                // unsupported compression/encryption. Per-entry content passes retain the errors.
+                IOException failure = null;
+                for (ArchiveIndex.Member member : admitted.localOrder) {
+                    if (budget.exhausted()) { budget.markTruncated(); break; }
+                    try {
+                        BoundedZipDecoder.read(admitted.stream(member), member.method, member.flags,
+                                member.compressedSize, member.size, member.crc,
+                                MAX_MEMBER_BYTES, budget);
+                    } catch (IOException e) {
+                        budget.markTruncated();
+                        if (failure == null) {
+                            failure = new IOException("archive member could not be verified: "
+                                    + member.name + ": " + e.getMessage(), e);
+                        }
+                    }
+                }
+                if (failure != null) { throw failure; }
+                return problems;
+            }
             Set<String> seen = new HashSet<String>();
             Set<String> streamed = new HashSet<String>();
             boolean readWholeArchive = true;
-            ZipInputStream zin = new ZipInputStream(new BufferedInputStream(new FileInputStream(file)));
+            ZipInputStream zin = new ZipInputStream(new BufferedInputStream(index().wholeStream()));
             try {
                 ZipEntry ze;
                 int guard = 0;
@@ -341,14 +419,8 @@ public abstract class PluginPackage {
 
         @Override
         public void close() {
-            if (zip != null) {
-                try {
-                    zip.close();
-                } catch (IOException ignored) {
-                    // nothing useful to do while closing
-                }
-                zip = null;
-            }
+            closeQuietly(index);
+            index = null;
         }
     }
 
@@ -360,15 +432,20 @@ public abstract class PluginPackage {
         private static final int MAX_DEPTH = 24;
 
         private final File root;
+        private final DirectoryListing.Opener listing;
+        private int entriesVisited;
         private List<Entry> cached;
         private boolean listingTruncated;
+        private boolean rootListingTruncated;
+        private final Set<String> incompleteWrapperDirectories = new HashSet<String>();
         private final List<String> anomalies = new ArrayList<String>();
 
         /** Enough anomalies to explain what went wrong, not enough for a hostile tree to fill memory. */
         private static final int MAX_ANOMALIES = 40;
 
-        DirectoryPackage(File root) {
+        DirectoryPackage(File root, DirectoryListing.Opener listing) {
             this.root = root;
+            this.listing = listing;
         }
 
         @Override
@@ -412,37 +489,73 @@ public abstract class PluginPackage {
          * package that was actually examined.
          */
         private void walk(File dir, String prefix, int depth, List<Entry> out) {
-            if (out.size() >= MAX_FILES) {
-                listingTruncated = true;
+            if (entriesVisited >= MAX_FILES) {
+                markListingTruncated(prefix);
                 noteAnomaly("directory holds more than " + MAX_FILES + " files; listing truncated");
                 return;
             }
             if (depth > MAX_DEPTH) {
-                listingTruncated = true;
+                markListingTruncated(prefix);
                 noteAnomaly("directory nested more than " + MAX_DEPTH + " levels deep; listing truncated");
                 return;
             }
-            File[] children = dir.listFiles();
-            if (children == null) {
-                listingTruncated = true;
-                noteAnomaly("could not list "
-                        + (prefix.length() == 0 ? "the plugin directory itself" : prefix));
+            if (!DirectoryListing.supportedFor(dir, listing)) {
+                markListingTruncated(prefix);
+                noteAnomaly((prefix.length() == 0 ? "the plugin directory itself" : prefix)
+                        + " was not inspected: " + DirectoryListing.unsupportedReason());
                 return;
             }
-            for (int i = 0; i < children.length; i++) {
-                File child = children[i];
-                String name = prefix + child.getName();
-                if (escapesRoot(child)) {
-                    noteAnomaly("link pointing outside the plugin directory: " + name);
-                    continue;
-                }
-                if (child.isDirectory()) {
-                    out.add(new Entry(name + "/", 0L, 0L, true));
-                    walk(child, name + "/", depth + 1, out);
-                } else {
-                    long size = child.length();
-                    out.add(new Entry(name, size, size, false));
-                }
+            try {
+                DirectoryListing.forEachChild(dir, new DirectoryListing.Visitor() {
+                    @Override
+                    public void visit(File child) {
+                        if (entriesVisited >= MAX_FILES) {
+                            markListingTruncated(prefix);
+                            noteAnomaly("directory holds more than " + MAX_FILES + " files; listing truncated");
+                            throw STOP_LISTING;
+                        }
+                        entriesVisited++;
+                        String name = prefix + child.getName();
+                        String listingProblem = outsideRootProblem(child, name);
+                        if (listingProblem != null) {
+                            markListingTruncated(prefix);
+                            noteAnomaly(listingProblem);
+                            return;
+                        }
+                        if (child.isDirectory()) {
+                            out.add(new Entry(name + "/", 0L, 0L, true));
+                            walk(child, name + "/", depth + 1, out);
+                        } else if (child.isFile()) {
+                            long size = child.length();
+                            out.add(new Entry(name, size, size, false));
+                        } else {
+                            markListingTruncated(prefix);
+                            noteAnomaly("entry could not be inspected and was omitted: " + name);
+                        }
+                    }
+                }, listing);
+            } catch (StopListing ignored) {
+                return;
+            } catch (IOException e) {
+                markListingTruncated(prefix);
+                noteAnomaly("could not list "
+                        + (prefix.length() == 0 ? "the plugin directory itself" : prefix)
+                        + ": " + e.getMessage());
+            } catch (RuntimeException e) {
+                markListingTruncated(prefix);
+                noteAnomaly("could not inspect an entry in "
+                        + (prefix.length() == 0 ? "the plugin directory itself" : prefix)
+                        + ": " + e.getClass().getSimpleName());
+            }
+        }
+
+        private void markListingTruncated(String prefix) {
+            listingTruncated = true;
+            if (prefix.length() == 0) {
+                rootListingTruncated = true;
+            } else if (prefix.indexOf('/') == prefix.length() - 1
+                    && prefix.lastIndexOf('/') == prefix.length() - 1) {
+                incompleteWrapperDirectories.add(prefix);
             }
         }
 
@@ -466,14 +579,18 @@ public abstract class PluginPackage {
             }
         }
 
-        private boolean escapesRoot(File child) {
+        private String outsideRootProblem(File child, String name) {
             try {
                 String canonicalRoot = root.getCanonicalPath();
                 String canonicalChild = child.getCanonicalPath();
-                return !canonicalChild.equals(canonicalRoot)
-                        && !canonicalChild.startsWith(canonicalRoot + File.separator);
+                if (!canonicalChild.equals(canonicalRoot)
+                        && !canonicalChild.startsWith(canonicalRoot + File.separator)) {
+                    return "link pointing outside the plugin directory: " + name;
+                }
+                return null;
             } catch (IOException e) {
-                return false;
+                return "could not resolve " + name + " while listing the plugin directory: "
+                        + e.getMessage();
             }
         }
 
@@ -541,7 +658,34 @@ public abstract class PluginPackage {
         @Override
         public List<String> structuralAnomalies(ScanBudget budget) throws IOException {
             entries();
+            if (listingTruncated) {
+                budget.markTruncated();
+            }
             return anomalies;
+        }
+
+        @Override
+        boolean manifestListingIncomplete() {
+            if (rootListingTruncated) {
+                return true;
+            }
+            String observedWrapper = null;
+            for (Entry entry : cached) {
+                if (entry.directory) {
+                    continue;
+                }
+                int slash = entry.name.indexOf('/');
+                if (slash < 0) {
+                    return false;
+                }
+                String wrapper = entry.name.substring(0, slash + 1);
+                if (!incompleteWrapperDirectories.contains(wrapper)
+                        || (observedWrapper != null && !observedWrapper.equals(wrapper))) {
+                    return false;
+                }
+                observedWrapper = wrapper;
+            }
+            return !incompleteWrapperDirectories.isEmpty();
         }
     }
 
@@ -551,9 +695,11 @@ public abstract class PluginPackage {
      *
      * <p>Members come from the archive. Regular files found in the folder (up to a small depth and
      * count) are added under {@link #BESIDE_PREFIX} so their contents are searched too: when MT
-     * Manager unpacks a v3 plugin's dex next to the package, that dex is where the code is. The
-     * package's identity stays the archive's hash; MT Manager rewriting its own extracted artefacts
-     * must not read as the plugin having changed.
+     * Manager unpacks a v3 plugin's dex next to the package, that dex is where the code is. The hash
+     * used for action re-verification identifies only {@code plugin.mtp}, not these siblings. A
+     * complete sibling listing therefore does not detect a sibling changed after scanning; sibling
+     * content is examined for findings but is not part of that identity. If sibling enumeration is
+     * incomplete, no identity is returned, so it cannot authorize an action.
      */
     static final class InstalledArchivePackage extends PluginPackage {
         private static final int MAX_SIBLINGS = 400;
@@ -561,11 +707,16 @@ public abstract class PluginPackage {
 
         private final File dir;
         private final ArchivePackage delegate;
+        private final DirectoryListing.Opener listing;
         private List<Entry> cached;
+        private boolean listingTruncated;
+        private int siblingEntriesVisited;
+        private final List<String> listingProblems = new ArrayList<String>();
 
-        InstalledArchivePackage(File dir, ArchivePackage delegate) {
+        InstalledArchivePackage(File dir, ArchivePackage delegate, DirectoryListing.Opener listing) {
             this.dir = dir;
             this.delegate = delegate;
+            this.listing = listing;
         }
 
         @Override
@@ -598,7 +749,10 @@ public abstract class PluginPackage {
             try {
                 rootCanonical = dir.getCanonicalPath();
             } catch (IOException e) {
-                rootCanonical = null;
+                noteListingProblem("could not resolve the installed plugin directory; sibling files were not"
+                        + " inspected");
+                cached = out;
+                return out;
             }
             collectSiblings(dir, "", 0, out, rootCanonical);
             cached = out;
@@ -606,37 +760,80 @@ public abstract class PluginPackage {
         }
 
         private void collectSiblings(File folder, String prefix, int depth, List<Entry> out, String rootCanonical) {
-            if (depth > MAX_SIBLING_DEPTH || out.size() >= delegate.entriesCountHint() + MAX_SIBLINGS) {
+            if (depth > MAX_SIBLING_DEPTH) {
+                noteListingProblem("installed sibling directory nested beyond " + MAX_SIBLING_DEPTH
+                        + " levels was not inspected: " + prefix);
                 return;
             }
-            File[] children = folder.listFiles();
-            if (children == null) {
+            if (siblingEntriesVisited >= MAX_SIBLINGS
+                    || out.size() >= delegate.entriesCountHint() + MAX_SIBLINGS) {
+                noteListingProblem("installed sibling listing exceeded " + MAX_SIBLINGS
+                        + " entries; remaining files were not inspected");
                 return;
             }
-            for (int i = 0; i < children.length; i++) {
-                File child = children[i];
-                String name = prefix + child.getName();
-                if (depth == 0 && child.getName().equals(INSTALLED_ARCHIVE)) {
-                    continue;
-                }
-                if (rootCanonical != null && escapes(child, rootCanonical)) {
-                    continue;
-                }
-                if (child.isDirectory()) {
-                    collectSiblings(child, name + "/", depth + 1, out, rootCanonical);
-                } else if (child.isFile()) {
-                    long size = child.length();
-                    out.add(new Entry(BESIDE_PREFIX + name, size, size, false));
-                }
+            if (!DirectoryListing.supportedFor(folder, listing)) {
+                noteListingProblem("installed sibling directory " + (prefix.length() == 0 ? "." : prefix)
+                        + " was not inspected: " + DirectoryListing.unsupportedReason());
+                return;
+            }
+            try {
+                DirectoryListing.forEachChild(folder, new DirectoryListing.Visitor() {
+                    @Override
+                    public void visit(File child) {
+                        String name = prefix + child.getName();
+                        if (depth == 0 && child.getName().equals(INSTALLED_ARCHIVE)) {
+                            return;
+                        }
+                        if (siblingEntriesVisited >= MAX_SIBLINGS
+                                || out.size() >= delegate.entriesCountHint() + MAX_SIBLINGS) {
+                            noteListingProblem("installed sibling listing exceeded " + MAX_SIBLINGS
+                                    + " entries; remaining files were not inspected");
+                            throw STOP_LISTING;
+                        }
+                        siblingEntriesVisited++;
+                        String pathProblem = siblingPathProblem(child, rootCanonical, name);
+                        if (pathProblem != null) {
+                            noteListingProblem(pathProblem);
+                            return;
+                        }
+                        if (child.isDirectory()) {
+                            collectSiblings(child, name + "/", depth + 1, out, rootCanonical);
+                        } else if (child.isFile()) {
+                            long size = child.length();
+                            out.add(new Entry(BESIDE_PREFIX + name, size, size, false));
+                        } else {
+                            noteListingProblem("installed sibling was not inspected: " + name);
+                        }
+                    }
+                }, listing);
+            } catch (StopListing ignored) {
+                return;
+            } catch (IOException e) {
+                noteListingProblem("could not list installed sibling directory: "
+                        + (prefix.length() == 0 ? "." : prefix) + " (" + e.getMessage() + ")");
+            } catch (RuntimeException e) {
+                noteListingProblem("could not inspect an installed sibling in: "
+                        + (prefix.length() == 0 ? "." : prefix) + " ("
+                        + e.getClass().getSimpleName() + ")");
             }
         }
 
-        private static boolean escapes(File child, String rootCanonical) {
+        private void noteListingProblem(String problem) {
+            listingTruncated = true;
+            if (listingProblems.size() < 40 && !listingProblems.contains(problem)) {
+                listingProblems.add(problem);
+            }
+        }
+
+        private static String siblingPathProblem(File child, String rootCanonical, String name) {
             try {
                 String canonical = child.getCanonicalPath();
-                return !canonical.equals(rootCanonical) && !canonical.startsWith(rootCanonical + File.separator);
+                if (!canonical.equals(rootCanonical) && !canonical.startsWith(rootCanonical + File.separator)) {
+                    return "installed sibling escaped the plugin directory and was not inspected: " + name;
+                }
+                return null;
             } catch (IOException e) {
-                return true;
+                return "installed sibling could not be resolved and was not inspected: " + name;
             }
         }
 
@@ -660,12 +857,40 @@ public abstract class PluginPackage {
 
         @Override
         public String contentHash(ScanBudget budget) throws IOException {
+            entries();
+            if (listingTruncated) {
+                return "";
+            }
             return delegate.contentHash(budget);
         }
 
         @Override
+        public boolean destructiveActionIdentityComplete() throws IOException {
+            List<Entry> all = entries();
+            if (listingTruncated) {
+                return false;
+            }
+            for (int i = 0; i < all.size(); i++) {
+                if (all.get(i).name.startsWith(BESIDE_PREFIX)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        @Override
         public List<String> structuralAnomalies(ScanBudget budget) throws IOException {
-            return delegate.structuralAnomalies(budget);
+            List<String> problems = new ArrayList<String>(delegate.structuralAnomalies(budget));
+            if (listingTruncated) {
+                budget.markTruncated();
+                problems.addAll(listingProblems);
+            }
+            return problems;
+        }
+
+        @Override
+        boolean manifestListingIncomplete() {
+            return delegate.manifestListingIncomplete();
         }
 
         @Override
@@ -732,8 +957,23 @@ public abstract class PluginPackage {
         }
 
         @Override
+        public boolean destructiveActionIdentityComplete() throws IOException {
+            return delegate.destructiveActionIdentityComplete();
+        }
+
+        @Override
+        public String actionIdentityPath() throws IOException {
+            return delegate.actionIdentityPath();
+        }
+
+        @Override
         public List<String> structuralAnomalies(ScanBudget budget) throws IOException {
             return delegate.structuralAnomalies(budget);
+        }
+
+        @Override
+        boolean manifestListingIncomplete() {
+            return delegate.manifestListingIncomplete();
         }
 
         @Override

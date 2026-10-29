@@ -1,0 +1,12 @@
+{
+  "actual_run_as": "app",
+  "duration_ms": 1805,
+  "execution_class": "app",
+  "exit_code": 0,
+  "requested_run_as": "app",
+  "state": "completed",
+  "stderr": "",
+  "stderr_truncated": false,
+  "stdout": "912a0240e11a2e5688fa37345d9b76f54c46c91a0a73ffbd891bb8b9f464fb1d  harness-final-v23.dex\ne979ced80767285c6992c8b10475b9eda5b2e3ea3e6e1a90fbe14d6ed5c08e14  worker-final-v23.dex\nPASS fresh fixture directory\nPASS no-overwrite initial publication\nPASS existing file survives publication\nPASS dangling link is never followed\nPASS special-name fixture\nPASS legacy toybox listing preserves exact names\nPASS app UID launches actual worker\nPASS worker heap allowance is enforced\nMT_WORKER_PROBE pid=6162 uid=10271 maxHeap=100663296\nPASS fresh scanner directory\nPASS fresh definitions\nPASS inert signature fixture\nPASS real worker IPC returns exact fixture hit\nPASS successful worker exits\nPASS supervisor enforces wall deadline\nPASS timed-out child termination is confirmed\nPASS cancellation confirms child termination\nDeviceRegression: 16 checks passed; uid=10271\n",
+  "stdout_truncated": false
+}

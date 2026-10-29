@@ -15,6 +15,7 @@ public final class PluginScanner {
 
     private final IocDatabase database;
     private final SignatureDatabase signatures;
+    private final DirectoryListing.Opener listing;
 
     public PluginScanner(IocDatabase database) {
         this(database, null);
@@ -26,8 +27,13 @@ public final class PluginScanner {
      * @param signatures a database in ClamAV's text formats, or null for none
      */
     public PluginScanner(IocDatabase database, SignatureDatabase signatures) {
+        this(database, signatures, DirectoryListing.defaultOpener());
+    }
+
+    PluginScanner(IocDatabase database, SignatureDatabase signatures, DirectoryListing.Opener listing) {
         this.database = database == null ? IocDatabase.empty() : database;
         this.signatures = signatures == null ? SignatureDatabase.empty() : signatures;
+        this.listing = listing;
     }
 
     /** The signature database this scanner matches against; empty when none was loaded. */
@@ -37,10 +43,10 @@ public final class PluginScanner {
 
     /** Scans one package: a {@code .mtp} file or an installed plugin directory. */
     public ScanReport scan(File path, ScanBudget budget) {
-        long started = System.currentTimeMillis();
+        long started = System.nanoTime();
         PluginPackage pkg = null;
         try {
-            pkg = PluginPackage.open(path);
+            pkg = PluginPackage.open(path, listing);
             List<PluginPackage.Entry> entries = pkg.entries();
 
             // A package zipped with a wrapping folder is still a plugin; normalise before judging.
@@ -61,6 +67,28 @@ public final class PluginScanner {
 
             ScanReport report = new ScanReport(pkg.label(), path.getAbsolutePath(), pkg.archive(),
                     pkg.installed(), manifest, hash);
+            report.ledger.start();
+            for (PluginPackage.Entry entry : entries) {
+                CoverageLedger.Member member = report.ledger.member(entry);
+                if (entry.directory || entry.name.equals("manifest.json")) {
+                    member.notApplicable(entry.directory ? CoverageLedger.Reason.DIRECTORY
+                            : CoverageLedger.Reason.MANIFEST_METADATA);
+                }
+            }
+            report.ledger.set(CoverageLedger.PackageAnalyzer.MANIFEST,
+                    manifest.unreadable ? CoverageLedger.Status.FAILED : CoverageLedger.Status.COMPLETE,
+                    manifest.unreadable ? CoverageLedger.Reason.READ_FAILED : !manifest.present
+                            ? CoverageLedger.Reason.MANIFEST_MISSING : CoverageLedger.Reason.OK);
+            report.ledger.set(CoverageLedger.PackageAnalyzer.CONTENT_HASH,
+                    hash.length() == 0 ? CoverageLedger.Status.PARTIAL : CoverageLedger.Status.COMPLETE,
+                    hash.length() == 0 ? CoverageLedger.Reason.HASH_UNAVAILABLE : CoverageLedger.Reason.OK);
+            try {
+                String identityPath = pkg.actionIdentityPath();
+                report.setDestructiveActionIdentity(hash.length() > 0
+                        && pkg.destructiveActionIdentityComplete(), identityPath);
+            } catch (IOException e) {
+                report.setDestructiveActionIdentity(false, "");
+            }
             if (prefix != null) {
                 report.add(new Signal("ARC008", Category.ARCHIVE, Severity.LOW,
                         "Plugin contents sit inside a wrapping folder",
@@ -71,22 +99,51 @@ public final class PluginScanner {
 
             ManifestRules.apply(report, manifest, pkg, entries, budget);
             ArchiveRules.apply(report, pkg, entries, budget);
+            report.ledger.set(CoverageLedger.PackageAnalyzer.STRUCTURE,
+                    budget.wasTruncated() ? CoverageLedger.Status.PARTIAL : CoverageLedger.Status.COMPLETE,
+                    budget.wasTruncated() ? CoverageLedger.Reason.READ_FAILED : CoverageLedger.Reason.OK);
+            report.ledger.set(CoverageLedger.PackageAnalyzer.CODE_VISIBILITY,
+                    report.hasRule("MFT012") || report.hasRule("MFT013") ? CoverageLedger.Status.PARTIAL
+                            : CoverageLedger.Status.COMPLETE,
+                    report.hasRule("MFT012") || report.hasRule("MFT013") ? CoverageLedger.Reason.NOT_VISIBLE
+                            : CoverageLedger.Reason.OK);
             int scanned = CodeRules.apply(report, pkg, entries, budget, database, signatures);
 
+            for (String problem : database.loadErrors()) {
+                report.addError(problem);
+                budget.markTruncated();
+            }
+            for (String problem : signatures.problems()) {
+                report.addError("signature definitions: " + problem);
+                budget.markTruncated();
+            }
+            if (signatures.unsupportedCount() > 0 || signatures.cappedCount() > 0) {
+                report.addError("Some selected signature definitions were unsupported or exceeded load limits.");
+                budget.markTruncated();
+            }
+            report.ledger.set(CoverageLedger.PackageAnalyzer.IOC_DEFINITIONS,
+                    database.loadErrors().isEmpty() ? CoverageLedger.Status.COMPLETE : CoverageLedger.Status.PARTIAL,
+                    database.loadErrors().isEmpty() ? CoverageLedger.Reason.OK : CoverageLedger.Reason.DEFINITIONS_INCOMPLETE);
+            boolean signaturesComplete = signatures.complete() && signatures.unsupportedCount() == 0
+                    && signatures.cappedCount() == 0;
+            report.ledger.set(CoverageLedger.PackageAnalyzer.SIGNATURE_DEFINITIONS,
+                    signaturesComplete ? CoverageLedger.Status.COMPLETE : CoverageLedger.Status.PARTIAL,
+                    signaturesComplete ? CoverageLedger.Reason.OK : CoverageLedger.Reason.DEFINITIONS_INCOMPLETE);
+            report.ledger.finishPending(budget.wasTruncated() ? CoverageLedger.Reason.BUDGET_EXHAUSTED
+                    : CoverageLedger.Reason.NOT_ATTEMPTED);
             report.setFilesScanned(scanned);
-            report.setTruncated(budget.wasTruncated());
+            report.setTruncated(budget.wasTruncated() || report.ledger.incomplete());
             if (report.truncated()) {
                 report.add(new Signal("SCN001", Category.PROVENANCE, Severity.INFO,
-                        "The scan did not read the whole package",
-                        "The package was too large, or too slow to read, to examine completely. Findings below"
-                                + " are real, but absence of findings proves less than usual."));
+                        "The scan did not complete every check",
+                        "Part of the package or selected definitions could not be fully inspected: the"
+                                + " package was too large or too slow, a member could not be read, or"
+                                + " selected definitions could not all be applied. Findings below are real, but absence of"
+                                + " findings proves less than usual. This is a coverage warning, not"
+                                + " evidence of malware."));
             }
-            for (int i = 0; i < database.loadErrors().size(); i++) {
-                report.addError(database.loadErrors().get(i));
-            }
-
             RiskScorer.score(report, database);
-            report.setElapsedMs(System.currentTimeMillis() - started);
+            report.setElapsedMs((System.nanoTime() - started) / 1000000L);
             return report;
         } catch (IOException e) {
             String why = describeOpenFailure(e);
@@ -94,7 +151,10 @@ public final class PluginScanner {
                     path.isDirectory(), PluginManifest.missing(), "");
             report.addError("could not open the package: " + why);
             report.setVerdict(Verdict.UNREADABLE, "The package could not be opened: " + why);
-            report.setElapsedMs(System.currentTimeMillis() - started);
+            report.ledger.start();
+            report.ledger.set(CoverageLedger.PackageAnalyzer.STRUCTURE, CoverageLedger.Status.FAILED,
+                    CoverageLedger.Reason.READ_FAILED);
+            report.setElapsedMs((System.nanoTime() - started) / 1000000L);
             return report;
         } catch (RuntimeException e) {
             // A malformed package must never take the host application down with it.
@@ -102,7 +162,10 @@ public final class PluginScanner {
                     path.isDirectory(), PluginManifest.missing(), "");
             report.addError("the package could not be parsed: " + e);
             report.setVerdict(Verdict.UNREADABLE, "The package could not be parsed safely.");
-            report.setElapsedMs(System.currentTimeMillis() - started);
+            report.ledger.start();
+            report.ledger.set(CoverageLedger.PackageAnalyzer.STRUCTURE, CoverageLedger.Status.FAILED,
+                    CoverageLedger.Reason.PARSE_FAILED);
+            report.setElapsedMs((System.nanoTime() - started) / 1000000L);
             return report;
         } finally {
             if (pkg != null) {
@@ -145,7 +208,7 @@ public final class PluginScanner {
     }
 
     /**
-     * Reads the manifest, keeping "absent" and "not read" apart.
+     * Reads the manifest, keeping "absent", "not read" and "not observable" apart.
      *
      * <p>An exhausted budget returns no bytes, and reporting that as a missing manifest produced a
      * false high-severity finding about a package whose manifest was present and perfectly readable.
@@ -235,15 +298,21 @@ public final class PluginScanner {
             if (!entry.directory && entry.name.equals("manifest.json")) {
                 try {
                     byte[] data = pkg.read(entry, 512 * 1024, budget);
-                    if (data.length == 0) {
+                    if (data.length == 0 || data.length != entry.size) {
                         budget.markTruncated();
-                        return PluginManifest.unreadable("not read within the scan budget");
+                        return PluginManifest.unreadable("not fully read within the manifest or scan budget");
                     }
                     return PluginManifest.parse(data);
                 } catch (IOException e) {
+                    budget.markTruncated();
                     return PluginManifest.unreadable("could not be read: " + e.getMessage());
                 }
             }
+        }
+        if (pkg.manifestListingIncomplete()) {
+            budget.markTruncated();
+            return PluginManifest.presenceUnknown(
+                    "package listing was incomplete; manifest presence is unknown");
         }
         return PluginManifest.missing();
     }

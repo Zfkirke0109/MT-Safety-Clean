@@ -40,19 +40,22 @@ Verdicts follow from the total, with any Critical finding forcing the worst outc
 
 ## Combinations
 
-Single indicators are weak; combinations are strong. Network access is ordinary, reading another app's
-private data is odd, and doing both is exfiltration. These fire across the whole package, because
-collection and upload are usually in different files.
+These rules report capabilities found across the whole package. Independent sensitive-data, capture,
+code-loading or command-execution indicators alongside network access do not establish data flow,
+exfiltration, surveillance or remote control. Review their source and calling paths. CMB101/102/103/105
+are Medium review cues; strong direct findings retain their severity and contribute separately.
+The same limitation applies to same-file API pairs CMB002/003: proximity does not prove a connection.
+Their Medium findings replace, rather than duplicate, CMB102/103 when present.
 
 | Rule | Severity | What it means |
 | --- | --- | --- |
-| `CMB101` | Critical | Reads private data **and** has a way to send it out. |
-| `CMB102` | Critical | Network access **and** a class loader: it can run code chosen after you installed it. |
-| `CMB103` | Critical | Process execution **and** network access: remote control. |
-| `CMB104` | High | Destructive behaviour that has been deliberately hidden. |
-| `CMB105` | Critical | Clipboard, screen, camera or location capture **and** network access: surveillance. |
-| `CMB106` | High | Reaches into MT Manager's own files **and** can reach the network. |
-| `CMB107` | High | Capabilities across four or more unrelated areas. |
+| `CMB101` | Medium | Sensitive-data and network capabilities coexist; transfer is not established. |
+| `CMB102` | Medium | Code-loading and network capabilities coexist; loading downloaded code is not established. |
+| `CMB103` | Medium | Command-execution and network capabilities coexist; network control is not established. |
+| `CMB104` | High | Destructive and obfuscation indicators coexist; deliberate concealment is not established. |
+| `CMB105` | Medium | Capture and network capabilities coexist; transmission of captured content is not established. |
+| `CMB106` | High | MT Manager data-access and network indicators coexist; transfer is not established. |
+| `CMB107` | High | Indicators span four or more risk categories; review whether they fit the plugin's purpose. |
 
 ## When a capability is excused
 
@@ -63,7 +66,7 @@ context (`CTX001`) instead of counted.
 
 The excuse is withdrawn the moment the package does something the trait cannot explain: if it also
 reads private data, runs commands or loads code, its network use counts in full. The worked example in
-the README is exactly this case.
+the README retains strong direct findings; the capability combination alone is not a conviction.
 
 ## Package structure
 
@@ -93,7 +96,7 @@ the README is exactly this case.
 | `MFT009` | High | Zero-width or direction-changing characters in the name or id, so the name you see is not the real one. |
 | `MFT010` | Low | Unusually long description, which can push meaningful text out of view. |
 | `MFT011` | High | Near-identical to another installed plugin, after folding case, separators and lookalike characters. One may be impersonating the other. Two packages claiming exactly the same identity count too: that is the strongest form of it, not a reason to stay quiet. |
-| `MFT012` | Low | `manifest.json` is present but was not read, through an I/O error or an exhausted budget. Nothing in the report rests on what the plugin declares. This is a limit of the scan, not a finding against the package, and is kept separate from `MFT002` for that reason. |
+| `MFT012` | Low | `manifest.json` was not read, or the listing was incomplete so its presence could not be confirmed. Nothing in the report rests on what the plugin declares. This is a limit of the scan, not a finding against the package, and is kept separate from `MFT002` for that reason. |
 
 `MFT011` compares the plugins **you actually have** rather than checking against a shipped list of
 known-good names. A built-in list would go stale, and a wrong entry would be worse than none.
@@ -105,7 +108,7 @@ known-good names. A built-in list would go stale, and a wrong entry would be wor
 | `PRV001` | Critical | Matches an entry in your denylist. |
 | `USR001` | High | Matches a regular expression from your own indicator file. |
 | `CTX001` | Info | A capability was excused because the plugin's declared purpose requires it. |
-| `SCN001` | Info | The scan did not read the whole package, so absence of findings proves less than usual. |
+| `SCN001` | Info | Some package content or selected definitions could not be fully inspected; absence of findings proves less than usual. |
 
 No hashes ship with this tool. A list of allegedly malicious plugin hashes invented by its author would
 be worthless, and one fetched from a server would put a network dependency in the middle of a security
@@ -191,8 +194,8 @@ ships enough media to exhaust the byte allowance is reported as truncated rather
 | Rule | Severity | Category | What it means |
 | --- | --- | --- | --- |
 | `CMB001` | High | Writing installable or executable files | **Writes an installable or executable file.** The same file both opens an output stream and names an apk, dex, mtp or so file: it drops a payload onto storage. |
-| `CMB002` | Critical | Loading code from outside the package | **Downloads code and loads it.** Network access and a class loader in one file. Whatever this plugin does today, its operator can change tomorrow. |
-| `CMB003` | Critical | Shell and root commands | **Runs shell commands on instructions from the network.** Process execution and network access in one file, the shape of a remote control channel. |
+| `CMB002` | Medium | Loading code from outside the package | **Network and code-loading APIs appear in one file.** Network access and class-loading indicators occur in the same file. This does not establish that downloaded code is loaded; review the code source and calling paths. |
+| `CMB003` | Medium | Shell and root commands | **Network and command-execution APIs appear in one file.** Process-execution and network indicators occur in the same file. This does not establish that network input controls commands; review their calling paths. |
 | `CMB004` | Critical | Deleting or encrypting user files | **Encrypts files and then deletes the originals.** Encryption together with bulk deletion in one file is the ransomware pattern. |
 | `CMB005` | High | Hidden or encoded payloads | **Decodes a hidden blob and runs or loads it.** Decoding feeding straight into execution or class loading hides the real payload from review. |
 

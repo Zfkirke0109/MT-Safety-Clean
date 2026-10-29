@@ -1,0 +1,126 @@
+{
+  "bomFormat": "CycloneDX",
+  "components": [
+    {
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://maven.google.com/com/android/tools/r8/8.9.35/r8-8.9.35.jar"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "204b2fc2b0f4e888dc0ef748b58090def1bf4185068d36abbb94841dbc7107a8"
+        }
+      ],
+      "name": "r8",
+      "properties": [
+        {
+          "name": "mt:scope",
+          "value": "build"
+        },
+        {
+          "name": "mt:license",
+          "value": "BSD-3-Clause"
+        }
+      ],
+      "scope": "excluded",
+      "type": "library",
+      "version": "8.9.35"
+    },
+    {
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://dl.google.com/android/repository/platform-30_r03.zip"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "f3f5b75744dbf6ee6ed3e8174a71e513bfee502d0bc3463ea97e517bff68d84e"
+        }
+      ],
+      "name": "android-platform",
+      "properties": [
+        {
+          "name": "mt:scope",
+          "value": "compile-only"
+        },
+        {
+          "name": "mt:license",
+          "value": "LicenseRef-Android-SDK"
+        }
+      ],
+      "scope": "excluded",
+      "type": "library",
+      "version": "30_r03"
+    },
+    {
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://maven.mt2.cn/bin/mt/plugin/api/3.0.0/api-3.0.0.aar"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "a51c800eb904e41834ded615376e8c60a33788b073bbb967777ac61d6c88f82d"
+        }
+      ],
+      "name": "mt-plugin-api",
+      "properties": [
+        {
+          "name": "mt:scope",
+          "value": "compile-only"
+        },
+        {
+          "name": "mt:license",
+          "value": "NOASSERTION"
+        }
+      ],
+      "scope": "excluded",
+      "type": "library",
+      "version": "3.0.0"
+    },
+    {
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://repo.maven.apache.org/maven2/org/tukaani/xz/1.12/xz-1.12.jar"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "3e158a87bd73d8afb4b6e8239c013b7d049c48563f45860ce99cd2e448cf4a6b"
+        }
+      ],
+      "name": "xz",
+      "properties": [
+        {
+          "name": "mt:scope",
+          "value": "runtime"
+        },
+        {
+          "name": "mt:license",
+          "value": "0BSD"
+        }
+      ],
+      "scope": "required",
+      "type": "library",
+      "version": "1.12"
+    }
+  ],
+  "metadata": {
+    "component": {
+      "name": "mt.safety.scanner",
+      "type": "application",
+      "version": "v2.3"
+    }
+  },
+  "specVersion": "1.5",
+  "version": 1
+}

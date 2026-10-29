@@ -395,17 +395,18 @@ public final class CodePatterns {
                 "\\.apk\"|\\.dex\"|\\.mtp\"|\\.so\"|\\.jar\"",
                 Scope.CODE);
 
-        pair("CMB002", Category.DYNAMIC_CODE, Severity.CRITICAL,
-                "Downloads code and loads it",
-                "Network access and a class loader in one file. Whatever this plugin does today, its"
-                        + " operator can change tomorrow.",
+        pair("CMB002", Category.DYNAMIC_CODE, Severity.MEDIUM,
+                "Network and code-loading APIs appear in one file",
+                "Network access and class-loading indicators occur in the same file. This does not establish"
+                        + " that downloaded code is loaded; review the code source and calling paths.",
                 "HttpURLConnection|openConnection\\s*\\(|okhttp3|java[/.]net[/.]Socket",
                 "DexClassLoader|InMemoryDexClassLoader|PathClassLoader|URLClassLoader|defineClass\\s*\\(",
                 Scope.CODE);
 
-        pair("CMB003", Category.COMMAND_EXEC, Severity.CRITICAL,
-                "Runs shell commands on instructions from the network",
-                "Process execution and network access in one file, the shape of a remote control channel.",
+        pair("CMB003", Category.COMMAND_EXEC, Severity.MEDIUM,
+                "Network and command-execution APIs appear in one file",
+                "Process-execution and network indicators occur in the same file. This does not establish"
+                        + " that network input controls commands; review their calling paths.",
                 "Runtime\\s*\\.\\s*getRuntime|ProcessBuilder",
                 "HttpURLConnection|openConnection\\s*\\(|java[/.]net[/.]Socket|okhttp3",
                 Scope.CODE);
